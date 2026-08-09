@@ -200,6 +200,165 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("submits the selected slash command with Enter", async () => {
+		const store = createTuiStore("session-1");
+		const sent: unknown[] = [];
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async (command) => {
+			sent.push(command);
+		});
+		try {
+			await view.renderOnce();
+			await view.mockInput.typeText("/m");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent).toEqual([{ type: "list-models" }]);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("drives login prompts without rendering a secret", async () => {
+		const store = createTuiStore("session-1");
+		const sent: unknown[] = [];
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async (command) => {
+			sent.push(command);
+		});
+		try {
+			await view.renderOnce();
+			await view.mockInput.typeText("/login");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain(
+				"/login  Configure provider authentication",
+			);
+			await view.mockInput.typeText(" ");
+			view.mockInput.pressEnter();
+			await view.flush();
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent.at(-1)).toEqual({ type: "list-providers", authType: "oauth" });
+			store.getState().apply({
+				type: "providers",
+				providers: [
+					{
+						id: "openai-codex",
+						name: "OpenAI Codex",
+						authTypes: ["oauth"],
+						configured: true,
+					},
+				],
+			});
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("OpenAI Codex · configured");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent.at(-1)).toEqual({
+				type: "login",
+				provider: "openai-codex",
+				authType: "oauth",
+			});
+			store.getState().apply({
+				type: "auth-prompt",
+				prompt: { id: "prompt-1", type: "secret", message: "API key" },
+			});
+			await view.mockInput.typeText("secret");
+			await view.flush();
+			expect(view.captureCharFrame()).not.toContain("secret");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent.at(-1)).toEqual({
+				type: "auth-answer",
+				promptId: "prompt-1",
+				value: "secret",
+			});
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("selects a configured model and prioritizes wizard Escape", async () => {
+		const store = createTuiStore("session-1");
+		const sent: unknown[] = [];
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async (command) => {
+			sent.push(command);
+		});
+		try {
+			await view.renderOnce();
+			await view.mockInput.typeText("/model ");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent.at(-1)).toEqual({ type: "list-models" });
+			store.getState().apply({
+				type: "models",
+				models: [
+					{
+						provider: "openai-codex",
+						providerName: "OpenAI Codex",
+						id: "gpt-5.6-sol",
+						name: "GPT-5.6 Sol",
+					},
+				],
+			});
+			await view.flush();
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent.at(-1)).toEqual({
+				type: "configure",
+				provider: "openai-codex",
+				model: "gpt-5.6-sol",
+			});
+			await view.mockInput.typeText("/login ");
+			view.mockInput.pressEnter();
+			await view.flush();
+			view.mockInput.pressEnter();
+			await view.flush();
+			store.getState().apply({
+				type: "providers",
+				providers: [
+					{
+						id: "openai-codex",
+						name: "OpenAI Codex",
+						authTypes: ["oauth"],
+						configured: true,
+					},
+				],
+			});
+			await view.flush();
+			view.mockInput.pressEnter();
+			await view.flush();
+			store.getState().apply({
+				type: "auth-prompt",
+				prompt: { id: "prompt-1", type: "text", message: "Name" },
+			});
+			await view.flush();
+			view.mockInput.pressEscape();
+			await view.flush();
+			expect(sent.at(-1)).toEqual({ type: "auth-cancel" });
+			expect(
+				sent.some((command) => (command as { type: string }).type === "abort"),
+			).toBe(false);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("renders queued follow-ups above the composer", async () => {
 		const store = createTuiStore("session-1");
 		const view = await createTestRenderer({

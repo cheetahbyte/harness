@@ -2,22 +2,39 @@ import {
 	BoxRenderable,
 	CliRenderEvents,
 	type CliRenderer,
+	type SelectOption,
 } from "@opentui/core";
 import type { StoreApi } from "zustand/vanilla";
-import type { ClientCommand } from "../../shared/src/protocol";
+import type {
+	AuthNotifyEvent,
+	AuthPromptEvent,
+	AuthType,
+	ClientCommand,
+	ProviderOption,
+} from "../../shared/src/protocol";
 import { ComposerView } from "./components/composer";
 import { FooterView } from "./components/footer";
 import { HeaderView } from "./components/header";
 import { TranscriptView } from "./components/transcript";
-import { commandForInput, type TuiState } from "./store";
+import { WizardView } from "./components/wizard";
+import { commandForInput, type TuiState, type WizardState } from "./store";
+
+type WizardFlow =
+	| { kind: "login-method"; provider?: string }
+	| { kind: "login-provider"; authType: AuthType }
+	| { kind: "login-active" }
+	| { kind: "model"; provider?: string };
 
 export class TuiApp {
 	private readonly root: BoxRenderable;
 	private readonly header: HeaderView;
 	private readonly transcript: TranscriptView;
 	private readonly composer: ComposerView;
+	private readonly wizard: WizardView;
 	private readonly footer: FooterView;
 	private readonly unsubscribe: () => void;
+	private flow: WizardFlow | undefined;
+	private renderedWizard: WizardState | undefined;
 
 	constructor(
 		private readonly renderer: CliRenderer,
@@ -35,12 +52,14 @@ export class TuiApp {
 		this.transcript = new TranscriptView(renderer);
 		this.composer = new ComposerView(renderer, {
 			submit: (text, followUp) => void this.submit(text, followUp),
-			abort: () => void this.send({ type: "abort" }),
+			abort: () => this.escape(),
 		});
+		this.wizard = new WizardView(renderer);
 		this.footer = new FooterView(renderer);
 		this.root.add(this.header.root);
 		this.root.add(this.transcript.root);
 		this.root.add(this.composer.root);
+		this.root.add(this.wizard.root);
 		this.root.add(this.footer.root);
 		renderer.root.add(this.root);
 		renderer.on(CliRenderEvents.RESIZE, this.updateLayout);
@@ -53,9 +72,16 @@ export class TuiApp {
 		this.unsubscribe();
 		this.renderer.off(CliRenderEvents.RESIZE, this.updateLayout);
 		this.composer.destroy();
+		this.wizard.destroy();
 	}
 
 	private async submit(text: string, followUp: boolean) {
+		if (!followUp) {
+			const login = text.match(/^\/login(?:\s+(\S+))?\s*$/);
+			if (login) return this.openLogin(login[1]);
+			const model = text.match(/^\/model(?:\s+(\S+))?\s*$/);
+			if (model) return this.openModel(model[1]);
+		}
 		let command = followUp
 			? { type: "follow-up" as const, id: crypto.randomUUID(), text }
 			: commandForInput(text);
@@ -86,6 +112,10 @@ export class TuiApp {
 		this.header.update(state);
 		this.transcript.update(state.entries);
 		this.composer.update(state.followUps);
+		if (state.wizard !== this.renderedWizard) {
+			this.renderedWizard = state.wizard;
+			this.renderWizard(state.wizard);
+		}
 	}
 
 	private updateLayout = () => {
@@ -94,4 +124,247 @@ export class TuiApp {
 		this.footer.root.visible = !compact;
 		this.composer.setCompact(compact);
 	};
+
+	private openLogin(provider?: string) {
+		this.flow = { kind: "login-method", ...(provider ? { provider } : {}) };
+		if (provider) {
+			this.showNoticeText("Authentication", "Loading provider options…");
+			return void this.sendWizard({ type: "list-providers" });
+		}
+		this.showAuthTypes();
+	}
+
+	private openModel(provider?: string) {
+		this.flow = { kind: "model", ...(provider ? { provider } : {}) };
+		this.showNoticeText("Select model", "Loading configured models…");
+		void this.sendWizard({
+			type: "list-models",
+			...(provider ? { provider } : {}),
+		});
+	}
+
+	private renderWizard(wizard: WizardState) {
+		if (wizard.kind === "idle") return;
+		if (wizard.kind === "providers")
+			return this.showProviders(wizard.providers);
+		if (wizard.kind === "models") return this.showModels(wizard);
+		if (wizard.kind === "prompt") return this.showPrompt(wizard.prompt);
+		if (wizard.kind === "notice") return this.showNotice(wizard.notification);
+		this.closeWizard();
+	}
+
+	private showAuthTypes(provider?: ProviderOption) {
+		const authTypes =
+			provider?.authTypes ?? (["oauth", "api_key"] as AuthType[]);
+		if (authTypes.length === 1 && provider) {
+			return this.startLogin(provider.id, authTypes[0]);
+		}
+		this.showSelect(
+			provider ? `Sign in to ${provider.name}` : "Select authentication method",
+			authTypes.map((authType) => ({
+				name:
+					authType === "oauth"
+						? "Sign in with an account"
+						: "Sign in with an API key",
+				description:
+					authType === "oauth"
+						? "Open the provider sign-in flow"
+						: "Enter a provider API key",
+				value: authType,
+			})),
+			(option) => {
+				const authType = option.value as AuthType;
+				if (provider) this.startLogin(provider.id, authType);
+				else {
+					this.flow = { kind: "login-provider", authType };
+					void this.sendWizard({ type: "list-providers", authType });
+				}
+			},
+		);
+	}
+
+	private showProviders(providers: ProviderOption[]) {
+		const flow = this.flow;
+		if (flow?.kind === "login-method") {
+			const provider = providers.find((option) => option.id === flow.provider);
+			if (!provider)
+				return this.showNoticeText(
+					"Authentication",
+					`Unknown provider: ${flow.provider}`,
+				);
+			return this.showAuthTypes(provider);
+		}
+		if (flow?.kind !== "login-provider") return;
+		const options = providers.filter((provider) =>
+			provider.authTypes.includes(flow.authType),
+		);
+		if (!options.length)
+			return this.showNoticeText(
+				"Authentication",
+				"No providers support that authentication method.",
+			);
+		this.showSelect(
+			"Select provider to configure",
+			options.map((provider) => ({
+				name: `${provider.name} · ${provider.configured ? "configured" : "unconfigured"}`,
+				description: "",
+				value: provider.id,
+			})),
+			(option) => this.startLogin(option.value as string, flow.authType),
+			true,
+			true,
+		);
+	}
+
+	private showModels(wizard: Extract<WizardState, { kind: "models" }>) {
+		const flow = this.flow;
+		if (flow?.kind !== "model") return;
+		const models = wizard.models.filter(
+			(model) => !flow.provider || model.provider === flow.provider,
+		);
+		if (!models.length)
+			return this.showNoticeText(
+				"Select model",
+				"No configured models. Run /login first.",
+			);
+		this.showSelect(
+			"Select model",
+			models.map((model) => ({
+				name: model.name,
+				description: model.providerName,
+				value: model,
+			})),
+			(option) => {
+				const model = option.value as (typeof models)[number];
+				this.closeWizard();
+				void this.sendWizard({
+					type: "configure",
+					provider: model.provider,
+					model: model.id,
+				});
+			},
+			true,
+		);
+	}
+
+	private startLogin(provider: string, authType: AuthType | undefined) {
+		if (!authType) return;
+		this.flow = { kind: "login-active" };
+		this.showNoticeText("Authentication", "Starting sign-in…");
+		void this.sendWizard({ type: "login", provider, authType });
+	}
+
+	private showPrompt(prompt: AuthPromptEvent) {
+		if (this.flow?.kind !== "login-active") return;
+		if (prompt.type === "select") {
+			return this.showSelect(
+				prompt.message,
+				prompt.options.map((option) => ({
+					name: option.label,
+					description: option.description ?? "",
+					value: option.id,
+				})),
+				(option) =>
+					void this.sendWizard({
+						type: "auth-answer",
+						promptId: prompt.id,
+						value: option.value as string,
+					}),
+			);
+		}
+		this.openWizard();
+		this.wizard.show(
+			{
+				kind: "input",
+				title: prompt.message,
+				...(prompt.placeholder ? { placeholder: prompt.placeholder } : {}),
+				...(prompt.type === "secret" ? { secret: true } : {}),
+			},
+			{
+				submit: (value) =>
+					void this.sendWizard({
+						type: "auth-answer",
+						promptId: prompt.id,
+						value,
+					}),
+				cancel: () => this.escape(),
+			},
+		);
+	}
+
+	private showNotice(notification: AuthNotifyEvent) {
+		if (this.flow?.kind !== "login-active") return;
+		const text = noticeText(notification);
+		this.showNoticeText("Authentication", text);
+	}
+
+	private showNoticeText(title: string, text: string) {
+		this.openWizard();
+		this.wizard.show(
+			{ kind: "notice", title, text },
+			{ cancel: () => this.escape() },
+		);
+	}
+
+	private showSelect(
+		title: string,
+		options: SelectOption[],
+		select: (option: SelectOption) => void,
+		searchable = false,
+		inlineDescriptions = false,
+	) {
+		this.openWizard();
+		this.wizard.show(
+			{
+				kind: "select",
+				title,
+				options,
+				...(searchable ? { searchable } : {}),
+				...(inlineDescriptions ? { inlineDescriptions } : {}),
+			},
+			{ select, cancel: () => this.escape() },
+		);
+	}
+
+	private openWizard() {
+		this.composer.setActive(false);
+	}
+
+	private escape() {
+		if (!this.wizard.root.visible) return void this.send({ type: "abort" });
+		const cancelLogin = this.flow?.kind === "login-active";
+		this.closeWizard();
+		if (cancelLogin) void this.sendWizard({ type: "auth-cancel" });
+	}
+
+	private closeWizard() {
+		this.wizard.hide();
+		this.composer.setActive(true);
+		this.flow = undefined;
+		this.store.getState().clearWizard();
+	}
+
+	private async sendWizard(command: ClientCommand) {
+		try {
+			await this.send(command);
+		} catch (error) {
+			this.closeWizard();
+			this.store.getState().apply({
+				type: "error",
+				message: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+}
+
+function noticeText(notification: AuthNotifyEvent): string {
+	if (notification.type === "auth_url")
+		return `${notification.instructions ?? "Open this URL:"}\n${notification.url}`;
+	if (notification.type === "device_code")
+		return `Code: ${notification.userCode}\n${notification.verificationUri}`;
+	if (notification.type === "info" && notification.links?.length)
+		return `${notification.message}\n${notification.links
+			.map((link) => `${link.label ?? link.url}: ${link.url}`)
+			.join("\n")}`;
+	return notification.message;
 }

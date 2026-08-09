@@ -14,11 +14,24 @@ export class HarnessClient {
 	}
 
 	async send(sessionId: string, command: ClientCommand): Promise<void> {
-		await fetch(`${this.base}/sessions/${sessionId}/commands`, {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify(command),
-		});
+		const response = await fetch(
+			`${this.base}/sessions/${sessionId}/commands`,
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(command),
+			},
+		);
+		if (!response.ok) {
+			const body = (await response.json().catch(() => ({}))) as {
+				error?: unknown;
+			};
+			throw new Error(
+				typeof body.error === "string"
+					? body.error
+					: `command failed (${response.status})`,
+			);
+		}
 	}
 
 	async stream(

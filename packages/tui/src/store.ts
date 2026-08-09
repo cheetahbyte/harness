@@ -1,5 +1,12 @@
 import { createStore } from "zustand/vanilla";
-import type { ClientCommand, ServerEvent } from "../../shared/src/protocol";
+import type {
+	AuthNotifyEvent,
+	AuthPromptEvent,
+	ClientCommand,
+	ModelOption,
+	ProviderOption,
+	ServerEvent,
+} from "../../shared/src/protocol";
 
 type TranscriptKind =
 	| "user"
@@ -21,6 +28,14 @@ export type TranscriptEntry = {
 	pending?: boolean;
 };
 export type FollowUp = { id: string; text: string; sending: boolean };
+export type WizardState =
+	| { kind: "idle" }
+	| { kind: "providers"; providers: ProviderOption[] }
+	| { kind: "models"; models: ModelOption[] }
+	| { kind: "prompt"; prompt: AuthPromptEvent }
+	| { kind: "notice"; notification: AuthNotifyEvent }
+	| { kind: "completed"; provider: string }
+	| { kind: "cancelled"; provider?: string };
 
 /** Projects protocol events for display; it does not own runtime or session behavior. */
 export function createTuiStore(sessionId: string) {
@@ -52,8 +67,32 @@ export function createTuiStore(sessionId: string) {
 			running: false,
 			status: "ready",
 			configuredStatus: "",
+			wizard: { kind: "idle" },
 			apply(event) {
 				if (event.type === "session") return;
+				if (event.type === "providers")
+					return set({
+						wizard: { kind: "providers", providers: event.providers },
+					});
+				if (event.type === "models")
+					return set({ wizard: { kind: "models", models: event.models } });
+				if (event.type === "auth-prompt")
+					return set({ wizard: { kind: "prompt", prompt: event.prompt } });
+				if (event.type === "auth-notify")
+					return set({
+						wizard: { kind: "notice", notification: event.notification },
+					});
+				if (event.type === "auth-completed")
+					return set({
+						wizard: { kind: "completed", provider: event.provider },
+					});
+				if (event.type === "auth-cancelled")
+					return set({
+						wizard: {
+							kind: "cancelled",
+							...(event.provider ? { provider: event.provider } : {}),
+						},
+					});
 				if (event.type === "command") {
 					if (event.command === "steer") {
 						if (event.state === "started")
@@ -101,7 +140,13 @@ export function createTuiStore(sessionId: string) {
 						...(event.isError === undefined ? {} : { error: event.isError }),
 					});
 				if (event.type === "error") {
-					set({ running: false });
+					set((state) => ({
+						running: false,
+						wizard:
+							state.wizard.kind === "idle"
+								? state.wizard
+								: { kind: "cancelled" },
+					}));
 					return append({ kind: "error", text: event.message, error: true });
 				}
 				if (event.type === "usage" && showStatus)
@@ -150,6 +195,9 @@ export function createTuiStore(sessionId: string) {
 					followUps: state.followUps.filter((followUp) => followUp.id !== id),
 				}));
 			},
+			clearWizard() {
+				set({ wizard: { kind: "idle" } });
+			},
 		};
 	});
 }
@@ -161,11 +209,13 @@ export type TuiState = {
 	running: boolean;
 	status: string;
 	configuredStatus: string;
+	wizard: WizardState;
 	apply: (event: ServerEvent) => void;
 	addUser: (text: string) => void;
 	addSteering: (id: string, text: string) => void;
 	addFollowUp: (id: string, text: string) => void;
 	removeCommand: (id: string) => void;
+	clearWizard: () => void;
 };
 
 function finishActive(entries: TranscriptEntry[]): TranscriptEntry[] {
@@ -186,15 +236,13 @@ export function parseModelStatus(status: string): string | undefined {
 }
 
 export function commandForInput(text: string): ClientCommand {
-	const match = text.match(
-		/^\/model\s+(openai-codex|openai-compatible)\s+(\S+)(?:\s+(\S+))?$/,
-	);
+	const match = text.match(/^\/model\s+(\S+)\s+(\S+)(?:\s+(\S+))?$/);
 	if (!match) return { type: "steer", text };
 	const [, provider, model, baseUrl] = match;
 	if (!provider || !model) return { type: "steer", text };
 	return {
 		type: "configure",
-		provider: provider as "openai-codex" | "openai-compatible",
+		provider,
 		model,
 		...(baseUrl ? { baseUrl } : {}),
 	};

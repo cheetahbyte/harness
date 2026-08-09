@@ -2,7 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ServerEvent } from "../../shared/src/protocol";
+import type { AuthType, ServerEvent } from "../../shared/src/protocol";
+import type { AuthInteraction } from "@earendil-works/pi-ai";
+import { JsonCredentialStore } from "../src/provider";
 import { HarnessServer } from "../src/server";
 import { SessionStore } from "../src/session-store";
 
@@ -20,7 +22,266 @@ function harness() {
 	};
 }
 
+function fakeModels() {
+	const fakeProvider = {
+		id: "fake",
+		name: "Fake",
+		auth: { apiKey: { name: "Fake API key", login: async () => ({}) } },
+	};
+	const fakeModel = {
+		id: "model-1",
+		name: "Model 1",
+		provider: "fake",
+	};
+	return {
+		getProviders: () => [fakeProvider],
+		getProvider: (provider: string) =>
+			provider === "fake" ? fakeProvider : undefined,
+		getModels: (provider?: string) =>
+			provider && provider !== "fake" ? [] : [fakeModel],
+		getModel: (provider: string, model: string) =>
+			provider === "fake" && model === "model-1" ? fakeModel : undefined,
+		checkAuth: async (provider: string) =>
+			provider === "fake" ? { type: "api_key" as const, source: "stored" } : undefined,
+		getAvailable: async () => [fakeModel],
+		login: async (
+			_provider: string,
+			_type: AuthType,
+			interaction: AuthInteraction,
+		) => ({
+			type: "api_key" as const,
+			key: await interaction.prompt({ type: "secret", message: "API key" }),
+		}),
+		refresh: async () => ({ aborted: false, errors: new Map() }),
+	};
+}
+
+async function until(assertion: () => void): Promise<void> {
+	for (let attempts = 0; attempts < 20; attempts++) {
+		try {
+			assertion();
+			return;
+		} catch {
+			await Bun.sleep(1);
+		}
+	}
+	assertion();
+}
+
 describe("first milestone", () => {
+	test("does not persist a credential after its queued write is cancelled", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const credentials = new JsonCredentialStore(join(dir, "auth.json"));
+		let release!: () => void;
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const first = credentials.modify("first", async () => {
+			await blocked;
+			return { type: "api_key", key: "first" };
+		});
+		const controller = new AbortController();
+		const cancelled = credentials.modify(
+			"cancelled",
+			async () => ({ type: "api_key", key: "must-not-land" }),
+			{ signal: controller.signal },
+		);
+		controller.abort();
+		release();
+		await first;
+		await expect(cancelled).rejects.toThrow();
+		expect(await credentials.read("cancelled")).toBeUndefined();
+		await credentials.modify("after", async () => ({
+			type: "api_key",
+			key: "still-works",
+		}));
+		expect(await credentials.read("after")).toEqual({
+			type: "api_key",
+			key: "still-works",
+		});
+		expect(await credentials.modify("after", async () => undefined)).toEqual({
+			type: "api_key",
+			key: "still-works",
+		});
+	});
+
+	test("lists transient configured provider and model catalogs", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			fakeModels(),
+		);
+		const id = server.createSession();
+		const events: ServerEvent[] = [];
+		server.subscribe(id, (event) => events.push(event));
+
+		await server.command(id, { type: "list-providers" });
+		await server.command(id, { type: "list-models" });
+
+		expect(events).toContainEqual({
+			type: "providers",
+			providers: [
+				{
+					id: "fake",
+					name: "Fake",
+					authTypes: ["api_key"],
+					configured: true,
+				},
+			],
+		});
+		expect(events).toContainEqual({
+			type: "models",
+			models: [
+				{
+					provider: "fake",
+					providerName: "Fake",
+					id: "model-1",
+					name: "Model 1",
+				},
+			],
+		});
+		expect(server.store.events(id)).toEqual([]);
+	});
+
+	test("persists a selected non-OpenAI model", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			fakeModels(),
+		);
+		const id = server.createSession();
+
+		await server.command(id, {
+			type: "configure",
+			provider: "fake",
+			model: "model-1",
+		});
+
+		expect(server.store.modelConfig(id)).toEqual({
+			provider: "fake",
+			model: "model-1",
+		});
+	});
+
+	test("rejects an unknown model before persisting it", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			fakeModels(),
+		);
+		const id = server.createSession();
+		await expect(
+			server.command(id, {
+				type: "configure",
+				provider: "fake",
+				model: "missing",
+			}),
+		).rejects.toThrow("unknown model fake/missing");
+		expect(server.store.modelConfig(id)).toBeUndefined();
+	});
+
+	test("relays a login prompt without persisting its answer", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			fakeModels(),
+		);
+		const id = server.createSession();
+		const events: ServerEvent[] = [];
+		server.subscribe(id, (event) => events.push(event));
+
+		await server.command(id, {
+			type: "login",
+			provider: "fake",
+			authType: "api_key",
+		});
+		const prompt = events.find((event) => event.type === "auth-prompt");
+		expect(prompt).toBeDefined();
+		if (!prompt || prompt.type !== "auth-prompt") throw new Error("missing prompt");
+		await server.command(id, {
+			type: "auth-answer",
+			promptId: prompt.prompt.id,
+			value: "never persist this",
+		});
+		await until(() =>
+			expect(events).toContainEqual({ type: "auth-completed", provider: "fake" }),
+		);
+		expect(server.store.events(id)).toEqual([]);
+	});
+
+	test("closes a failed login transiently", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const models = fakeModels();
+		models.login = async () => {
+			throw new Error("login failed");
+		};
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			models,
+		);
+		const id = server.createSession();
+		const events: ServerEvent[] = [];
+		server.subscribe(id, (event) => events.push(event));
+
+		await server.command(id, {
+			type: "login",
+			provider: "fake",
+			authType: "api_key",
+		});
+		await until(() =>
+			expect(events).toContainEqual({
+				type: "auth-cancelled",
+				provider: "fake",
+			}),
+		);
+		expect(events).toContainEqual({ type: "error", message: "login failed" });
+		expect(server.store.events(id)).toEqual([]);
+	});
+
+	test("cancels one login and rejects a concurrent login", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			fakeModels(),
+		);
+		const id = server.createSession();
+		const events: ServerEvent[] = [];
+		server.subscribe(id, (event) => events.push(event));
+
+		await server.command(id, {
+			type: "login",
+			provider: "fake",
+			authType: "api_key",
+		});
+		await server.command(id, {
+			type: "login",
+			provider: "fake",
+			authType: "api_key",
+		});
+		expect(events).toContainEqual({
+			type: "error",
+			message: "a login is already in progress",
+		});
+		await server.command(id, { type: "auth-cancel" });
+		await until(() =>
+			expect(events).toContainEqual({ type: "auth-cancelled", provider: "fake" }),
+		);
+		expect(server.store.events(id)).toEqual([]);
+	});
+
 	test("does not run slash tool shortcuts without a configured model", async () => {
 		const { server } = harness();
 		const id = server.createSession();
@@ -28,7 +289,7 @@ describe("first milestone", () => {
 		expect(server.store.events(id)).toContainEqual({
 			type: "error",
 			message:
-				"no model configured; use /model <openai-codex|openai-compatible> <model> [base-url]",
+				"no model configured; use /model",
 		});
 	});
 

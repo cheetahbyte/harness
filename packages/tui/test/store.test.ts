@@ -129,4 +129,33 @@ describe("TUI protocol store", () => {
 			store.getState().entries.some((entry) => entry.id === "steer-2"),
 		).toBe(false);
 	});
+
+	test("projects catalog and authentication events into transient wizard state", () => {
+		const store = createTuiStore("session");
+		store.getState().apply({
+			type: "providers",
+			providers: [
+				{
+					id: "openai-codex",
+					name: "OpenAI Codex",
+					authTypes: ["oauth"],
+					configured: true,
+				},
+			],
+		});
+		expect(store.getState().wizard).toMatchObject({ kind: "providers" });
+		store.getState().apply({
+			type: "auth-prompt",
+			prompt: { id: "prompt-1", type: "secret", message: "API key" },
+		});
+		expect(store.getState().wizard).toMatchObject({
+			kind: "prompt",
+			prompt: { id: "prompt-1", type: "secret" },
+		});
+		expect(store.getState().entries).toEqual([]);
+		store.getState().apply({ type: "error", message: "login failed" });
+		expect(store.getState().wizard).toEqual({ kind: "cancelled" });
+		store.getState().clearWizard();
+		expect(store.getState().wizard).toEqual({ kind: "idle" });
+	});
 });

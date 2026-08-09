@@ -3,12 +3,12 @@ import {
 	type AgentEvent,
 	type AgentTool,
 } from "@earendil-works/pi-agent-core";
+import type { CredentialStore, Models } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { ServerEvent } from "../../shared/src/protocol";
 import {
 	type HarnessModelConfig,
 	HarnessProviderError,
-	type JsonCredentialStore,
 	providerModels,
 } from "./provider";
 import type { CoreTools, ToolRequest } from "./tools";
@@ -45,7 +45,8 @@ export class HarnessAgentRuntime implements AgentRuntime {
 	private readonly agents = new Map<string, AgentEntry>();
 	constructor(
 		private readonly tools: CoreTools,
-		private readonly credentials: JsonCredentialStore,
+		private readonly credentials: CredentialStore,
+		private readonly models: Models,
 	) {}
 
 	async run(
@@ -57,13 +58,17 @@ export class HarnessAgentRuntime implements AgentRuntime {
 	): Promise<void> {
 		if (!config)
 			throw new HarnessProviderError(
-				"no model configured; use /model <openai-codex|openai-compatible> <model> [base-url]",
+				"no model configured; use /model",
 				"configuration",
 			);
 		const key = JSON.stringify(config);
 		let entry = this.agents.get(sessionId);
 		if (!entry || entry.key !== key) {
-			const { models, model } = providerModels(config, this.credentials);
+			const { models, model } = providerModels(
+				config,
+				this.credentials,
+				this.models,
+			);
 			const agent = new Agent({
 				initialState: {
 					model,

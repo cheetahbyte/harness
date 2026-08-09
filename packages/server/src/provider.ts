@@ -1,18 +1,22 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
+	type AuthOperationOptions,
 	type Credential,
 	type CredentialInfo,
 	type CredentialStore,
+	createModels,
 	createProvider,
 	type Model,
+	type Models,
+	type MutableModels,
 } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 
 export type HarnessModelConfig = {
-	provider: "openai-codex" | "openai-compatible";
+	provider: string;
 	model: string;
 	baseUrl?: string;
 };
@@ -41,10 +45,17 @@ export class JsonCredentialStore implements CredentialStore {
 			throw error;
 		}
 	}
-	async read(providerId: string): Promise<Credential | undefined> {
+	async read(
+		providerId: string,
+		options?: AuthOperationOptions,
+	): Promise<Credential | undefined> {
+		options?.signal?.throwIfAborted();
 		return (await this.data())[providerId];
 	}
-	async list(): Promise<readonly CredentialInfo[]> {
+	async list(
+		options?: AuthOperationOptions,
+	): Promise<readonly CredentialInfo[]> {
+		options?.signal?.throwIfAborted();
 		return Object.entries(await this.data()).map(
 			([providerId, credential]) => ({ providerId, type: credential.type }),
 		);
@@ -52,46 +63,70 @@ export class JsonCredentialStore implements CredentialStore {
 	async modify(
 		providerId: string,
 		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+		options?: AuthOperationOptions,
 	): Promise<Credential | undefined> {
 		let result: Credential | undefined;
-		this.chain = this.chain.then(async () => {
+		const operation = this.chain.then(async () => {
+			options?.signal?.throwIfAborted();
 			const data = await this.data();
 			result = await fn(data[providerId]);
-			if (result) data[providerId] = result;
+			options?.signal?.throwIfAborted();
+			if (result !== undefined) data[providerId] = result;
+			else result = data[providerId];
 			await mkdir(dirname(this.path), { recursive: true });
 			const temp = `${this.path}.${crypto.randomUUID()}`;
 			await writeFile(temp, JSON.stringify(data), { mode: 0o600 });
 			await rename(temp, this.path);
 			await chmod(this.path, 0o600);
 		});
-		await this.chain;
+		this.chain = operation.then(
+			() => {},
+			() => {},
+		);
+		await operation;
 		return result;
 	}
-	async delete(providerId: string): Promise<void> {
-		this.chain = this.chain.then(async () => {
+	async delete(
+		providerId: string,
+		options?: AuthOperationOptions,
+	): Promise<void> {
+		const operation = this.chain.then(async () => {
+			options?.signal?.throwIfAborted();
 			const data = await this.data();
 			delete data[providerId];
+			options?.signal?.throwIfAborted();
 			await mkdir(dirname(this.path), { recursive: true });
 			const temp = `${this.path}.${crypto.randomUUID()}`;
 			await writeFile(temp, JSON.stringify(data), { mode: 0o600 });
 			await rename(temp, this.path);
 			await chmod(this.path, 0o600);
 		});
-		await this.chain;
+		this.chain = operation.then(
+			() => {},
+			() => {},
+		);
+		await operation;
 	}
+}
+
+/** One shared Pi registry powers catalogs, login, and built-in runtime models. */
+export function createHarnessModels(
+	credentials: CredentialStore,
+): MutableModels {
+	registerBunOAuthFlows();
+	return builtinModels({ credentials });
 }
 
 export function providerModels(
 	config: HarnessModelConfig,
 	credentials: CredentialStore,
+	models: Models,
 ) {
-	registerBunOAuthFlows();
 	if (!config.model)
 		throw new HarnessProviderError(
-			"select a model with /model <openai-codex|openai-compatible> <model> [base-url]",
+			"select a model with /model",
 			"configuration",
 		);
-	const models = builtinModels({ credentials });
 	if (config.provider === "openai-compatible") {
 		if (!config.baseUrl)
 			throw new HarnessProviderError(
@@ -110,7 +145,8 @@ export function providerModels(
 			contextWindow: 128_000,
 			maxTokens: 16_384,
 		};
-		models.setProvider(
+		const customModels = createModels({ credentials });
+		customModels.setProvider(
 			createProvider({
 				id: "openai-compatible",
 				name: "OpenAI-compatible",
@@ -131,11 +167,18 @@ export function providerModels(
 				api: openAICompletionsApi(),
 			}),
 		);
+		const configuredModel = customModels.getModel(
+			config.provider,
+			config.model,
+		);
+		if (!configuredModel)
+			throw new HarnessProviderError("unknown OpenAI-compatible model");
+		return { models: customModels, model: configuredModel };
 	}
 	const model = models.getModel(config.provider, config.model);
 	if (!model)
 		throw new HarnessProviderError(
-			`unknown model ${config.provider}/${config.model}`,
+			`unknown model ${config.provider}/${config.model}; use /model`,
 			"configuration",
 		);
 	return { models, model };

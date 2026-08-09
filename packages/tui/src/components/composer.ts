@@ -9,6 +9,7 @@ import {
 import type { FollowUp } from "../store";
 
 const slashCommands = [
+	{ name: "/login", description: "Configure provider authentication" },
 	{ name: "/model", description: "Configure provider and model" },
 ];
 
@@ -85,6 +86,12 @@ export class ComposerView {
 		return this.input.value;
 	}
 
+	setActive(active: boolean) {
+		this.root.visible = active;
+		if (active) this.input.focus();
+		else this.input.blur();
+	}
+
 	update(followUps: FollowUp[]) {
 		this.hasFollowUps = followUps.length > 0;
 		this.queue.content = followUps
@@ -115,6 +122,7 @@ export class ComposerView {
 	}
 
 	private handleKey = (key: KeyEvent) => {
+		if (key.defaultPrevented) return;
 		if (this.suggestions.visible) {
 			if (key.name === "up" || key.name === "down") {
 				const direction = key.name === "up" ? -1 : 1;
@@ -125,9 +133,17 @@ export class ComposerView {
 				key.preventDefault();
 				return;
 			}
-			if (key.name === "tab" || key.name === "return") {
+			if (key.name === "tab") {
 				this.input.value = `${this.matches[this.selectedSuggestion]?.name ?? ""} `;
+				this.syncSuggestions(this.input.value);
 				key.preventDefault();
+				return;
+			}
+			if (key.name === "return") {
+				this.input.value = this.matches[this.selectedSuggestion]?.name ?? "";
+				this.syncSuggestions(this.input.value);
+				key.preventDefault();
+				this.submit(false);
 				return;
 			}
 		}

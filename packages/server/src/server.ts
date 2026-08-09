@@ -1,29 +1,95 @@
 import { resolve } from "node:path";
-import type { ClientCommand, ServerEvent } from "../../shared/src/protocol";
+import type {
+	AuthEvent,
+	AuthInteraction,
+	AuthPrompt,
+	CredentialStore,
+	Models,
+} from "@earendil-works/pi-ai";
+import type {
+	AuthNotifyEvent,
+	AuthPromptEvent,
+	AuthType,
+	ClientCommand,
+	ModelOption,
+	ProviderOption,
+	ServerEvent,
+} from "../../shared/src/protocol";
 import { HarnessAgentRuntime } from "./agent-runtime";
-import { JsonCredentialStore } from "./provider";
+import {
+	createHarnessModels,
+	JsonCredentialStore,
+	providerModels,
+} from "./provider";
 import { SessionStore } from "./session-store";
 import { CoreTools } from "./tools";
 
 type PendingCommand = { id: string; type: "steer" | "follow-up"; text: string };
+type Login = {
+	provider: string;
+	controller: AbortController;
+	prompt?: {
+		id: string;
+		resolve: (value: string) => void;
+		reject: (reason: Error) => void;
+	};
+};
 type Session = {
 	listeners: Set<(event: ServerEvent) => void>;
 	running?: AbortController;
 	followUps: PendingCommand[];
 	pendingSteer?: PendingCommand;
+	login?: Login;
+};
+
+type RegistryProvider = {
+	id: string;
+	name: string;
+	auth: {
+		apiKey?: { login?: unknown };
+		oauth?: { login?: unknown };
+	};
+};
+type ModelRegistry = {
+	getProviders(): readonly RegistryProvider[];
+	getProvider(id: string): RegistryProvider | undefined;
+	getModels(provider?: string): readonly {
+		id: string;
+		name: string;
+		provider: string;
+	}[];
+	getModel(provider: string, model: string): unknown;
+	checkAuth(provider: string): Promise<{ type: AuthType } | undefined>;
+	getAvailable(
+		provider?: string,
+	): Promise<readonly { id: string; name: string; provider: string }[]>;
+	login(
+		provider: string,
+		type: AuthType,
+		interaction: AuthInteraction,
+	): Promise<unknown>;
+	refresh(options?: { providers?: readonly string[] }): Promise<unknown>;
 };
 
 export class HarnessServer {
 	private readonly sessions = new Map<string, Session>();
 	private readonly runtime: HarnessAgentRuntime;
+	private readonly credentials: CredentialStore;
+	private readonly models: ModelRegistry;
 
 	constructor(
 		readonly store = new SessionStore(),
 		workspace = process.cwd(),
+		models?: ModelRegistry,
 	) {
+		this.credentials = new JsonCredentialStore(
+			resolve(workspace, ".harness/auth.json"),
+		);
+		this.models = models ?? createHarnessModels(this.credentials);
 		this.runtime = new HarnessAgentRuntime(
 			new CoreTools(resolve(workspace)),
-			new JsonCredentialStore(resolve(workspace, ".harness/auth.json")),
+			this.credentials,
+			this.models as Models,
 		);
 	}
 
@@ -42,6 +108,29 @@ export class HarnessServer {
 
 	async command(id: string, command: ClientCommand): Promise<void> {
 		const session = this.session(id);
+		if (command.type === "list-providers") {
+			await this.listProviders(id, command.authType);
+			return;
+		}
+		if (command.type === "list-models") {
+			await this.listModels(id, command.provider);
+			return;
+		}
+		if (command.type === "login") {
+			this.startLogin(id, command.provider, command.authType);
+			return;
+		}
+		if (command.type === "auth-answer") {
+			const prompt = session.login?.prompt;
+			if (prompt?.id !== command.promptId) return;
+			if (session.login) delete session.login.prompt;
+			prompt.resolve(command.value);
+			return;
+		}
+		if (command.type === "auth-cancel") {
+			this.cancelLogin(id);
+			return;
+		}
 		if (command.type === "abort") {
 			session.running?.abort();
 			return;
@@ -53,6 +142,7 @@ export class HarnessServer {
 				model: command.model,
 				...(command.baseUrl ? { baseUrl: command.baseUrl } : {}),
 			};
+			providerModels(config, this.credentials, this.models as Models);
 			this.store.setModelConfig(id, config);
 			this.runtime.forget(id);
 			this.emit(id, {
@@ -138,6 +228,185 @@ export class HarnessServer {
 			return;
 		}
 		await this.run(id, command.text);
+	}
+
+	private async listProviders(id: string, authType?: AuthType): Promise<void> {
+		const providers = await Promise.all(
+			this.models
+				.getProviders()
+				.map(async (provider): Promise<ProviderOption | undefined> => {
+					const authTypes = interactiveAuthTypes(provider.auth);
+					if (!authTypes.length || (authType && !authTypes.includes(authType)))
+						return undefined;
+					const configured = await this.models
+						.checkAuth(provider.id)
+						.then(Boolean)
+						.catch(() => false);
+					return {
+						id: provider.id,
+						name: provider.name,
+						authTypes,
+						configured,
+					};
+				}),
+		);
+		this.publish(
+			id,
+			{
+				type: "providers",
+				providers: providers
+					.filter((provider): provider is ProviderOption => !!provider)
+					.sort((a, b) => a.name.localeCompare(b.name)),
+			},
+			false,
+		);
+	}
+
+	private async listModels(id: string, provider?: string): Promise<void> {
+		const models = await this.models.getAvailable(provider);
+		const options: ModelOption[] = models.map((model) => ({
+			provider: model.provider,
+			providerName:
+				this.models.getProvider(model.provider)?.name ?? model.provider,
+			id: model.id,
+			name: model.name,
+		}));
+		options.sort(
+			(a, b) =>
+				a.providerName.localeCompare(b.providerName) ||
+				a.name.localeCompare(b.name),
+		);
+		this.publish(id, { type: "models", models: options }, false);
+	}
+
+	private startLogin(id: string, providerId: string, authType: AuthType): void {
+		const session = this.session(id);
+		if (session.login) {
+			this.publish(
+				id,
+				{ type: "error", message: "a login is already in progress" },
+				false,
+			);
+			return;
+		}
+		const provider = this.models.getProvider(providerId);
+		if (!provider) {
+			this.publish(
+				id,
+				{ type: "error", message: `unknown provider ${providerId}` },
+				false,
+			);
+			return;
+		}
+		if (!interactiveAuthTypes(provider.auth).includes(authType)) {
+			this.publish(
+				id,
+				{
+					type: "error",
+					message: `${provider.name} does not support ${authType} login`,
+				},
+				false,
+			);
+			return;
+		}
+		const login: Login = {
+			provider: providerId,
+			controller: new AbortController(),
+		};
+		session.login = login;
+		void this.completeLogin(id, login, authType);
+	}
+
+	private async completeLogin(
+		id: string,
+		login: Login,
+		authType: AuthType,
+	): Promise<void> {
+		try {
+			await this.models.login(login.provider, authType, {
+				signal: login.controller.signal,
+				prompt: (prompt) => this.promptForLogin(id, login, prompt),
+				notify: (notification) =>
+					this.publish(
+						id,
+						{
+							type: "auth-notify",
+							notification: serializeNotification(notification),
+						},
+						false,
+					),
+			});
+			if (login.controller.signal.aborted || this.session(id).login !== login)
+				return;
+			await this.models.refresh({ providers: [login.provider] });
+			if (this.session(id).login === login)
+				this.publish(
+					id,
+					{ type: "auth-completed", provider: login.provider },
+					false,
+				);
+		} catch (error) {
+			if (
+				!login.controller.signal.aborted &&
+				this.session(id).login === login
+			) {
+				this.publish(
+					id,
+					{
+						type: "error",
+						message: error instanceof Error ? error.message : String(error),
+					},
+					false,
+				);
+				this.publish(
+					id,
+					{ type: "auth-cancelled", provider: login.provider },
+					false,
+				);
+			}
+		} finally {
+			if (this.session(id).login === login) delete this.session(id).login;
+		}
+	}
+
+	private promptForLogin(
+		id: string,
+		login: Login,
+		prompt: AuthPrompt,
+	): Promise<string> {
+		if (login.controller.signal.aborted) return Promise.reject(abortError());
+		if (login.prompt)
+			return Promise.reject(new Error("login already has a pending prompt"));
+		const promptId = crypto.randomUUID();
+		return new Promise((resolve, reject) => {
+			login.prompt = { id: promptId, resolve, reject };
+			const cancel = () => {
+				if (login.prompt?.id !== promptId) return;
+				delete login.prompt;
+				reject(abortError());
+			};
+			login.controller.signal.addEventListener("abort", cancel, { once: true });
+			prompt.signal?.addEventListener("abort", cancel, { once: true });
+			this.publish(
+				id,
+				{ type: "auth-prompt", prompt: serializePrompt(promptId, prompt) },
+				false,
+			);
+		});
+	}
+
+	private cancelLogin(id: string): void {
+		const session = this.session(id);
+		const login = session.login;
+		if (!login) return;
+		delete session.login;
+		login.controller.abort();
+		login.prompt?.reject(abortError());
+		this.publish(
+			id,
+			{ type: "auth-cancelled", provider: login.provider },
+			false,
+		);
 	}
 
 	private async run(
@@ -227,9 +496,58 @@ export class HarnessServer {
 	}
 
 	private emit(id: string, event: ServerEvent): void {
-		this.store.append(id, event);
+		this.publish(id, event);
+	}
+
+	private publish(id: string, event: ServerEvent, persist = true): void {
+		if (persist) this.store.append(id, event);
 		for (const listener of this.session(id).listeners) listener(event);
 	}
+}
+
+function interactiveAuthTypes(auth: RegistryProvider["auth"]): AuthType[] {
+	return [
+		...(auth.oauth?.login ? (["oauth"] as const) : []),
+		...(auth.apiKey?.login ? (["api_key"] as const) : []),
+	];
+}
+
+function serializePrompt(id: string, prompt: AuthPrompt): AuthPromptEvent {
+	if (prompt.type === "select")
+		return {
+			id,
+			type: prompt.type,
+			message: prompt.message,
+			options: prompt.options.map((option) => ({ ...option })),
+		};
+	return {
+		id,
+		type: prompt.type,
+		message: prompt.message,
+		...(prompt.placeholder ? { placeholder: prompt.placeholder } : {}),
+	};
+}
+
+function serializeNotification(event: AuthEvent): AuthNotifyEvent {
+	if (event.type === "info")
+		return {
+			type: event.type,
+			message: event.message,
+			...(event.links
+				? { links: event.links.map((link) => ({ ...link })) }
+				: {}),
+		};
+	if (event.type === "device_code")
+		return {
+			type: event.type,
+			userCode: event.userCode,
+			verificationUri: event.verificationUri,
+		};
+	return event;
+}
+
+function abortError(): Error {
+	return new DOMException("login cancelled", "AbortError");
 }
 
 export function serveHarness(
@@ -266,6 +584,7 @@ export function serveHarness(
 								"abort",
 								() => {
 									unsubscribe();
+									void harness.command(id, { type: "auth-cancel" });
 									controller.close();
 								},
 								{ once: true },
