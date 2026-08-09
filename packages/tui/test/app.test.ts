@@ -37,6 +37,65 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("scrolls a long transcript entry instead of clipping it to the viewport", async () => {
+		const store = createTuiStore("session-1");
+		store.getState().apply({
+			type: "assistant-delta",
+			text: "word ".repeat(2_000),
+		});
+		const view = await createTestRenderer({
+			width: 40,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			await view.flush();
+			const transcript = (
+				app as unknown as {
+					transcript: { root: { scrollHeight: number; height: number } };
+				}
+			).transcript;
+			expect(transcript.root.scrollHeight).toBeGreaterThan(transcript.root.height);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("keeps the composer usable in a short terminal", async () => {
+		const store = createTuiStore("session-1");
+		store.getState().apply({
+			type: "assistant-delta",
+			text: "word ".repeat(2_000),
+		});
+		const view = await createTestRenderer({
+			width: 40,
+			height: 6,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			await view.flush();
+			const layout = app as unknown as {
+				header: { root: { visible: boolean } };
+				footer: { root: { visible: boolean } };
+				composer: { root: { height: number } };
+			};
+			expect(layout.header.root.visible).toBe(false);
+			expect(layout.footer.root.visible).toBe(false);
+			expect(layout.composer.root.height).toBe(2);
+			view.resize(40, 20);
+			await view.flush();
+			expect(layout.header.root.visible).toBe(true);
+			expect(layout.footer.root.visible).toBe(true);
+			expect(layout.composer.root.height).toBe(3);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("Escape aborts even when the composer has text", async () => {
 		const store = createTuiStore("session-1");
 		const sent: string[] = [];

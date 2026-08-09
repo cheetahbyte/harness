@@ -18,6 +18,7 @@ export class TranscriptView {
 		this.root = new ScrollBoxRenderable(renderer, {
 			width: "100%",
 			flexGrow: 1,
+			flexBasis: 0,
 			stickyScroll: true,
 			stickyStart: "bottom",
 			viewportCulling: true,
@@ -40,6 +41,7 @@ export class TranscriptView {
 			const text = new TextRenderable(this.renderer, {
 				content: formatEntry(entry),
 				fg: entryColor(entry),
+				flexGrow: 1,
 			});
 			const row = new BoxRenderable(this.renderer, {
 				width: "100%",

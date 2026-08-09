@@ -12,6 +12,9 @@ export class ComposerView {
 	readonly root: BoxRenderable;
 	private readonly input: InputRenderable;
 	private readonly queue: TextRenderable;
+	private readonly inputRow: BoxRenderable;
+	private hasFollowUps = false;
+	private compact = false;
 
 	constructor(
 		private readonly renderer: CliRenderer,
@@ -30,7 +33,7 @@ export class ComposerView {
 			fg: "#8b8d98",
 			marginBottom: 1,
 		});
-		const inputRow = new BoxRenderable(renderer, {
+		this.inputRow = new BoxRenderable(renderer, {
 			width: "100%",
 			height: 3,
 			flexDirection: "row",
@@ -40,7 +43,7 @@ export class ComposerView {
 			paddingLeft: 1,
 			paddingRight: 1,
 		});
-		inputRow.add(
+		this.inputRow.add(
 			new TextRenderable(renderer, {
 				content: "›",
 				fg: "#cdd6f4",
@@ -55,9 +58,9 @@ export class ComposerView {
 			focusedBackgroundColor: "transparent",
 		});
 		this.input.on(InputRenderableEvents.ENTER, () => this.submit(false));
-		inputRow.add(this.input);
+		this.inputRow.add(this.input);
 		this.root.add(this.queue);
-		this.root.add(inputRow);
+		this.root.add(this.inputRow);
 		renderer.keyInput.prependListener("keypress", this.handleKey);
 		this.input.focus();
 	}
@@ -67,12 +70,27 @@ export class ComposerView {
 	}
 
 	update(followUps: FollowUp[]) {
+		this.hasFollowUps = followUps.length > 0;
 		this.queue.content = followUps
 			.map(
 				(followUp, index) =>
 					`${followUp.sending ? "sending" : `${index + 1} queued`} · ${followUp.text}`,
 			)
 			.join("\n");
+		this.syncQueueVisibility();
+	}
+
+	setCompact(compact: boolean) {
+		this.compact = compact;
+		this.syncQueueVisibility();
+		this.root.minHeight = compact ? 2 : 3;
+		this.root.marginTop = compact ? 0 : 1;
+		this.inputRow.height = compact ? 2 : 3;
+		this.inputRow.border = compact ? ["top"] : ["top", "bottom"];
+	}
+
+	private syncQueueVisibility() {
+		this.queue.visible = this.hasFollowUps && !this.compact;
 	}
 
 	destroy() {
