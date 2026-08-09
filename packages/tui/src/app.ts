@@ -206,13 +206,13 @@ export class TuiApp {
 		this.showSelect(
 			"Select provider to configure",
 			options.map((provider) => ({
-				name: `${provider.name} · ${provider.configured ? "configured" : "unconfigured"}`,
-				description: "",
+				name: provider.name,
+				description: provider.configured ? "configured" : "unconfigured",
 				value: provider.id,
 			})),
 			(option) => this.startLogin(option.value as string, flow.authType),
 			true,
-			true,
+			"inline",
 		);
 	}
 
@@ -244,6 +244,7 @@ export class TuiApp {
 				});
 			},
 			true,
+			"inline",
 		);
 	}
 
@@ -311,7 +312,7 @@ export class TuiApp {
 		options: SelectOption[],
 		select: (option: SelectOption) => void,
 		searchable = false,
-		inlineDescriptions = false,
+		descriptionLayout: "inline" | "two-line" = "two-line",
 	) {
 		this.openWizard();
 		this.wizard.show(
@@ -320,7 +321,7 @@ export class TuiApp {
 				title,
 				options,
 				...(searchable ? { searchable } : {}),
-				...(inlineDescriptions ? { inlineDescriptions } : {}),
+				...(descriptionLayout === "inline" ? { descriptionLayout } : {}),
 			},
 			{ select, cancel: () => this.escape() },
 		);

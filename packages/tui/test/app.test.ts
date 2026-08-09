@@ -316,6 +316,7 @@ describe("OpenTUI app", () => {
 				],
 			});
 			await view.flush();
+			expect(view.captureCharFrame()).toContain("GPT-5.6 Sol · OpenAI Codex");
 			view.mockInput.pressEnter();
 			await view.flush();
 			expect(sent.at(-1)).toEqual({

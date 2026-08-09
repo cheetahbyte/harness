@@ -16,7 +16,7 @@ export type WizardScreen =
 			title: string;
 			options: SelectOption[];
 			searchable?: boolean;
-			inlineDescriptions?: boolean;
+			descriptionLayout?: "inline" | "two-line";
 	  }
 	| { kind: "input"; title: string; placeholder?: string; secret?: boolean }
 	| { kind: "notice"; title: string; text: string };
@@ -36,10 +36,19 @@ export class WizardView {
 	private readonly input: InputRenderable;
 	private readonly secretMask: TextRenderable;
 	private readonly select: SelectRenderable;
+	private readonly inlineSelect: BoxRenderable;
+	private readonly inlineRows: {
+		root: BoxRenderable;
+		indicator: TextRenderable;
+		name: TextRenderable;
+		description: TextRenderable;
+	}[];
 	private readonly footer: TextRenderable;
 	private screen: WizardScreen | undefined;
 	private actions: WizardActions | undefined;
 	private allOptions: SelectOption[] = [];
+	private inlineOptions: SelectOption[] = [];
+	private inlineSelected = 0;
 
 	constructor(private readonly renderer: CliRenderer) {
 		this.root = new BoxRenderable(renderer, {
@@ -100,6 +109,28 @@ export class WizardView {
 			showScrollIndicator: true,
 			visible: false,
 		});
+		this.inlineSelect = new BoxRenderable(renderer, {
+			width: "100%",
+			height: 5,
+			flexDirection: "column",
+			visible: false,
+		});
+		this.inlineRows = Array.from({ length: 5 }, () => {
+			const root = new BoxRenderable(renderer, {
+				width: "100%",
+				height: 1,
+				flexDirection: "row",
+				visible: false,
+			});
+			const indicator = new TextRenderable(renderer, { width: 2 });
+			const name = new TextRenderable(renderer, {});
+			const description = new TextRenderable(renderer, {});
+			root.add(indicator);
+			root.add(name);
+			root.add(description);
+			this.inlineSelect.add(root);
+			return { root, indicator, name, description };
+		});
 		this.footer = new TextRenderable(renderer, {
 			content: "↑↓ navigate  ·  Enter select  ·  Esc cancel",
 			fg: "#6c7086",
@@ -109,6 +140,7 @@ export class WizardView {
 		this.root.add(this.message);
 		this.root.add(this.inputRow);
 		this.root.add(this.select);
+		this.root.add(this.inlineSelect);
 		this.root.add(this.footer);
 		this.input.on(InputRenderableEvents.INPUT, () => this.updateInput());
 		this.input.on(InputRenderableEvents.ENTER, () => {
@@ -133,9 +165,11 @@ export class WizardView {
 		this.inputRow.visible =
 			screen.kind === "input" ||
 			(screen.kind === "select" && !!screen.searchable);
-		this.select.visible = screen.kind === "select";
-		this.select.showDescription =
-			screen.kind !== "select" || !screen.inlineDescriptions;
+		const inlineDescriptions =
+			screen.kind === "select" && screen.descriptionLayout === "inline";
+		this.select.visible = screen.kind === "select" && !inlineDescriptions;
+		this.inlineSelect.visible = screen.kind === "select" && inlineDescriptions;
+		this.select.showDescription = !inlineDescriptions;
 		this.footer.content =
 			screen.kind === "notice"
 				? "Esc close"
@@ -155,12 +189,16 @@ export class WizardView {
 		this.allOptions = screen.kind === "select" ? screen.options : [];
 		this.select.options = this.allOptions;
 		this.select.selectedIndex = 0;
+		this.inlineOptions = this.allOptions;
+		this.inlineSelected = 0;
+		this.renderInlineOptions();
 		if (
 			screen.kind === "input" ||
 			(screen.kind === "select" && screen.searchable)
 		)
 			this.input.focus();
-		else if (screen.kind === "select") this.select.focus();
+		else if (screen.kind === "select" && !inlineDescriptions)
+			this.select.focus();
 	}
 
 	hide() {
@@ -181,14 +219,41 @@ export class WizardView {
 		}
 		if (this.screen?.kind !== "select" || !this.screen.searchable) return;
 		const query = this.input.value.toLowerCase();
-		this.select.options = this.allOptions.filter(({ name, description }) =>
+		const options = this.allOptions.filter(({ name, description }) =>
 			`${name} ${description}`.toLowerCase().includes(query),
 		);
-		this.select.selectedIndex = 0;
+		if (this.screen.descriptionLayout === "inline") {
+			this.inlineOptions = options;
+			this.inlineSelected = 0;
+			this.renderInlineOptions();
+		} else {
+			this.select.options = options;
+			this.select.selectedIndex = 0;
+		}
 	}
 
 	private handleKey = (key: KeyEvent) => {
 		if (!this.root.visible || key.defaultPrevented) return;
+		if (
+			this.screen?.kind === "select" &&
+			this.screen.descriptionLayout === "inline"
+		) {
+			if (key.name === "up") this.inlineSelected--;
+			else if (key.name === "down") this.inlineSelected++;
+			else if (key.name === "return") {
+				const option = this.inlineOptions[this.inlineSelected];
+				if (option) this.actions?.select?.(option);
+				key.preventDefault();
+				return;
+			} else return;
+			this.inlineSelected = Math.max(
+				0,
+				Math.min(this.inlineSelected, this.inlineOptions.length - 1),
+			);
+			this.renderInlineOptions();
+			key.preventDefault();
+			return;
+		}
 		if (this.screen?.kind === "select" && this.screen.searchable) {
 			if (key.name === "up") {
 				this.select.moveUp();
@@ -207,4 +272,28 @@ export class WizardView {
 			this.actions?.cancel();
 		}
 	};
+
+	private renderInlineOptions() {
+		const start = Math.max(
+			0,
+			Math.min(
+				this.inlineSelected - Math.floor(this.inlineRows.length / 2),
+				this.inlineOptions.length - this.inlineRows.length,
+			),
+		);
+		for (const [index, row] of this.inlineRows.entries()) {
+			const option = this.inlineOptions[start + index];
+			const selected = start + index === this.inlineSelected;
+			row.root.visible = !!option;
+			if (!option) continue;
+			row.indicator.content = selected ? "▶ " : "  ";
+			row.indicator.fg = selected ? "#89dceb" : "#cdd6f4";
+			row.name.content = option.name;
+			row.name.fg = selected ? "#89dceb" : "#cdd6f4";
+			row.description.content = option.description
+				? ` · ${option.description}`
+				: "";
+			row.description.fg = selected ? "#89b4fa" : "#6c7086";
+		}
+	}
 }
