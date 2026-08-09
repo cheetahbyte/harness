@@ -90,6 +90,7 @@ function formatEntry(entry: TranscriptEntry): string {
 function entryColor(entry: TranscriptEntry): string {
 	if (entry.error || entry.kind === "error") return "#f38ba8";
 	if (entry.kind === "reasoning") return "#a6adc8";
+	if (entry.kind === "completed") return "#8b8d98";
 	if (entry.kind.startsWith("tool")) return "#89b4fa";
 	if (entry.kind === "user") return "#cba6f7";
 	return "#cdd6f4";
