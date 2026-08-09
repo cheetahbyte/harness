@@ -1,38 +1,96 @@
-import { BoxRenderable, ScrollBoxRenderable, TextRenderable, type CliRenderer } from "@opentui/core";
+import {
+	BoxRenderable,
+	type CliRenderer,
+	ScrollBoxRenderable,
+	TextRenderable,
+} from "@opentui/core";
 import type { TranscriptEntry } from "../store";
 
 export class TranscriptView {
-  readonly root: ScrollBoxRenderable;
-  private readonly renderedEntries: TextRenderable[] = [];
+	readonly root: ScrollBoxRenderable;
+	private readonly renderedEntries: {
+		row: BoxRenderable;
+		text: TextRenderable;
+		gutter?: TextRenderable;
+	}[] = [];
 
-  constructor(private readonly renderer: CliRenderer) {
-    this.root = new ScrollBoxRenderable(renderer, { width: "100%", flexGrow: 1, stickyScroll: true, stickyStart: "bottom", viewportCulling: true, paddingRight: 1 });
-  }
+	constructor(private readonly renderer: CliRenderer) {
+		this.root = new ScrollBoxRenderable(renderer, {
+			width: "100%",
+			flexGrow: 1,
+			stickyScroll: true,
+			stickyStart: "bottom",
+			viewportCulling: true,
+			paddingRight: 1,
+		});
+	}
 
-  update(entries: TranscriptEntry[]) {
-    for (let index = this.renderedEntries.length; index < entries.length; index++) {
-      const entry = entries[index];
-      const text = new TextRenderable(this.renderer, { content: formatEntry(entry), fg: entryColor(entry) });
-      const row = new BoxRenderable(this.renderer, { width: "100%", marginBottom: 1 });
-      row.add(text);
-      this.root.add(row);
-      this.renderedEntries.push(text);
-    }
-    const last = entries.at(-1);
-    const renderedLast = this.renderedEntries.at(-1);
-    if (last && renderedLast) renderedLast.content = formatEntry(last);
-  }
+	update(entries: TranscriptEntry[]) {
+		if (entries.length < this.renderedEntries.length) {
+			for (const { row } of this.renderedEntries) this.root.remove(row);
+			this.renderedEntries.length = 0;
+		}
+		for (
+			let index = this.renderedEntries.length;
+			index < entries.length;
+			index++
+		) {
+			const entry = entries[index];
+			const text = new TextRenderable(this.renderer, {
+				content: formatEntry(entry),
+				fg: entryColor(entry),
+			});
+			const row = new BoxRenderable(this.renderer, {
+				width: "100%",
+				marginBottom: 1,
+				flexDirection: "row",
+			});
+			const gutter =
+				entry.kind === "user"
+					? new TextRenderable(this.renderer, {
+							content: "▎",
+							fg: entry.pending ? "#6c7086" : "#cba6f7",
+							marginRight: 1,
+						})
+					: undefined;
+			if (gutter) row.add(gutter);
+			row.add(text);
+			this.root.add(row);
+			this.renderedEntries.push({ row, text, gutter });
+		}
+		entries.forEach((entry, index) => {
+			const rendered = this.renderedEntries[index];
+			if (!rendered) return;
+			rendered.text.content = formatEntry(entry);
+			rendered.text.fg = entryColor(entry);
+			if (rendered.gutter)
+				rendered.gutter.fg = entry.pending ? "#6c7086" : "#cba6f7";
+		});
+	}
 }
 
 function formatEntry(entry: TranscriptEntry): string {
-  const prefix = ({ user: "> ", assistant: "", reasoning: "thinking: ", "tool-call": "→ ", "tool-result": "← ", error: "error: ", status: "[", usage: "usage: ", completed: "[", aborted: "[" } as const)[entry.kind];
-  return `${prefix}${entry.text}${["status", "completed", "aborted"].includes(entry.kind) ? "]" : ""}`;
+	const prefix = (
+		{
+			user: "> ",
+			assistant: "",
+			reasoning: "thinking: ",
+			"tool-call": "→ ",
+			"tool-result": "← ",
+			error: "error: ",
+			status: "[",
+			usage: "usage: ",
+			completed: "[",
+			aborted: "[",
+		} as const
+	)[entry.kind];
+	return `${prefix}${entry.text}${["status", "completed", "aborted"].includes(entry.kind) ? "]" : ""}`;
 }
 
 function entryColor(entry: TranscriptEntry): string {
-  if (entry.error || entry.kind === "error") return "#f38ba8";
-  if (entry.kind === "reasoning") return "#a6adc8";
-  if (entry.kind.startsWith("tool")) return "#89b4fa";
-  if (entry.kind === "user") return "#cba6f7";
-  return "#cdd6f4";
+	if (entry.error || entry.kind === "error") return "#f38ba8";
+	if (entry.kind === "reasoning") return "#a6adc8";
+	if (entry.kind.startsWith("tool")) return "#89b4fa";
+	if (entry.kind === "user") return "#cba6f7";
+	return "#cdd6f4";
 }
