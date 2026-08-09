@@ -3,6 +3,7 @@ import type { ClientCommand, ServerEvent } from "../../shared/src/protocol";
 import { HarnessAgentRuntime } from "./agent-runtime";
 import { SessionStore } from "./session-store";
 import { CoreTools } from "./tools";
+import { JsonCredentialStore, type HarnessModelConfig } from "./provider";
 
 type Session = { listeners: Set<(event: ServerEvent) => void>; running?: AbortController; followUps: string[]; pendingSteer?: string };
 
@@ -11,7 +12,7 @@ export class HarnessServer {
   private readonly runtime: HarnessAgentRuntime;
 
   constructor(readonly store = new SessionStore(), workspace = process.cwd()) {
-    this.runtime = new HarnessAgentRuntime(new CoreTools(resolve(workspace)));
+    this.runtime = new HarnessAgentRuntime(new CoreTools(resolve(workspace)), new JsonCredentialStore(resolve(workspace, ".harness/auth.json")));
   }
 
   createSession(): string { const id = this.store.create(); this.sessions.set(id, { listeners: new Set(), followUps: [] }); return id; }
@@ -25,7 +26,8 @@ export class HarnessServer {
 
   async command(id: string, command: ClientCommand): Promise<void> {
     const session = this.session(id);
-    if (command.type === "abort") { session.running?.abort(); this.emit(id, { type: "aborted" }); return; }
+    if (command.type === "abort") { session.running?.abort(); return; }
+    if (command.type === "configure") { if (session.running) throw new Error("cannot change model while running"); const config: HarnessModelConfig = { provider: command.provider, model: command.model, baseUrl: command.baseUrl }; this.store.setModelConfig(id, config); this.runtime.forget(id); this.emit(id, { type: "status", text: `configured ${command.provider}/${command.model}` }); return; }
     if (command.type === "follow-up") { session.followUps.push(command.text); this.emit(id, { type: "status", text: "follow-up queued" }); return; }
     if (command.type === "steer" && session.running) { session.pendingSteer = command.text; session.running.abort(); this.emit(id, { type: "status", text: "steering after current cancellation" }); return; }
     await this.run(id, command.text);
@@ -37,7 +39,8 @@ export class HarnessServer {
     const controller = new AbortController();
     session.running = controller;
     this.emit(id, { type: "status", text: "running" });
-    await this.runtime.run(text, controller.signal, event => this.emit(id, event));
+    try { await this.runtime.run(id, text, this.store.modelConfig(id), controller.signal, event => this.emit(id, event)); }
+    catch (error) { this.emit(id, { type: "error", message: error instanceof Error ? error.message : String(error) }); }
     session.running = undefined;
     if (controller.signal.aborted) {
       this.emit(id, { type: "aborted" });

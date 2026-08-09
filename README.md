@@ -10,7 +10,22 @@ bun run tui                 # starts a new session
 bun run tui <session-id>    # resumes an existing session
 ```
 
-The initial runtime accepts explicit commands while model/provider configuration is deliberately pending:
+Configure a model in the TUI before sending a task:
+
+```text
+/model openai-codex gpt-5.6-sol
+/model openai-compatible my-model http://127.0.0.1:8080/v1
+```
+
+Codex subscription authentication is stored outside the session timeline:
+
+```sh
+bun run auth codex
+```
+
+For OpenAI-compatible endpoints, set `HARNESS_OPENAI_API_KEY` (or `OPENAI_API_KEY`); keyless local endpoints also work. The selected provider/model/base URL is persisted with the session, so `bun run tui <session-id>` continues with the same selection. Credentials are stored in `.harness/auth.json` with owner-only permissions and never enter model context or SQLite events.
+
+The direct tool commands remain useful for testing the local boundary:
 
 ```text
 /read path
@@ -30,14 +45,16 @@ Enter sends a steering command (or starts work while idle). Option+Enter uses th
 
 - Local IPC is HTTP on `127.0.0.1:7432`, with `POST /sessions`, `POST /sessions/:id/commands`, and an NDJSON event stream at `GET /sessions/:id/events`. This is the smallest reversible answer to the architecture's unspecified IPC protocol.
 - `.harness/harness.sqlite` stores an append-only event timeline. Resume replays persisted events; there is no compaction checkpoint yet because full model transcripts/context construction are not in this slice.
-- `packages/server/src/agent-runtime.ts` is the sole runtime seam. It imports Pi model/agent types behind a Harness-owned `AgentRuntime`, but provider authentication/model selection and a production Pi loop remain unimplemented because the architecture leaves their configuration and provider choices unresolved.
-- The command adapter exists to prove the complete server → runtime → tools → event stream → persistence path without inventing a model-auth configuration. Core tools refuse paths outside the workspace; `bash` runs in the workspace and is cancellable.
+- `packages/server/src/agent-runtime.ts` is the sole Pi boundary. `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` share a matching version and stay behind Harness-owned runtime/provider interfaces.
+- The existing event stream is preserved with two additive events: `assistant-reasoning-delta` when a provider exposes reasoning, and `usage` for available token metadata. Core tools refuse paths outside the workspace; `bash` runs in the workspace and is cancellable.
 
 ## Scope review
 
-Implemented: Bun workspace, local client/server split, one agent/session, core tools, streamed model/tool-shaped events, controls, and SQLite persistence/resume.
+Implemented: Bun workspace, local client/server split, explicit persisted provider/model selection, Codex subscription login, OpenAI-compatible endpoints, Pi agent execution, core tools, streamed text/reasoning/tool/usage events, controls, and SQLite persistence/resume.
 
-Deferred: provider configuration and actual Pi streaming loop, daemon lifecycle/reconnect, dynamic tools/MCP, subagents, context management/compaction, artifacts, diagnostics, and richer TUI navigation. The recommended next milestone is a configured OpenAI-compatible/Pi provider adapter that translates Pi agent events into the existing `ServerEvent` protocol and restores compact context from the event timeline.
+Deviation: a resumed session restores its configured provider/model but not historical model transcript context; the append-only event timeline does not yet retain a lossless Pi transcript. The next recommended milestone is durable context reconstruction/compaction from the session timeline, before adding dynamic tools or subagents.
+
+Provider-specific limitation: Codex login needs an interactive browser flow (`bun run auth codex`). OpenAI-compatible endpoint compatibility varies by server; Harness uses Pi's OpenAI Completions adapter and exposes no automatic routing or provider-specific tuning surface yet.
 
 ```sh
 bun test
