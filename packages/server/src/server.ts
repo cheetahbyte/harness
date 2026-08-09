@@ -66,7 +66,7 @@ export class HarnessServer {
 
 export function serveHarness(options: { port?: number; workspace?: string; databasePath?: string } = {}): ReturnType<typeof Bun.serve> {
   const harness = new HarnessServer(new SessionStore(options.databasePath), options.workspace);
-  return Bun.serve({ port: options.port ?? 7432, async fetch(request) {
+  return Bun.serve({ port: options.port ?? 7432, idleTimeout: 0, async fetch(request) {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/sessions") return Response.json({ sessionId: harness.createSession() });
     const match = url.pathname.match(/^\/sessions\/([^/]+)(?:\/(events|commands))?$/);
@@ -76,6 +76,7 @@ export function serveHarness(options: { port?: number; workspace?: string; datab
       if (request.method === "GET" && action === "events") {
         const stream = new ReadableStream<Uint8Array>({ start(controller) {
           const write = (event: ServerEvent) => controller.enqueue(new TextEncoder().encode(JSON.stringify(event) + "\n"));
+          write({ type: "session", sessionId: id });
           const unsubscribe = harness.subscribe(id, write);
           request.signal.addEventListener("abort", () => { unsubscribe(); controller.close(); }, { once: true });
         }});
