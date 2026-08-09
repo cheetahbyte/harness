@@ -17,6 +17,7 @@ import { FooterView } from "./components/footer";
 import { HeaderView } from "./components/header";
 import { TranscriptView } from "./components/transcript";
 import { WizardView } from "./components/wizard";
+import { type TuiPlugin, TuiPluginHost } from "./plugins";
 import { commandForInput, type TuiState, type WizardState } from "./store";
 
 type WizardFlow =
@@ -32,6 +33,7 @@ export class TuiApp {
 	private readonly composer: ComposerView;
 	private readonly wizard: WizardView;
 	private readonly footer: FooterView;
+	private readonly plugins: TuiPluginHost;
 	private readonly unsubscribe: () => void;
 	private flow: WizardFlow | undefined;
 	private renderedWizard: WizardState | undefined;
@@ -41,6 +43,7 @@ export class TuiApp {
 		private readonly renderer: CliRenderer,
 		private readonly store: StoreApi<TuiState>,
 		private readonly send: (command: ClientCommand) => Promise<void>,
+		plugins: readonly TuiPlugin[] = [],
 	) {
 		this.root = new BoxRenderable(renderer, {
 			width: "100%",
@@ -51,7 +54,29 @@ export class TuiApp {
 		});
 		this.header = new HeaderView(renderer);
 		this.transcript = new TranscriptView(renderer);
-		this.composer = new ComposerView(renderer, {
+		this.plugins = new TuiPluginHost(store, send, [
+			{
+				id: "core-commands",
+				commands: [
+					{
+						name: "/login",
+						description: "Configure provider authentication",
+						run: (args) => this.openLogin(args || undefined),
+					},
+					{
+						name: "/model",
+						description: "Configure provider and model",
+						run: async (args, api) => {
+							if (/^\S+\s+\S+(?:\s+\S+)?\s*$/.test(args))
+								return api.send(commandForInput(`/model ${args}`));
+							this.openModel(args || undefined);
+						},
+					},
+				],
+			},
+			...plugins,
+		]);
+		this.composer = new ComposerView(renderer, this.plugins.commands, {
 			submit: (text, followUp) => void this.submit(text, followUp),
 			abort: () => this.escape(),
 		});
@@ -74,15 +99,19 @@ export class TuiApp {
 		this.renderer.off(CliRenderEvents.RESIZE, this.updateLayout);
 		this.composer.destroy();
 		this.wizard.destroy();
+		this.plugins.destroy();
 	}
 
 	private async submit(text: string, followUp: boolean) {
-		if (!followUp) {
-			const login = text.match(/^\/login(?:\s+(\S+))?\s*$/);
-			if (login) return this.openLogin(login[1]);
-			const model = text.match(/^\/model(?:\s+(\S+))?\s*$/);
-			if (model) return this.openModel(model[1]);
-		}
+		if (!followUp)
+			try {
+				if (await this.plugins.run(text)) return;
+			} catch (error) {
+				return this.store.getState().apply({
+					type: "error",
+					message: error instanceof Error ? error.message : String(error),
+				});
+			}
 		let command = followUp
 			? { type: "follow-up" as const, id: crypto.randomUUID(), text }
 			: commandForInput(text);
@@ -113,6 +142,7 @@ export class TuiApp {
 		this.header.update(state);
 		this.transcript.update(state.entries);
 		this.composer.update(state.followUps);
+		this.footer.update(state);
 		if (state.wizard !== this.renderedWizard) {
 			this.renderedWizard = state.wizard;
 			this.renderWizard(state.wizard);

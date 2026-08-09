@@ -1,5 +1,5 @@
 import { BoxRenderable, type CliRenderer, TextRenderable } from "@opentui/core";
-import { parseModelStatus, type TuiState } from "../store";
+import type { TuiState } from "../store";
 
 export class HeaderView {
 	readonly root: BoxRenderable;
@@ -17,7 +17,6 @@ export class HeaderView {
 	}
 
 	update(state: TuiState) {
-		const model = parseModelStatus(state.configuredStatus) ?? "no model";
-		this.label.content = `Harness  ${state.sessionId}    ${state.running ? "running" : "idle"}  ${model}`;
+		this.label.content = `Harness  ${state.sessionId}    ${state.running ? "running" : "idle"}`;
 	}
 }

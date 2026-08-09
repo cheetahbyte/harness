@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createTestRenderer } from "@opentui/core/testing";
 import { TuiApp } from "../src/app";
+import type { TuiPlugin } from "../src/plugins";
 import { createTuiStore } from "../src/store";
 
 describe("OpenTUI app", () => {
@@ -26,7 +27,6 @@ describe("OpenTUI app", () => {
 			expect(view.captureCharFrame()).toContain("openai-codex/gpt-5.6-sol");
 			expect(view.captureCharFrame()).toContain("read: hello");
 			expect(view.captureCharFrame()).toContain("›");
-			expect(view.captureCharFrame()).toContain("▶▶");
 			store.getState().apply({ type: "assistant-delta", text: "stream" });
 			store.getState().apply({ type: "assistant-delta", text: "ing" });
 			await view.flush();
@@ -217,6 +217,41 @@ describe("OpenTUI app", () => {
 			view.mockInput.pressEnter();
 			await view.flush();
 			expect(sent).toEqual([{ type: "list-models" }]);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("routes registered plugin commands from the composer", async () => {
+		const store = createTuiStore("session-1");
+		const sent: string[] = [];
+		const plugin: TuiPlugin = {
+			id: "sample",
+			commands: [
+				{
+					name: "/sample",
+					description: "Run sample action",
+					run: (_, api) => api.send({ type: "abort" }),
+				},
+			],
+		};
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async (command) => {
+			sent.push(command.type);
+		}, [plugin]);
+		try {
+			await view.renderOnce();
+			await view.mockInput.typeText("/s");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("/sample  Run sample action");
+			view.mockInput.pressEnter();
+			await Promise.resolve();
+			expect(sent).toEqual(["abort"]);
 		} finally {
 			app.destroy();
 			view.renderer.destroy();

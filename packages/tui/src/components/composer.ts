@@ -6,12 +6,8 @@ import {
 	type KeyEvent,
 	TextRenderable,
 } from "@opentui/core";
+import type { TuiCommand } from "../plugins";
 import type { FollowUp } from "../store";
-
-const slashCommands = [
-	{ name: "/login", description: "Configure provider authentication" },
-	{ name: "/model", description: "Configure provider and model" },
-];
 
 export class ComposerView {
 	readonly root: BoxRenderable;
@@ -21,11 +17,12 @@ export class ComposerView {
 	private readonly inputRow: BoxRenderable;
 	private hasFollowUps = false;
 	private compact = false;
-	private matches: (typeof slashCommands)[number][] = [];
+	private matches: TuiCommand[] = [];
 	private selectedSuggestion = 0;
 
 	constructor(
 		private readonly renderer: CliRenderer,
+		private readonly commands: readonly TuiCommand[],
 		private readonly actions: {
 			submit: (text: string, followUp: boolean) => void;
 			abort: () => void;
@@ -174,7 +171,7 @@ export class ComposerView {
 	private syncSuggestions(text: string) {
 		const query = text.match(/^\/\S*$/)?.[0];
 		this.matches = query
-			? slashCommands.filter((command) => command.name.startsWith(query))
+			? this.commands.filter((command) => command.name.startsWith(query))
 			: [];
 		this.selectedSuggestion = Math.min(
 			this.selectedSuggestion,
