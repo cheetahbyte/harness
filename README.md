@@ -39,6 +39,12 @@ replacement text
 command
 ```
 
+## TUI
+
+The terminal client uses OpenTUI Core with a vanilla Zustand display store and runs on Bun. It renders the persisted event timeline plus live text, reasoning, tools, errors, and usage. `Esc` aborts foreground execution, even while text is present in the composer. Option+Enter handling depends on the terminal's Option/Alt modifier encoding.
+
+The current protocol has no structured model-configuration event, so the TUI temporarily derives the configured provider/model label from the existing status text. It also cannot replay historical user messages because they are not persisted as events; current-session messages render locally. Both are client compatibility constraints, not server/runtime behavior.
+
 Enter sends a steering command (or starts work while idle). Option+Enter uses the common `Esc` + `Enter` terminal sequence to collect a follow-up; Esc aborts the current foreground operation. Terminal key encodings vary, so the follow-up key mapping is intentionally a small TUI implementation detail rather than a protocol feature.
 
 ## Milestone decisions
