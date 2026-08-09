@@ -287,6 +287,68 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("shows and opens an OAuth authorization URL", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const opened: string[][] = [];
+		const spawn = Bun.spawn;
+		(Bun as unknown as { spawn: (command: string[]) => unknown }).spawn = (
+			command,
+		) => {
+			opened.push(command);
+			return { exited: Promise.resolve(0) };
+		};
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			await view.renderOnce();
+			await view.mockInput.typeText("/login ");
+			view.mockInput.pressEnter();
+			view.mockInput.pressEnter();
+			store.getState().apply({
+				type: "providers",
+				providers: [
+					{
+						id: "openai-codex",
+						name: "OpenAI Codex",
+						authTypes: ["oauth"],
+						configured: true,
+					},
+				],
+			});
+			await view.flush();
+			view.mockInput.pressEnter();
+			store.getState().apply({
+				type: "auth-notify",
+				notification: {
+					type: "auth_url",
+					url: "https://example.com/authorize",
+				},
+			});
+			store.getState().apply({
+				type: "auth-prompt",
+				prompt: {
+					id: "prompt-1",
+					type: "manual_code",
+					message: "Complete login in your browser, or paste the redirect URL here:",
+					placeholder: "http://localhost:1455/auth/callback",
+				},
+			});
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("https://example.com/authorize");
+			view.mockInput.pressKey("o", { ctrl: true });
+			await Promise.resolve();
+			expect(opened).toEqual([["open", "https://example.com/authorize"]]);
+		} finally {
+			(Bun as unknown as { spawn: typeof Bun.spawn }).spawn = spawn;
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("selects a configured model and prioritizes wizard Escape", async () => {
 		const store = createTuiStore("session-1");
 		const sent: unknown[] = [];

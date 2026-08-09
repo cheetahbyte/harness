@@ -35,6 +35,7 @@ export class TuiApp {
 	private readonly unsubscribe: () => void;
 	private flow: WizardFlow | undefined;
 	private renderedWizard: WizardState | undefined;
+	private authUrl: string | undefined;
 
 	constructor(
 		private readonly renderer: CliRenderer,
@@ -250,6 +251,7 @@ export class TuiApp {
 
 	private startLogin(provider: string, authType: AuthType | undefined) {
 		if (!authType) return;
+		this.authUrl = undefined;
 		this.flow = { kind: "login-active" };
 		this.showNoticeText("Authentication", "Starting sign-in…");
 		void this.sendWizard({ type: "login", provider, authType });
@@ -273,6 +275,7 @@ export class TuiApp {
 					}),
 			);
 		}
+		const authUrl = this.authUrl;
 		this.openWizard();
 		this.wizard.show(
 			{
@@ -280,6 +283,7 @@ export class TuiApp {
 				title: prompt.message,
 				...(prompt.placeholder ? { placeholder: prompt.placeholder } : {}),
 				...(prompt.type === "secret" ? { secret: true } : {}),
+				...(authUrl ? { url: authUrl } : {}),
 			},
 			{
 				submit: (value) =>
@@ -288,6 +292,7 @@ export class TuiApp {
 						promptId: prompt.id,
 						value,
 					}),
+				...(authUrl ? { open: () => openBrowser(authUrl) } : {}),
 				cancel: () => this.escape(),
 			},
 		);
@@ -295,15 +300,20 @@ export class TuiApp {
 
 	private showNotice(notification: AuthNotifyEvent) {
 		if (this.flow?.kind !== "login-active") return;
-		const text = noticeText(notification);
-		this.showNoticeText("Authentication", text);
+		const url = notificationUrl(notification);
+		if (url) this.authUrl = url;
+		this.showNoticeText(
+			"Authentication",
+			noticeText(notification),
+			url ? () => openBrowser(url) : undefined,
+		);
 	}
 
-	private showNoticeText(title: string, text: string) {
+	private showNoticeText(title: string, text: string, open?: () => void) {
 		this.openWizard();
 		this.wizard.show(
 			{ kind: "notice", title, text },
-			{ cancel: () => this.escape() },
+			{ cancel: () => this.escape(), ...(open ? { open } : {}) },
 		);
 	}
 
@@ -342,6 +352,7 @@ export class TuiApp {
 		this.wizard.hide();
 		this.composer.setActive(true);
 		this.flow = undefined;
+		this.authUrl = undefined;
 		this.store.getState().clearWizard();
 	}
 
@@ -368,4 +379,26 @@ function noticeText(notification: AuthNotifyEvent): string {
 			.map((link) => `${link.label ?? link.url}: ${link.url}`)
 			.join("\n")}`;
 	return notification.message;
+}
+
+function notificationUrl(notification: AuthNotifyEvent): string | undefined {
+	if (notification.type === "auth_url") return notification.url;
+	if (notification.type === "device_code") return notification.verificationUri;
+	if (notification.type === "info") return notification.links?.[0]?.url;
+	return undefined;
+}
+
+function openBrowser(url: string): void {
+	const command =
+		process.platform === "darwin"
+			? ["open", url]
+			: process.platform === "win32"
+				? ["cmd", "/c", "start", "", url]
+				: ["xdg-open", url];
+	try {
+		void Bun.spawn(command, {
+			stdout: "ignore",
+			stderr: "ignore",
+		}).exited.catch(() => {});
+	} catch {}
 }

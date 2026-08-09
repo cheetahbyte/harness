@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthType, ServerEvent } from "../../shared/src/protocol";
@@ -7,6 +13,7 @@ import type { AuthInteraction } from "@earendil-works/pi-ai";
 import { JsonCredentialStore } from "../src/provider";
 import { HarnessServer } from "../src/server";
 import { SessionStore } from "../src/session-store";
+import { SettingsStore } from "../src/settings-store";
 
 const paths: string[] = [];
 afterEach(() => {
@@ -18,8 +25,20 @@ function harness() {
 	paths.push(dir);
 	return {
 		dir,
-		server: new HarnessServer(new SessionStore(join(dir, "state.sqlite")), dir),
+		server: new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			undefined,
+			settings(dir),
+		),
 	};
+}
+
+function settings(dir: string) {
+	return new SettingsStore(
+		join(dir, "config/settings.json"),
+		join(dir, ".harness/settings.json"),
+	);
 }
 
 function fakeModels() {
@@ -113,6 +132,7 @@ describe("first milestone", () => {
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			fakeModels(),
+			settings(dir),
 		);
 		const id = server.createSession();
 		const events: ServerEvent[] = [];
@@ -153,6 +173,7 @@ describe("first milestone", () => {
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			fakeModels(),
+			settings(dir),
 		);
 		const id = server.createSession();
 
@@ -166,6 +187,51 @@ describe("first milestone", () => {
 			provider: "fake",
 			model: "model-1",
 		});
+		expect(
+			JSON.parse(
+				readFileSync(join(dir, "config/settings.json"), "utf8"),
+			),
+		).toEqual({ model: { provider: "fake", model: "model-1" } });
+
+		const restarted = new HarnessServer(
+			new SessionStore(join(dir, "fresh.sqlite")),
+			dir,
+			fakeModels(),
+			settings(dir),
+		);
+		const events: ServerEvent[] = [];
+		restarted.subscribe(restarted.createSession(), (event) => events.push(event));
+		expect(events).toContainEqual({
+			type: "status",
+			text: "configured fake/model-1",
+		});
+
+		mkdirSync(join(dir, ".harness"));
+		writeFileSync(
+			join(dir, ".harness/settings.json"),
+			'{"model":{"provider":"project","model":"model-2"}}',
+		);
+		const project = new HarnessServer(
+			new SessionStore(join(dir, "project.sqlite")),
+			dir,
+			fakeModels(),
+			settings(dir),
+		);
+		const projectEvents: ServerEvent[] = [];
+		project.subscribe(project.createSession(), (event) => projectEvents.push(event));
+		expect(projectEvents).toContainEqual({
+			type: "status",
+			text: "configured project/model-2",
+		});
+		const projectId = project.createSession();
+		await project.command(projectId, {
+			type: "configure",
+			provider: "fake",
+			model: "model-1",
+		});
+		expect(
+			JSON.parse(readFileSync(join(dir, ".harness/settings.json"), "utf8")),
+		).toEqual({ model: { provider: "fake", model: "model-1" } });
 	});
 
 	test("rejects an unknown model before persisting it", async () => {
@@ -175,6 +241,7 @@ describe("first milestone", () => {
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			fakeModels(),
+			settings(dir),
 		);
 		const id = server.createSession();
 		await expect(
@@ -194,6 +261,7 @@ describe("first milestone", () => {
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			fakeModels(),
+			settings(dir),
 		);
 		const id = server.createSession();
 		const events: ServerEvent[] = [];
@@ -229,6 +297,7 @@ describe("first milestone", () => {
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			models,
+			settings(dir),
 		);
 		const id = server.createSession();
 		const events: ServerEvent[] = [];
@@ -256,6 +325,7 @@ describe("first milestone", () => {
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			fakeModels(),
+			settings(dir),
 		);
 		const id = server.createSession();
 		const events: ServerEvent[] = [];
@@ -347,6 +417,8 @@ describe("first milestone", () => {
 			new HarnessServer(
 				new SessionStore(join(dir, "state.sqlite")),
 				dir,
+				undefined,
+				settings(dir),
 			).store.modelConfig(id),
 		).toEqual({
 			provider: "openai-compatible",

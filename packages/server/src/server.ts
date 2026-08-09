@@ -22,6 +22,7 @@ import {
 	providerModels,
 } from "./provider";
 import { SessionStore } from "./session-store";
+import { globalHarnessPath, SettingsStore } from "./settings-store";
 import { CoreTools } from "./tools";
 
 type PendingCommand = { id: string; type: "steer" | "follow-up"; text: string };
@@ -81,10 +82,12 @@ export class HarnessServer {
 		readonly store = new SessionStore(),
 		workspace = process.cwd(),
 		models?: ModelRegistry,
+		private readonly settings = new SettingsStore(
+			globalHarnessPath("settings.json"),
+			resolve(workspace, ".harness/settings.json"),
+		),
 	) {
-		this.credentials = new JsonCredentialStore(
-			resolve(workspace, ".harness/auth.json"),
-		);
+		this.credentials = new JsonCredentialStore(globalHarnessPath("auth.json"));
 		this.models = models ?? createHarnessModels(this.credentials);
 		this.runtime = new HarnessAgentRuntime(
 			new CoreTools(resolve(workspace)),
@@ -103,6 +106,12 @@ export class HarnessServer {
 		const session = this.session(id);
 		session.listeners.add(listener);
 		for (const event of this.store.events(id)) listener(event);
+		const model = this.modelConfig(id);
+		if (model)
+			listener({
+				type: "status",
+				text: `configured ${model.provider}/${model.model}`,
+			});
 		return () => session.listeners.delete(listener);
 	}
 
@@ -144,6 +153,7 @@ export class HarnessServer {
 			};
 			providerModels(config, this.credentials, this.models as Models);
 			this.store.setModelConfig(id, config);
+			this.settings.setModelConfig(config);
 			this.runtime.forget(id);
 			this.emit(id, {
 				type: "status",
@@ -432,7 +442,7 @@ export class HarnessServer {
 			await this.runtime.run(
 				id,
 				text,
-				this.store.modelConfig(id),
+				this.modelConfig(id),
 				controller.signal,
 				(event) => this.emit(id, event),
 			);
@@ -473,6 +483,10 @@ export class HarnessServer {
 		}
 		const followUp = session.followUps.shift();
 		if (followUp) await this.run(id, followUp);
+	}
+
+	private modelConfig(id: string) {
+		return this.store.modelConfig(id) ?? this.settings.modelConfig();
 	}
 
 	private pending(

@@ -5,12 +5,11 @@ import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { authPromptAnswer } from "./auth-prompt";
 import { JsonCredentialStore } from "./provider";
+import { globalHarnessPath } from "./settings-store";
 
 if (process.argv[2] !== "codex") throw new Error("usage: bun run auth codex");
 registerBunOAuthFlows();
-const credentials = new JsonCredentialStore(
-	`${process.cwd()}/.harness/auth.json`,
-);
+const credentials = new JsonCredentialStore(globalHarnessPath("auth.json"));
 const models = builtinModels({ credentials });
 const terminal = createInterface({ input, output });
 try {

@@ -18,12 +18,19 @@ export type WizardScreen =
 			searchable?: boolean;
 			descriptionLayout?: "inline" | "two-line";
 	  }
-	| { kind: "input"; title: string; placeholder?: string; secret?: boolean }
+	| {
+			kind: "input";
+			title: string;
+			placeholder?: string;
+			secret?: boolean;
+			url?: string;
+	  }
 	| { kind: "notice"; title: string; text: string };
 
 type WizardActions = {
 	select?: (option: SelectOption) => void;
 	submit?: (value: string) => void;
+	open?: () => void;
 	cancel: () => void;
 };
 
@@ -160,8 +167,14 @@ export class WizardView {
 		this.actions = actions;
 		this.root.visible = true;
 		this.title.content = screen.title;
-		this.message.visible = screen.kind === "notice";
-		this.message.content = screen.kind === "notice" ? screen.text : "";
+		this.message.visible =
+			screen.kind === "notice" || (screen.kind === "input" && !!screen.url);
+		this.message.content =
+			screen.kind === "notice"
+				? screen.text
+				: screen.kind === "input"
+					? (screen.url ?? "")
+					: "";
 		this.inputRow.visible =
 			screen.kind === "input" ||
 			(screen.kind === "select" && !!screen.searchable);
@@ -172,9 +185,13 @@ export class WizardView {
 		this.select.showDescription = !inlineDescriptions;
 		this.footer.content =
 			screen.kind === "notice"
-				? "Esc close"
+				? actions.open
+					? "Ctrl+O open browser  ·  Esc close"
+					: "Esc close"
 				: screen.kind === "input"
-					? "Enter submit  ·  Esc cancel"
+					? actions.open
+						? "Enter submit  ·  Ctrl+O open browser  ·  Esc cancel"
+						: "Enter submit  ·  Esc cancel"
 					: "↑↓ navigate  ·  Enter select  ·  Esc cancel";
 		this.input.value = "";
 		this.secretMask.content = "";
@@ -234,6 +251,12 @@ export class WizardView {
 
 	private handleKey = (key: KeyEvent) => {
 		if (!this.root.visible || key.defaultPrevented) return;
+		if (key.name === "o" && key.ctrl && this.actions?.open) {
+			key.preventDefault();
+			key.stopPropagation();
+			this.actions.open();
+			return;
+		}
 		if (
 			this.screen?.kind === "select" &&
 			this.screen.descriptionLayout === "inline"
