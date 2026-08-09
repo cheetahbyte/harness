@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ServerEvent } from "../../shared/src/protocol";
 import { HarnessServer } from "../src/server";
 import { SessionStore } from "../src/session-store";
 
@@ -96,12 +97,12 @@ describe("first milestone", () => {
 		]);
 	});
 
-	test("restarts with steering after aborting foreground work", async () => {
+	test("runs steering after the active turn finishes", async () => {
 		const { server } = harness();
 		const id = server.createSession();
 		const running = server.command(id, {
 			type: "prompt",
-			text: "/bash\nsleep 1",
+			text: "/bash\nsleep 0.05",
 		});
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		await server.command(id, {
@@ -117,16 +118,24 @@ describe("first milestone", () => {
 		await running;
 		expect(
 			server.store.events(id).filter((event) => event.type === "aborted"),
-		).toHaveLength(1);
+		).toHaveLength(0);
 		expect(
 			server.store.events(id).filter((event) => event.type === "completed"),
-		).toHaveLength(1);
+		).toHaveLength(2);
 		expect(
 			server.store.events(id).filter((event) => event.type === "command"),
 		).toEqual([
 			{ type: "command", id: "steer-1", command: "steer", state: "replaced" },
 			{ type: "command", id: "steer-2", command: "steer", state: "started" },
 		]);
+		const events = server.store.events(id);
+		expect(
+			events.findIndex((event) => event.type === "tool-result"),
+		).toBeLessThan(
+			events.findIndex(
+				(event) => event.type === "command" && event.id === "steer-2",
+			),
+		);
 	});
 
 	test("persists an explicit provider/model selection for resume", async () => {
@@ -215,6 +224,82 @@ describe("first milestone", () => {
 					(event) => event.type === "usage" && event.totalTokens === 9,
 				),
 			).toBe(true);
+		} finally {
+			provider.stop(true);
+			delete process.env.HARNESS_OPENAI_API_KEY;
+		}
+	});
+
+	test("drains steering between turns before follow-ups", async () => {
+		process.env.HARNESS_OPENAI_API_KEY = "test";
+		let calls = 0;
+		let firstRequestStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			firstRequestStarted = resolve;
+		});
+		const provider = Bun.serve({
+			port: 0,
+			fetch: () => {
+				calls++;
+				const response = (id: string, text: string) =>
+					`data: {"id":"${id}","choices":[{"delta":{"content":"${text}"},"finish_reason":null}]}\n\n` +
+					`data: {"id":"${id}","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n` +
+					"data: [DONE]\n\n";
+				if (calls === 1)
+					return new Response(
+						new ReadableStream({
+							start(controller) {
+								firstRequestStarted();
+								setTimeout(() => {
+									controller.enqueue(
+										new TextEncoder().encode(response("first", "first")),
+									);
+									controller.close();
+								}, 30);
+							},
+						}),
+						{ headers: { "content-type": "text/event-stream" } },
+					);
+				return new Response(response(`turn-${calls}`, `turn ${calls}`), {
+					headers: { "content-type": "text/event-stream" },
+				});
+			},
+		});
+		try {
+			const { server } = harness();
+			const id = server.createSession();
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			const running = server.command(id, { type: "prompt", text: "first" });
+			await started;
+			await server.command(id, {
+				type: "follow-up",
+				id: "follow-1",
+				text: "afterwards",
+			});
+			await server.command(id, {
+				type: "steer",
+				id: "steer-1",
+				text: "new direction",
+			});
+			await running;
+			const events = server.store.events(id);
+			expect(calls).toBe(3);
+			expect(events.filter((event) => event.type === "completed")).toHaveLength(
+				1,
+			);
+			expect(
+				events
+					.filter(
+						(event): event is Extract<ServerEvent, { type: "command" }> =>
+							event.type === "command" && event.state === "started",
+					)
+					.map((event) => event.id),
+			).toEqual(["steer-1", "follow-1"]);
 		} finally {
 			provider.stop(true);
 			delete process.env.HARNESS_OPENAI_API_KEY;

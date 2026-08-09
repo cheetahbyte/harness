@@ -21,12 +21,28 @@ interface AgentRuntime {
 		signal: AbortSignal,
 		emit: (event: ServerEvent) => void,
 	): Promise<void>;
+	steer(sessionId: string, text: string, callbacks: QueueCallbacks): boolean;
+	followUp(sessionId: string, text: string, callbacks: QueueCallbacks): boolean;
 	forget(sessionId: string): void;
 }
 
+type QueueCallbacks = {
+	onStarted: () => void;
+	onFinished: () => void;
+	onReplaced?: () => void;
+};
+type QueuedMessage = QueueCallbacks & { message: object };
+type AgentEntry = {
+	key: string;
+	agent: Agent;
+	steering?: QueuedMessage;
+	queued: WeakMap<object, QueuedMessage>;
+	active: QueuedMessage[];
+};
+
 /** Pi is contained here: server code only sees Harness events and model configuration. */
 export class HarnessAgentRuntime implements AgentRuntime {
-	private readonly agents = new Map<string, { key: string; agent: Agent }>();
+	private readonly agents = new Map<string, AgentEntry>();
 	constructor(
 		private readonly tools: CoreTools,
 		private readonly credentials: JsonCredentialStore,
@@ -62,9 +78,15 @@ export class HarnessAgentRuntime implements AgentRuntime {
 					models.streamSimple(model, context, options),
 				toolExecution: "sequential",
 			});
-			agent.subscribe((event) => this.translate(event, emit));
-			entry = { key, agent };
-			this.agents.set(sessionId, entry);
+			const created: AgentEntry = {
+				key,
+				agent,
+				queued: new WeakMap(),
+				active: [],
+			};
+			agent.subscribe((event) => this.translate(created, event, emit));
+			this.agents.set(sessionId, created);
+			entry = created;
 		}
 		const abort = () => entry?.agent.abort();
 		signal.addEventListener("abort", abort, { once: true });
@@ -75,6 +97,31 @@ export class HarnessAgentRuntime implements AgentRuntime {
 		} finally {
 			signal.removeEventListener("abort", abort);
 		}
+	}
+
+	steer(sessionId: string, text: string, callbacks: QueueCallbacks): boolean {
+		const entry = this.agents.get(sessionId);
+		if (!entry?.agent.state.isStreaming) return false;
+		if (entry.steering) entry.steering.onReplaced?.();
+		entry.agent.clearSteeringQueue();
+		const queued = this.queue(text, callbacks);
+		entry.steering = queued;
+		entry.queued.set(queued.message, queued);
+		entry.agent.steer(queued.message as never);
+		return true;
+	}
+
+	followUp(
+		sessionId: string,
+		text: string,
+		callbacks: QueueCallbacks,
+	): boolean {
+		const entry = this.agents.get(sessionId);
+		if (!entry?.agent.state.isStreaming) return false;
+		const queued = this.queue(text, callbacks);
+		entry.queued.set(queued.message, queued);
+		entry.agent.followUp(queued.message as never);
+		return true;
 	}
 
 	forget(sessionId: string): void {
@@ -103,9 +150,22 @@ export class HarnessAgentRuntime implements AgentRuntime {
 	}
 
 	private translate(
+		entry: AgentEntry,
 		event: AgentEvent,
 		emit: (event: ServerEvent) => void,
 	): void {
+		if (event.type === "message_start") {
+			const queued = entry.queued.get(event.message as object);
+			if (queued) {
+				entry.queued.delete(queued.message);
+				if (entry.steering === queued) entry.steering = undefined;
+				entry.active.push(queued);
+				queued.onStarted();
+			}
+		}
+		if (event.type === "turn_end") {
+			for (const queued of entry.active.splice(0)) queued.onFinished();
+		}
 		if (event.type === "message_update") {
 			const update = event.assistantMessageEvent;
 			if (update.type === "text_delta")
@@ -146,6 +206,17 @@ export class HarnessAgentRuntime implements AgentRuntime {
 					.join(""),
 				isError: event.isError,
 			});
+	}
+
+	private queue(text: string, callbacks: QueueCallbacks): QueuedMessage {
+		return {
+			...callbacks,
+			message: {
+				role: "user",
+				content: [{ type: "text", text }],
+				timestamp: Date.now(),
+			},
+		};
 	}
 
 	private async runTool(

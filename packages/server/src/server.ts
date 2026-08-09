@@ -63,6 +63,30 @@ export class HarnessServer {
 		}
 		if (command.type === "follow-up") {
 			const pending = this.pending(command);
+			if (
+				this.runtime.followUp(id, pending.text, {
+					onStarted: () =>
+						this.emit(id, {
+							type: "command",
+							id: pending.id,
+							command: pending.type,
+							state: "started",
+						}),
+					onFinished: () =>
+						this.emit(id, {
+							type: "command",
+							id: pending.id,
+							command: pending.type,
+							state: "finished",
+						}),
+				})
+			)
+				return this.emit(id, {
+					type: "command",
+					id: pending.id,
+					command: pending.type,
+					state: "queued",
+				});
 			session.followUps.push(pending);
 			this.emit(id, {
 				type: "command",
@@ -76,6 +100,26 @@ export class HarnessServer {
 		if (command.type === "steer") {
 			const pending = this.pending(command);
 			if (session.running) {
+				if (
+					this.runtime.steer(id, pending.text, {
+						onStarted: () =>
+							this.emit(id, {
+								type: "command",
+								id: pending.id,
+								command: pending.type,
+								state: "started",
+							}),
+						onFinished: () => {},
+						onReplaced: () =>
+							this.emit(id, {
+								type: "command",
+								id: pending.id,
+								command: pending.type,
+								state: "replaced",
+							}),
+					})
+				)
+					return;
 				if (session.pendingSteer)
 					this.emit(id, {
 						type: "command",
@@ -84,10 +128,9 @@ export class HarnessServer {
 						state: "replaced",
 					});
 				session.pendingSteer = pending;
-				session.running.abort();
 				this.emit(id, {
 					type: "status",
-					text: "steering after current cancellation",
+					text: "steering after current turn",
 				});
 				return;
 			}
@@ -153,6 +196,12 @@ export class HarnessServer {
 				command: pending.type,
 				state: "finished",
 			});
+		const steer = session.pendingSteer;
+		session.pendingSteer = undefined;
+		if (steer) {
+			await this.run(id, steer);
+			return;
+		}
 		const followUp = session.followUps.shift();
 		if (followUp) await this.run(id, followUp);
 	}
