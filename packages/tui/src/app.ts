@@ -62,9 +62,9 @@ export class TuiApp {
     if (!text.trim()) return;
     const command = followUp ? { type: "follow-up" as const, text } : commandForInput(text);
     if (command.type === "steer" || command.type === "follow-up") this.store.getState().addUser(text);
+    this.composer.value = "";
     try {
       await this.send(command);
-      this.composer.value = "";
     } catch (error) {
       this.store.getState().apply({ type: "error", message: error instanceof Error ? error.message : String(error) });
     }

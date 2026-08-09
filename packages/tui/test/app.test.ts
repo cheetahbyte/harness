@@ -42,4 +42,23 @@ describe("OpenTUI app", () => {
       view.renderer.destroy();
     }
   });
+
+  test("clears the composer before an in-flight command resolves", async () => {
+    const store = createTuiStore("session-1");
+    let resolveSend!: () => void;
+    const send = new Promise<void>((resolve) => { resolveSend = resolve; });
+    const view = await createTestRenderer({ width: 72, height: 20, kittyKeyboard: true });
+    const app = new TuiApp(view.renderer, store, async () => send);
+    try {
+      await view.renderOnce();
+      await view.mockInput.typeText("write tests");
+      view.mockInput.pressEnter();
+      await Promise.resolve();
+      expect((app as unknown as { composer: { value: string } }).composer.value).toBe("");
+      resolveSend();
+    } finally {
+      app.destroy();
+      view.renderer.destroy();
+    }
+  });
 });
