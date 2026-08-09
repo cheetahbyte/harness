@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 
-export type CoreTool = "read" | "write" | "edit" | "bash";
+type CoreTool = "read" | "write" | "edit" | "bash";
 export type ToolRequest = { name: CoreTool; input: Record<string, unknown> };
 
 export class CoreTools {

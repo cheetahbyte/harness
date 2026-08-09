@@ -1,7 +1,7 @@
 import { createStore } from "zustand/vanilla";
 import type { ClientCommand, ServerEvent } from "../../shared/src/protocol";
 
-export type TranscriptKind =
+type TranscriptKind =
 	| "user"
 	| "assistant"
 	| "reasoning"

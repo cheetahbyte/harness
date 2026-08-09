@@ -13,7 +13,7 @@ import {
 } from "./provider";
 import type { CoreTools, ToolRequest } from "./tools";
 
-export interface AgentRuntime {
+interface AgentRuntime {
 	run(
 		sessionId: string,
 		text: string,
