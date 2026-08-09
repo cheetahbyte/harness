@@ -18,6 +18,7 @@
 		"@earendil-works/pi-agent-core": "^0.84.1",
 		"@earendil-works/pi-ai": "^0.84.1",
 		"@opentui/core": "^0.5.1",
+		"pino": "^10.3.1",
 		"zustand": "^5.0.14"
 	},
 	"devDependencies": {

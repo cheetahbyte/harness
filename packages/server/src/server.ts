@@ -16,6 +16,7 @@ import type {
 	ServerEvent,
 } from "../../shared/src/protocol";
 import { HarnessAgentRuntime } from "./agent-runtime";
+import { log } from "./logger";
 import {
 	createHarnessModels,
 	JsonCredentialStore,
@@ -99,6 +100,7 @@ export class HarnessServer {
 	createSession(): string {
 		const id = this.store.create();
 		this.sessions.set(id, { listeners: new Set(), followUps: [] });
+		log.info({ sessionId: id }, "session created");
 		return id;
 	}
 
@@ -117,6 +119,7 @@ export class HarnessServer {
 
 	async command(id: string, command: ClientCommand): Promise<void> {
 		const session = this.session(id);
+		log.debug({ sessionId: id, command: command.type }, "command received");
 		if (command.type === "list-providers") {
 			await this.listProviders(id, command.authType);
 			return;
@@ -141,6 +144,7 @@ export class HarnessServer {
 			return;
 		}
 		if (command.type === "abort") {
+			log.info({ sessionId: id, running: !!session.running }, "run aborted");
 			session.running?.abort();
 			return;
 		}
@@ -438,6 +442,16 @@ export class HarnessServer {
 				state: "started",
 			});
 		this.emit(id, { type: "status", text: "running" });
+		log.info(
+			{
+				sessionId: id,
+				provider: this.modelConfig(id)?.provider,
+				model: this.modelConfig(id)?.model,
+				command: pending?.type ?? "prompt",
+				textLength: text.length,
+			},
+			"run started",
+		);
 		try {
 			await this.runtime.run(
 				id,
@@ -447,6 +461,7 @@ export class HarnessServer {
 				(event) => this.emit(id, event),
 			);
 		} catch (error) {
+			log.error({ err: error, sessionId: id }, "run failed");
 			this.emit(id, {
 				type: "error",
 				message: error instanceof Error ? error.message : String(error),
@@ -454,6 +469,10 @@ export class HarnessServer {
 		}
 		delete session.running;
 		if (controller.signal.aborted) {
+			log.info(
+				{ sessionId: id, durationMs: Date.now() - startedAt },
+				"run aborted",
+			);
 			this.emit(id, { type: "aborted" });
 			const steer = session.pendingSteer;
 			delete session.pendingSteer;
@@ -467,6 +486,10 @@ export class HarnessServer {
 			if (steer) await this.run(id, steer);
 			return;
 		}
+		log.info(
+			{ sessionId: id, durationMs: Date.now() - startedAt },
+			"run finished",
+		);
 		this.emit(id, { type: "completed", durationMs: Date.now() - startedAt });
 		if (pending?.type === "follow-up")
 			this.emit(id, {
@@ -576,6 +599,11 @@ export function serveHarness(
 		idleTimeout: 0,
 		async fetch(request) {
 			const url = new URL(request.url);
+			const requestId = crypto.randomUUID();
+			log.debug(
+				{ requestId, method: request.method, path: url.pathname },
+				"http request",
+			);
 			if (request.method === "POST" && url.pathname === "/sessions")
 				return Response.json({ sessionId: harness.createSession() });
 			const match = url.pathname.match(
@@ -586,6 +614,7 @@ export function serveHarness(
 			if (!id) return new Response("not found", { status: 404 });
 			try {
 				if (request.method === "GET" && action === "events") {
+					log.info({ requestId, sessionId: id }, "event stream connected");
 					const stream = new ReadableStream<Uint8Array>({
 						start(controller) {
 							const write = (event: ServerEvent) =>
@@ -597,6 +626,10 @@ export function serveHarness(
 							request.signal.addEventListener(
 								"abort",
 								() => {
+									log.info(
+										{ requestId, sessionId: id },
+										"event stream disconnected",
+									);
 									unsubscribe();
 									void harness.command(id, { type: "auth-cancel" });
 									controller.close();
@@ -622,6 +655,10 @@ export function serveHarness(
 						events: harness.store.events(id),
 					});
 			} catch (error) {
+				log.error(
+					{ err: error, requestId, sessionId: id },
+					"http request failed",
+				);
 				return Response.json(
 					{ error: error instanceof Error ? error.message : String(error) },
 					{ status: 404 },

@@ -3,9 +3,19 @@ import {
 	type AgentEvent,
 	type AgentTool,
 } from "@earendil-works/pi-agent-core";
-import type { CredentialStore, Models } from "@earendil-works/pi-ai";
-import { Type } from "@earendil-works/pi-ai";
+import type {
+	AssistantMessageEvent,
+	AssistantMessageEventStream,
+	CredentialStore,
+	Models,
+} from "@earendil-works/pi-ai";
+import {
+	createAssistantMessageEventStream,
+	isRetryableAssistantError,
+	Type,
+} from "@earendil-works/pi-ai";
 import type { ServerEvent } from "../../shared/src/protocol";
+import { log } from "./logger";
 import {
 	type HarnessModelConfig,
 	HarnessProviderError,
@@ -78,7 +88,11 @@ export class HarnessAgentRuntime implements AgentRuntime {
 					tools: this.agentTools(),
 				},
 				streamFn: (_unused, context, options) =>
-					models.streamSimple(model, context, options),
+					streamWithRetry(
+						() => models.streamSimple(model, context, options),
+						options?.signal,
+						{ sessionId, provider: config.provider, model: config.model },
+					),
 				toolExecution: "sequential",
 			});
 			const created: AgentEntry = {
@@ -97,6 +111,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 		try {
 			await entry.agent.prompt(text);
 		} catch (error) {
+			log.error({ err: error, sessionId }, "agent prompt failed");
 			if (!signal.aborted) throw normalizeProviderError(error);
 		} finally {
 			signal.removeEventListener("abort", abort);
@@ -231,6 +246,101 @@ function normalizeProviderError(error: unknown): HarnessProviderError {
 				error instanceof Error ? error.message : String(error),
 			);
 }
+const MAX_STREAM_RETRIES = 3;
+const STREAM_RETRY_BASE_DELAY_MS = 500;
+
+function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal?.aborted) return resolve();
+		const timeout = setTimeout(resolve, ms);
+		signal?.addEventListener(
+			"abort",
+			() => {
+				clearTimeout(timeout);
+				resolve();
+			},
+			{ once: true },
+		);
+	});
+}
+
+/**
+ * Providers occasionally drop the connection before producing any output (e.g. the
+ * openai-codex WebSocket transport reporting "socket connection was closed unexpectedly"
+ * or a bare connect timeout). Silently retry those with backoff, since the request
+ * never reached the model. Once any content has streamed, a dropped connection is no
+ * longer safely retryable, so it is forwarded as-is.
+ */
+function streamWithRetry(
+	produce: () => AssistantMessageEventStream,
+	signal: AbortSignal | undefined,
+	context: { sessionId: string; provider: string; model: string },
+): AssistantMessageEventStream {
+	const out = createAssistantMessageEventStream();
+	void (async () => {
+		for (let attempt = 0; ; attempt++) {
+			log.debug(
+				{ ...context, attempt: attempt + 1 },
+				"provider stream started",
+			);
+			let terminal:
+				| Extract<AssistantMessageEvent, { type: "done" | "error" }>
+				| undefined;
+			for await (const event of produce())
+				if (event.type === "done" || event.type === "error") terminal = event;
+				else out.push(event);
+			if (!terminal) {
+				log.warn(
+					{ ...context, attempt: attempt + 1 },
+					"provider stream ended without terminal event",
+				);
+				return;
+			}
+			const retryable =
+				terminal.type === "error" &&
+				terminal.reason === "error" &&
+				attempt < MAX_STREAM_RETRIES &&
+				isRetryableAssistantError(terminal.error);
+			if (!retryable) {
+				if (terminal.type === "error" && terminal.reason === "aborted")
+					log.info(
+						{ ...context, attempt: attempt + 1 },
+						"provider stream aborted",
+					);
+				else if (terminal.type === "error")
+					log.error(
+						{
+							...context,
+							attempt: attempt + 1,
+							error: terminal.error.errorMessage,
+						},
+						"provider stream failed",
+					);
+				else
+					log.debug(
+						{ ...context, attempt: attempt + 1 },
+						"provider stream completed",
+					);
+				return out.push(terminal);
+			}
+			const delayMs = STREAM_RETRY_BASE_DELAY_MS * 2 ** attempt;
+			log.warn(
+				{
+					...context,
+					attempt: attempt + 1,
+					delayMs,
+					error:
+						terminal.type === "error" ? terminal.error.errorMessage : undefined,
+				},
+				"provider stream failed; retrying",
+			);
+			await sleep(delayMs, signal);
+			if (signal?.aborted) return out.push(terminal);
+		}
+	})();
+	return out;
+}
+
 function toolDescription(name: ToolRequest["name"]): string {
 	switch (name) {
 		case "read":

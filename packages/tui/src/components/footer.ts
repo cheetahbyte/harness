@@ -1,21 +1,21 @@
-import { BoxRenderable, type CliRenderer, TextRenderable } from "@opentui/core";
-import { parseModelStatus, type TuiState } from "../store";
+import { BoxRenderable, type CliRenderer} from "@opentui/core";
+import type { TuiState } from "../store";
+import { ModelView } from "./model";
 
 export class FooterView {
-	readonly root: BoxRenderable;
-	private readonly label: TextRenderable;
+  readonly root: BoxRenderable;
+  private readonly modelLabel: ModelView;
 
 	constructor(renderer: CliRenderer) {
 		this.root = new BoxRenderable(renderer, {
 			width: "100%",
 			flexDirection: "row",
 		});
-		this.label = new TextRenderable(renderer, { fg: "#cdd6f4" });
-		this.root.add(this.label);
+		this.modelLabel = new ModelView(renderer);
+		this.root.add(this.modelLabel);
 	}
 
 	update(state: TuiState) {
-		const model = parseModelStatus(state.configuredStatus) ?? "no model";
-		this.label.content = `${model}`;
+		this.modelLabel.update(state);
 	}
 }
