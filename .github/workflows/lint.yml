@@ -4,20 +4,26 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: 24
+          bun-version: 1.3.14
 
       - name: Install dependencies
-        run: npm install --ignore-scripts
+        run: bun install --frozen-lockfile
 
       - name: Run Biome
-        run: npm run check
+        run: bun run check
 
       - name: Run Knip
-        run: npm run knip
+        run: bun run knip
+
+      - name: Type-check
+        run: bun run typecheck
