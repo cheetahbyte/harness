@@ -15,7 +15,7 @@ export class TuiApp {
     private readonly store: StoreApi<TuiState>,
     private readonly send: (command: ClientCommand) => Promise<void>,
   ) {
-    const root = new BoxRenderable(renderer, { width: "100%", height: "100%", flexDirection: "column", padding: 1, backgroundColor: "#111318" });
+    const root = new BoxRenderable(renderer, { width: "100%", height: "100%", flexDirection: "column", padding: 1 });
     const top = new BoxRenderable(renderer, { width: "100%", flexDirection: "row", justifyContent: "space-between", marginBottom: 1 });
     this.header = new TextRenderable(renderer, { fg: "#cdd6f4" });
     top.add(this.header);
