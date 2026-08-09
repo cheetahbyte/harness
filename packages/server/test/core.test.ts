@@ -21,39 +21,15 @@ function harness() {
 }
 
 describe("first milestone", () => {
-	test("executes and persists a core read tool", async () => {
-		const { dir, server } = harness();
-		writeFileSync(join(dir, "note.txt"), "hello");
-		const id = server.createSession();
-		await server.command(id, { type: "prompt", text: "/read note.txt" });
-		const events = server.store.events(id);
-		expect(
-			events.some(
-				(event) => event.type === "tool-result" && event.output === "hello",
-			),
-		).toBe(true);
-		expect(
-			new HarnessServer(
-				new SessionStore(join(dir, "state.sqlite")),
-				dir,
-			).store.events(id),
-		).toEqual(events);
-	});
-
-	test("rejects tool paths outside the workspace", async () => {
+	test("does not run slash tool shortcuts without a configured model", async () => {
 		const { server } = harness();
 		const id = server.createSession();
-		await server.command(id, { type: "prompt", text: "/read ../secret" });
-		expect(
-			server.store
-				.events(id)
-				.some(
-					(event) =>
-						event.type === "tool-result" &&
-						event.isError &&
-						event.output.includes("escapes workspace"),
-				),
-		).toBe(true);
+		await server.command(id, { type: "prompt", text: "/read note.txt" });
+		expect(server.store.events(id)).toContainEqual({
+			type: "error",
+			message:
+				"no model configured; use /model <openai-codex|openai-compatible> <model> [base-url]",
+		});
 	});
 
 	test("queues a follow-up after completion", async () => {
@@ -95,47 +71,6 @@ describe("first milestone", () => {
 				state: "finished",
 			},
 		]);
-	});
-
-	test("runs steering after the active turn finishes", async () => {
-		const { server } = harness();
-		const id = server.createSession();
-		const running = server.command(id, {
-			type: "prompt",
-			text: "/bash\nsleep 0.05",
-		});
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		await server.command(id, {
-			type: "steer",
-			id: "steer-1",
-			text: "superseded direction",
-		});
-		await server.command(id, {
-			type: "steer",
-			id: "steer-2",
-			text: "new direction",
-		});
-		await running;
-		expect(
-			server.store.events(id).filter((event) => event.type === "aborted"),
-		).toHaveLength(0);
-		expect(
-			server.store.events(id).filter((event) => event.type === "completed"),
-		).toHaveLength(2);
-		expect(
-			server.store.events(id).filter((event) => event.type === "command"),
-		).toEqual([
-			{ type: "command", id: "steer-1", command: "steer", state: "replaced" },
-			{ type: "command", id: "steer-2", command: "steer", state: "started" },
-		]);
-		const events = server.store.events(id);
-		expect(
-			events.findIndex((event) => event.type === "tool-result"),
-		).toBeLessThan(
-			events.findIndex(
-				(event) => event.type === "command" && event.id === "steer-2",
-			),
-		);
 	});
 
 	test("persists an explicit provider/model selection for resume", async () => {

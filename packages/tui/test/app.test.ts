@@ -174,6 +174,32 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("suggests and completes slash commands", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			await view.renderOnce();
+			await view.mockInput.typeText("/m");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain(
+				"/model  Configure provider and model",
+			);
+			view.mockInput.pressTab();
+			await view.flush();
+			expect((app as unknown as { composer: { value: string } }).composer.value).toBe(
+				"/model ",
+			);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("renders queued follow-ups above the composer", async () => {
 		const store = createTuiStore("session-1");
 		const view = await createTestRenderer({

@@ -32,7 +32,7 @@ describe("HTTP event stream", () => {
 			await fetch(`${base}/sessions/${sessionId}/commands`, {
 				method: "POST",
 				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ type: "prompt", text: "/read missing" }),
+				body: JSON.stringify({ type: "prompt", text: "hello" }),
 			});
 			const result = await reader.read();
 			expect(result.done).toBe(false);

@@ -55,8 +55,6 @@ export class HarnessAgentRuntime implements AgentRuntime {
 		signal: AbortSignal,
 		emit: (event: ServerEvent) => void,
 	): Promise<void> {
-		const request = parseTool(text);
-		if (request) return this.runTool(request, signal, emit);
 		if (!config)
 			throw new HarnessProviderError(
 				"no model configured; use /model <openai-codex|openai-compatible> <model> [base-url]",
@@ -219,31 +217,6 @@ export class HarnessAgentRuntime implements AgentRuntime {
 			},
 		};
 	}
-
-	private async runTool(
-		request: ToolRequest,
-		signal: AbortSignal,
-		emit: (event: ServerEvent) => void,
-	): Promise<void> {
-		const id = crypto.randomUUID();
-		emit({ type: "tool-call", id, name: request.name, input: request.input });
-		try {
-			emit({
-				type: "tool-result",
-				id,
-				name: request.name,
-				output: await this.tools.execute(request, signal),
-			});
-		} catch (error) {
-			emit({
-				type: "tool-result",
-				id,
-				name: request.name,
-				output: error instanceof Error ? error.message : String(error),
-				isError: true,
-			});
-		}
-	}
 }
 
 function normalizeProviderError(error: unknown): HarnessProviderError {
@@ -274,26 +247,4 @@ function toolSchema(name: ToolRequest["name"]) {
 			: name === "edit"
 				? Type.Object({ path, oldText: Type.String(), newText: Type.String() })
 				: Type.Object({ command: Type.String({ minLength: 1 }) });
-}
-function parseTool(text: string): ToolRequest | undefined {
-	const [head = "", ...body] = text.split("\n");
-	const [command, path] = head.trim().split(/\s+/, 2);
-	if (command === "/read" && path) return { name: "read", input: { path } };
-	if (command === "/bash")
-		return { name: "bash", input: { command: text.slice(head.length).trim() } };
-	if (command === "/write" && path)
-		return { name: "write", input: { path, content: body.join("\n") } };
-	if (command === "/edit" && path) {
-		const divider = body.indexOf("---");
-		if (divider >= 0)
-			return {
-				name: "edit",
-				input: {
-					path,
-					oldText: body.slice(0, divider).join("\n"),
-					newText: body.slice(divider + 1).join("\n"),
-				},
-			};
-	}
-	return undefined;
 }
