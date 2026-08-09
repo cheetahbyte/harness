@@ -24,12 +24,16 @@ export class TuiApp {
     this.transcript = new ScrollBoxRenderable(renderer, { width: "100%", flexGrow: 1, stickyScroll: true, stickyStart: "bottom", viewportCulling: true, paddingRight: 1 });
     root.add(this.transcript);
 
-    const composerBox = new BoxRenderable(renderer, { width: "100%", marginTop: 1, border: true, borderStyle: "rounded", borderColor: "#45475a", paddingLeft: 1, paddingRight: 1 });
-    this.composer = new InputRenderable(renderer, { width: "100%", placeholder: "Message Harness…", textColor: "#cdd6f4", focusedBackgroundColor: "#1e1e2e" });
+    const composerBox = new BoxRenderable(renderer, { width: "100%", marginTop: 1, flexDirection: "row", alignItems: "center", border: ["top", "bottom"], borderColor: "#666873", paddingLeft: 1, paddingRight: 1 });
+    composerBox.add(new TextRenderable(renderer, { content: "›", fg: "#cdd6f4", marginRight: 1 }));
+    this.composer = new InputRenderable(renderer, { flexGrow: 1, placeholder: "", textColor: "#cdd6f4", backgroundColor: "transparent", focusedBackgroundColor: "transparent" });
     this.composer.on(InputRenderableEvents.ENTER, (value: string) => void this.submit(value));
     composerBox.add(this.composer);
     root.add(composerBox);
-    root.add(new TextRenderable(renderer, { content: "Enter steer · Option+Enter follow-up · Esc abort", fg: "#6c7086" }));
+    const footer = new BoxRenderable(renderer, { width: "100%", flexDirection: "row", paddingTop: 1 });
+    footer.add(new TextRenderable(renderer, { content: "▶▶", fg: "#cba6f7", marginRight: 1 }));
+    footer.add(new TextRenderable(renderer, { content: "Enter steer  ·  Option+Enter follow-up  ·  Esc abort", fg: "#8b8d98" }));
+    root.add(footer);
     renderer.root.add(root);
     this.unsubscribe = store.subscribe(() => this.sync());
     renderer.keyInput.prependListener("keypress", this.handleKey);

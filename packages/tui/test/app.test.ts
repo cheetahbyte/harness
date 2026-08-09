@@ -14,6 +14,8 @@ describe("OpenTUI app", () => {
       await view.renderOnce();
       expect(view.captureCharFrame()).toContain("openai-codex/gpt-5.6-sol");
       expect(view.captureCharFrame()).toContain("read: hello");
+      expect(view.captureCharFrame()).toContain("›");
+      expect(view.captureCharFrame()).toContain("▶▶");
       store.getState().apply({ type: "assistant-delta", text: "stream" });
       store.getState().apply({ type: "assistant-delta", text: "ing" });
       await view.flush();
