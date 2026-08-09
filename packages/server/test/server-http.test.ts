@@ -24,8 +24,9 @@ describe("HTTP event stream", () => {
 			const { sessionId } = (await (
 				await fetch(`${base}/sessions`, { method: "POST" })
 			).json()) as { sessionId: string };
-			const response = await fetch(`${base}/sessions/${sessionId}/events`);
-			const reader = response.body?.getReader();
+      const response = await fetch(`${base}/sessions/${sessionId}/events`);
+			if (!response.body) throw new Error("event stream response has no body");
+      const reader = response.body.getReader();
 			expect((await reader.read()).done).toBe(false);
 			await new Promise((resolve) => setTimeout(resolve, 10_250));
 			await fetch(`${base}/sessions/${sessionId}/commands`, {
