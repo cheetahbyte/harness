@@ -24,7 +24,7 @@ export class TuiApp {
     this.transcript = new ScrollBoxRenderable(renderer, { width: "100%", flexGrow: 1, stickyScroll: true, stickyStart: "bottom", viewportCulling: true, paddingRight: 1 });
     root.add(this.transcript);
 
-    const composerBox = new BoxRenderable(renderer, { width: "100%", marginTop: 1, flexDirection: "row", alignItems: "center", border: ["top", "bottom"], borderColor: "#666873", paddingLeft: 1, paddingRight: 1 });
+    const composerBox = new BoxRenderable(renderer, { width: "100%", height: 3, marginTop: 1, flexDirection: "row", alignItems: "center", border: ["top", "bottom"], borderColor: "#666873", paddingLeft: 1, paddingRight: 1 });
     composerBox.add(new TextRenderable(renderer, { content: "›", fg: "#cdd6f4", marginRight: 1 }));
     this.composer = new InputRenderable(renderer, { flexGrow: 1, placeholder: "", textColor: "#cdd6f4", backgroundColor: "transparent", focusedBackgroundColor: "transparent" });
     this.composer.on(InputRenderableEvents.ENTER, (value: string) => void this.submit(value));
