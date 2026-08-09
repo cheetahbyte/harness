@@ -160,7 +160,7 @@ describe("first milestone", () => {
 	});
 
 	test("streams an OpenAI-compatible model through the Pi agent loop and core tools", async () => {
-		process.env.HARNESS_OPENAI_API_KEY = "test";
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
 		let calls = 0;
 		const provider = Bun.serve({
 			port: 0,
@@ -226,12 +226,12 @@ describe("first milestone", () => {
 			).toBe(true);
 		} finally {
 			provider.stop(true);
-			delete process.env.HARNESS_OPENAI_API_KEY;
+			delete process.env["HARNESS_OPENAI_API_KEY"];
 		}
 	});
 
 	test("drains steering between turns before follow-ups", async () => {
-		process.env.HARNESS_OPENAI_API_KEY = "test";
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
 		let calls = 0;
 		let firstRequestStarted!: () => void;
 		const started = new Promise<void>((resolve) => {
@@ -302,12 +302,12 @@ describe("first milestone", () => {
 			).toEqual(["steer-1", "follow-1"]);
 		} finally {
 			provider.stop(true);
-			delete process.env.HARNESS_OPENAI_API_KEY;
+			delete process.env["HARNESS_OPENAI_API_KEY"];
 		}
 	});
 
 	test("aborts an in-flight OpenAI-compatible Pi request", async () => {
-		process.env.HARNESS_OPENAI_API_KEY = "test";
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
 		let started!: () => void;
 		const requestStarted = new Promise<void>((resolve) => {
 			started = resolve;
@@ -350,7 +350,7 @@ describe("first milestone", () => {
 			).toHaveLength(1);
 		} finally {
 			provider.stop(true);
-			delete process.env.HARNESS_OPENAI_API_KEY;
+			delete process.env["HARNESS_OPENAI_API_KEY"];
 		}
 	});
 });

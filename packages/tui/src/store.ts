@@ -24,7 +24,7 @@ export type FollowUp = { id: string; text: string; sending: boolean };
 
 /** Projects protocol events for display; it does not own runtime or session behavior. */
 export function createTuiStore(sessionId: string) {
-	const showStatus = process.env.HARNESS_SHOW_STATUS === "1";
+	const showStatus = process.env["HARNESS_SHOW_STATUS"] === "1";
 	return createStore<TuiState>((set) => {
 		const append = (entry: TranscriptEntry) =>
 			set((state) => ({ entries: [...finishActive(state.entries), entry] }));
@@ -98,7 +98,7 @@ export function createTuiStore(sessionId: string) {
 					return append({
 						kind: "tool-result",
 						text: `${event.name}: ${event.output}`,
-						error: event.isError,
+						...(event.isError === undefined ? {} : { error: event.isError }),
 					});
 				if (event.type === "error") {
 					set({ running: false });
@@ -189,12 +189,13 @@ export function commandForInput(text: string): ClientCommand {
 	const match = text.match(
 		/^\/model\s+(openai-codex|openai-compatible)\s+(\S+)(?:\s+(\S+))?$/,
 	);
-	return match
-		? {
-				type: "configure",
-				provider: match[1] as "openai-codex" | "openai-compatible",
-				model: match[2],
-				baseUrl: match[3],
-			}
-		: { type: "steer", text };
+	if (!match) return { type: "steer", text };
+	const [, provider, model, baseUrl] = match;
+	if (!provider || !model) return { type: "steer", text };
+	return {
+		type: "configure",
+		provider: provider as "openai-codex" | "openai-compatible",
+		model,
+		...(baseUrl ? { baseUrl } : {}),
+	};
 }

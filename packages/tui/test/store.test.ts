@@ -3,12 +3,12 @@ import { createTuiStore } from "../src/store";
 
 describe("TUI protocol store", () => {
 	function createStoreWithStatus(showStatus: boolean) {
-		const previous = process.env.HARNESS_SHOW_STATUS;
-		if (showStatus) process.env.HARNESS_SHOW_STATUS = "1";
-		else delete process.env.HARNESS_SHOW_STATUS;
+		const previous = process.env["HARNESS_SHOW_STATUS"];
+		if (showStatus) process.env["HARNESS_SHOW_STATUS"] = "1";
+		else delete process.env["HARNESS_SHOW_STATUS"];
 		const store = createTuiStore("session");
-		if (previous === undefined) delete process.env.HARNESS_SHOW_STATUS;
-		else process.env.HARNESS_SHOW_STATUS = previous;
+		if (previous === undefined) delete process.env["HARNESS_SHOW_STATUS"];
+		else process.env["HARNESS_SHOW_STATUS"] = previous;
 		return store;
 	}
 

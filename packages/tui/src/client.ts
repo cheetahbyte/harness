@@ -2,7 +2,7 @@ import type { ClientCommand, ServerEvent } from "../../shared/src/protocol";
 
 export class HarnessClient {
 	constructor(
-		readonly base = process.env.HARNESS_URL ?? "http://localhost:7432",
+		readonly base = process.env["HARNESS_URL"] ?? "http://localhost:7432",
 	) {}
 
 	async createSession(): Promise<string> {

@@ -35,7 +35,7 @@ type QueuedMessage = QueueCallbacks & { message: object };
 type AgentEntry = {
 	key: string;
 	agent: Agent;
-	steering?: QueuedMessage;
+	steering: QueuedMessage | undefined;
 	queued: WeakMap<object, QueuedMessage>;
 	active: QueuedMessage[];
 };
@@ -83,6 +83,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 				agent,
 				queued: new WeakMap(),
 				active: [],
+				steering: undefined,
 			};
 			agent.subscribe((event) => this.translate(created, event, emit));
 			this.agents.set(sessionId, created);
@@ -253,12 +254,16 @@ function normalizeProviderError(error: unknown): HarnessProviderError {
 			);
 }
 function toolDescription(name: ToolRequest["name"]): string {
-	return {
-		read: "Read a text file in the workspace.",
-		write: "Write a text file in the workspace.",
-		edit: "Replace exact text in a file.",
-		bash: "Run a shell command in the workspace.",
-	}[name];
+	switch (name) {
+		case "read":
+			return "Read a text file in the workspace.";
+		case "write":
+			return "Write a text file in the workspace.";
+		case "edit":
+			return "Replace exact text in a file.";
+		case "bash":
+			return "Run a shell command in the workspace.";
+	}
 }
 function toolSchema(name: ToolRequest["name"]) {
 	const path = Type.String({ minLength: 1 });
@@ -271,7 +276,7 @@ function toolSchema(name: ToolRequest["name"]) {
 				: Type.Object({ command: Type.String({ minLength: 1 }) });
 }
 function parseTool(text: string): ToolRequest | undefined {
-	const [head, ...body] = text.split("\n");
+	const [head = "", ...body] = text.split("\n");
 	const [command, path] = head.trim().split(/\s+/, 2);
 	if (command === "/read" && path) return { name: "read", input: { path } };
 	if (command === "/bash")
@@ -290,4 +295,5 @@ function parseTool(text: string): ToolRequest | undefined {
 				},
 			};
 	}
+	return undefined;
 }

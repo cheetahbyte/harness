@@ -36,6 +36,7 @@ export class TranscriptView {
 			index++
 		) {
 			const entry = entries[index];
+			if (!entry) continue;
 			const text = new TextRenderable(this.renderer, {
 				content: formatEntry(entry),
 				fg: entryColor(entry),
@@ -56,7 +57,7 @@ export class TranscriptView {
 			if (gutter) row.add(gutter);
 			row.add(text);
 			this.root.add(row);
-			this.renderedEntries.push({ row, text, gutter });
+			this.renderedEntries.push(gutter ? { row, text, gutter } : { row, text });
 		}
 		entries.forEach((entry, index) => {
 			const rendered = this.renderedEntries[index];

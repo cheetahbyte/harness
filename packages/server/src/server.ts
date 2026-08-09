@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import type { ClientCommand, ServerEvent } from "../../shared/src/protocol";
 import { HarnessAgentRuntime } from "./agent-runtime";
-import { type HarnessModelConfig, JsonCredentialStore } from "./provider";
+import { JsonCredentialStore } from "./provider";
 import { SessionStore } from "./session-store";
 import { CoreTools } from "./tools";
 
@@ -48,10 +48,10 @@ export class HarnessServer {
 		}
 		if (command.type === "configure") {
 			if (session.running) throw new Error("cannot change model while running");
-			const config: HarnessModelConfig = {
+			const config = {
 				provider: command.provider,
 				model: command.model,
-				baseUrl: command.baseUrl,
+				...(command.baseUrl ? { baseUrl: command.baseUrl } : {}),
 			};
 			this.store.setModelConfig(id, config);
 			this.runtime.forget(id);
@@ -173,11 +173,11 @@ export class HarnessServer {
 				message: error instanceof Error ? error.message : String(error),
 			});
 		}
-		session.running = undefined;
+		delete session.running;
 		if (controller.signal.aborted) {
 			this.emit(id, { type: "aborted" });
 			const steer = session.pendingSteer;
-			session.pendingSteer = undefined;
+			delete session.pendingSteer;
 			if (pending?.type === "follow-up")
 				this.emit(id, {
 					type: "command",
@@ -197,7 +197,7 @@ export class HarnessServer {
 				state: "finished",
 			});
 		const steer = session.pendingSteer;
-		session.pendingSteer = undefined;
+		delete session.pendingSteer;
 		if (steer) {
 			await this.run(id, steer);
 			return;
@@ -251,6 +251,7 @@ export function serveHarness(
 			);
 			if (!match) return new Response("not found", { status: 404 });
 			const [, id, action] = match;
+			if (!id) return new Response("not found", { status: 404 });
 			try {
 				if (request.method === "GET" && action === "events") {
 					const stream = new ReadableStream<Uint8Array>({

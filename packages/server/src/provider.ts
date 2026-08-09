@@ -118,14 +118,13 @@ export function providerModels(
 				auth: {
 					apiKey: {
 						name: "OpenAI-compatible API key",
-						resolve: async ({ ctx, credential }) => ({
-							auth: {
-								apiKey:
-									credential?.key ??
-									(await ctx.env("HARNESS_OPENAI_API_KEY")) ??
-									(await ctx.env("OPENAI_API_KEY")),
-							},
-						}),
+						resolve: async ({ ctx, credential }) => {
+							const apiKey =
+								credential?.key ??
+								(await ctx.env("HARNESS_OPENAI_API_KEY")) ??
+								(await ctx.env("OPENAI_API_KEY"));
+							return apiKey ? { auth: { apiKey } } : undefined;
+						},
 					},
 				},
 				models: [model],

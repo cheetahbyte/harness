@@ -20,32 +20,35 @@ export class CoreTools {
 		if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 		switch (request.name) {
 			case "read":
-				return await readFile(this.path(request.input.path), "utf8");
+				return await readFile(this.path(request.input["path"]), "utf8");
 			case "write": {
-				if (typeof request.input.content !== "string")
+				if (typeof request.input["content"] !== "string")
 					throw new Error("content must be a string");
-				await writeFile(this.path(request.input.path), request.input.content);
-				return `wrote ${request.input.path}`;
+				await writeFile(
+					this.path(request.input["path"]),
+					request.input["content"],
+				);
+				return `wrote ${request.input["path"]}`;
 			}
 			case "edit": {
 				if (
-					typeof request.input.oldText !== "string" ||
-					typeof request.input.newText !== "string"
+					typeof request.input["oldText"] !== "string" ||
+					typeof request.input["newText"] !== "string"
 				)
 					throw new Error("oldText and newText must be strings");
-				const path = this.path(request.input.path);
+				const path = this.path(request.input["path"]);
 				const source = await readFile(path, "utf8");
-				const count = source.split(request.input.oldText).length - 1;
+				const count = source.split(request.input["oldText"]).length - 1;
 				if (count !== 1)
 					throw new Error(`oldText must occur exactly once (found ${count})`);
 				await writeFile(
 					path,
-					source.replace(request.input.oldText, request.input.newText),
+					source.replace(request.input["oldText"], request.input["newText"]),
 				);
-				return `edited ${request.input.path}`;
+				return `edited ${request.input["path"]}`;
 			}
 			case "bash":
-				return await this.bash(request.input.command, signal);
+				return await this.bash(request.input["command"], signal);
 		}
 	}
 
