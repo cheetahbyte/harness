@@ -15,7 +15,7 @@ export class TuiApp {
     private readonly store: StoreApi<TuiState>,
     private readonly send: (command: ClientCommand) => Promise<void>,
   ) {
-    const root = new BoxRenderable(renderer, { width: "100%", height: "100%", flexDirection: "column", padding: 1 });
+    const root = new BoxRenderable(renderer, { width: "100%", height: "100%", flexDirection: "column", padding: 1, paddingBottom: 0 });
     const top = new BoxRenderable(renderer, { width: "100%", flexDirection: "row", justifyContent: "space-between", marginBottom: 1 });
     this.header = new TextRenderable(renderer, { fg: "#cdd6f4" });
     top.add(this.header);
@@ -30,7 +30,7 @@ export class TuiApp {
     this.composer.on(InputRenderableEvents.ENTER, (value: string) => void this.submit(value));
     composerBox.add(this.composer);
     root.add(composerBox);
-    const footer = new BoxRenderable(renderer, { width: "100%", flexDirection: "row", paddingTop: 1 });
+    const footer = new BoxRenderable(renderer, { width: "100%", flexDirection: "row" });
     footer.add(new TextRenderable(renderer, { content: "▶▶", fg: "#cba6f7", marginRight: 1 }));
     footer.add(new TextRenderable(renderer, { content: "Enter steer  ·  Option+Enter follow-up  ·  Esc abort", fg: "#8b8d98" }));
     root.add(footer);
