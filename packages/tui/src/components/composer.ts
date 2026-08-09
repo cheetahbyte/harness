@@ -80,6 +80,12 @@ export class ComposerView {
 	}
 
 	private handleKey = (key: KeyEvent) => {
+		if (key.super && key.name === "c") {
+			const text = this.renderer.getSelection()?.getSelectedText();
+			if (text) this.renderer.copyToClipboardOSC52(text);
+			key.preventDefault();
+			return;
+		}
 		if (key.name === "escape") {
 			key.preventDefault();
 			this.actions.abort();

@@ -24,6 +24,7 @@ export type FollowUp = { id: string; text: string; sending: boolean };
 
 /** Projects protocol events for display; it does not own runtime or session behavior. */
 export function createTuiStore(sessionId: string) {
+	const showStatus = process.env.HARNESS_SHOW_STATUS === "1";
 	return createStore<TuiState>((set) => {
 		const append = (entry: TranscriptEntry) =>
 			set((state) => ({ entries: [...finishActive(state.entries), entry] }));
@@ -103,14 +104,24 @@ export function createTuiStore(sessionId: string) {
 					set({ running: false });
 					return append({ kind: "error", text: event.message, error: true });
 				}
-				if (event.type === "usage")
+				if (event.type === "usage" && showStatus)
 					return append({
 						kind: "usage",
 						text: `in ${event.input} · out ${event.output} · total ${event.totalTokens}`,
 					});
-				if (event.type === "completed" || event.type === "aborted") {
+				if (event.type === "completed") {
 					set({ running: false });
-					return append({ kind: event.type, text: event.type });
+					if (event.durationMs !== undefined)
+						return append({
+							kind: event.type,
+							text: `✶ Noodled for ${formatDuration(event.durationMs)}`,
+						});
+					return;
+				}
+				if (event.type === "aborted") {
+					set({ running: false });
+					if (showStatus) return append({ kind: event.type, text: event.type });
+					return;
 				}
 				if (event.type !== "status") return;
 				set((state) => ({
@@ -120,7 +131,7 @@ export function createTuiStore(sessionId: string) {
 						: state.configuredStatus,
 					running: event.text === "running" ? true : state.running,
 				}));
-				append({ kind: "status", text: event.text });
+				if (showStatus) append({ kind: "status", text: event.text });
 			},
 			addUser(text) {
 				append({ kind: "user", text });
@@ -161,6 +172,12 @@ function finishActive(entries: TranscriptEntry[]): TranscriptEntry[] {
 	const last = entries.at(-1);
 	if (!last?.active) return entries;
 	return [...entries.slice(0, -1), { ...last, active: false }];
+}
+
+function formatDuration(durationMs: number): string {
+	const seconds = Math.round(durationMs / 1000);
+	const minutes = Math.floor(seconds / 60);
+	return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
 }
 
 export function parseModelStatus(status: string): string | undefined {

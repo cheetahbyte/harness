@@ -68,6 +68,11 @@ describe("first milestone", () => {
 			server.store.events(id).filter((event) => event.type === "completed"),
 		).toHaveLength(2);
 		expect(
+			server.store.events(id).every(
+				(event) => event.type !== "completed" || event.durationMs !== undefined,
+			),
+		).toBe(true);
+		expect(
 			server.store.events(id).filter((event) => event.type === "command"),
 		).toEqual([
 			{

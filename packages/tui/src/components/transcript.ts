@@ -72,7 +72,7 @@ export class TranscriptView {
 function formatEntry(entry: TranscriptEntry): string {
 	const prefix = (
 		{
-			user: "> ",
+			user: "",
 			assistant: "",
 			reasoning: "thinking: ",
 			"tool-call": "→ ",
@@ -80,11 +80,11 @@ function formatEntry(entry: TranscriptEntry): string {
 			error: "error: ",
 			status: "[",
 			usage: "usage: ",
-			completed: "[",
+			completed: "",
 			aborted: "[",
 		} as const
 	)[entry.kind];
-	return `${prefix}${entry.text}${["status", "completed", "aborted"].includes(entry.kind) ? "]" : ""}`;
+	return `${prefix}${entry.text}${["status", "aborted"].includes(entry.kind) ? "]" : ""}`;
 }
 
 function entryColor(entry: TranscriptEntry): string {

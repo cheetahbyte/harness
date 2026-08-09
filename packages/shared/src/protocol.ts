@@ -37,6 +37,6 @@ export type ServerEvent =
 			state: "queued" | "started" | "finished" | "replaced";
 	  }
 	| { type: "status"; text: string }
-	| { type: "completed" }
+	| { type: "completed"; durationMs?: number }
 	| { type: "aborted" }
 	| { type: "error"; message: string };

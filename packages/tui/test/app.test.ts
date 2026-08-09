@@ -22,7 +22,7 @@ describe("OpenTUI app", () => {
 		});
 		const app = new TuiApp(view.renderer, store, async () => {});
 		try {
-			await view.renderOnce();
+			await view.flush();
 			expect(view.captureCharFrame()).toContain("openai-codex/gpt-5.6-sol");
 			expect(view.captureCharFrame()).toContain("read: hello");
 			expect(view.captureCharFrame()).toContain("›");
@@ -54,6 +54,34 @@ describe("OpenTUI app", () => {
 			view.mockInput.pressEscape();
 			await Promise.resolve();
 			expect(sent).toEqual(["abort"]);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("copies the selected transcript text with Cmd-C", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const copied: string[] = [];
+		const renderer = view.renderer as unknown as {
+			getSelection: () => { getSelectedText: () => string } | null;
+			copyToClipboardOSC52: (text: string) => boolean;
+		};
+		renderer.getSelection = () => ({ getSelectedText: () => "copied text" });
+		renderer.copyToClipboardOSC52 = (text) => {
+			copied.push(text);
+			return true;
+		};
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			view.mockInput.pressKey("c", { super: true });
+			await Promise.resolve();
+			expect(copied).toEqual(["copied text"]);
 		} finally {
 			app.destroy();
 			view.renderer.destroy();

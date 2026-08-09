@@ -2,6 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { createTuiStore } from "../src/store";
 
 describe("TUI protocol store", () => {
+	function createStoreWithStatus(showStatus: boolean) {
+		const previous = process.env.HARNESS_SHOW_STATUS;
+		if (showStatus) process.env.HARNESS_SHOW_STATUS = "1";
+		else delete process.env.HARNESS_SHOW_STATUS;
+		const store = createTuiStore("session");
+		if (previous === undefined) delete process.env.HARNESS_SHOW_STATUS;
+		else process.env.HARNESS_SHOW_STATUS = previous;
+		return store;
+	}
+
 	test("coalesces only the active assistant tail", () => {
 		const store = createTuiStore("session");
 		store.getState().apply({ type: "assistant-delta", text: "hel" });
@@ -22,8 +32,8 @@ describe("TUI protocol store", () => {
 		]);
 	});
 
-	test("projects replayed reasoning, tool failures, status, and completion", () => {
-		const store = createTuiStore("session");
+	test("hides runtime rows by default and shows the completion duration", () => {
+		const store = createStoreWithStatus(false);
 		store
 			.getState()
 			.apply({ type: "status", text: "configured openai-codex/gpt-5.6-sol" });
@@ -38,17 +48,41 @@ describe("TUI protocol store", () => {
 			output: "failed",
 			isError: true,
 		});
-		store.getState().apply({ type: "completed" });
+		store.getState().apply({
+			type: "usage",
+			input: 176,
+			output: 11,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 187,
+		});
+		store.getState().apply({ type: "completed", durationMs: 257_000 });
 		expect(store.getState().running).toBe(false);
 		expect(store.getState().configuredStatus).toBe(
 			"configured openai-codex/gpt-5.6-sol",
 		);
 		expect(store.getState().entries.map((entry) => entry.kind)).toEqual([
-			"status",
-			"status",
 			"reasoning",
 			"tool-result",
 			"completed",
+		]);
+		expect(store.getState().entries.at(-1)?.text).toBe("✶ Noodled for 4m 17s");
+	});
+
+	test("shows runtime rows when HARNESS_SHOW_STATUS is enabled", () => {
+		const store = createStoreWithStatus(true);
+		store.getState().apply({ type: "status", text: "running" });
+		store.getState().apply({
+			type: "usage",
+			input: 176,
+			output: 11,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 187,
+		});
+		expect(store.getState().entries.map((entry) => entry.kind)).toEqual([
+			"status",
+			"usage",
 		]);
 	});
 

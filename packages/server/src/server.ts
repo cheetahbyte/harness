@@ -104,6 +104,7 @@ export class HarnessServer {
 		const session = this.session(id);
 		if (session.running) return; // The steering command has aborted it; its caller owns the next run.
 		const controller = new AbortController();
+		const startedAt = Date.now();
 		session.running = controller;
 		const pending = typeof command === "string" ? undefined : command;
 		const text = typeof command === "string" ? command : command.text;
@@ -144,7 +145,7 @@ export class HarnessServer {
 			if (steer) await this.run(id, steer);
 			return;
 		}
-		this.emit(id, { type: "completed" });
+		this.emit(id, { type: "completed", durationMs: Date.now() - startedAt });
 		if (pending?.type === "follow-up")
 			this.emit(id, {
 				type: "command",
