@@ -40,7 +40,7 @@ export type WizardState =
 	| { kind: "cancelled"; provider?: string };
 
 /** Projects protocol events for display; it does not own runtime or session behavior. */
-export function createTuiStore(sessionId: string) {
+export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 	const showStatus = process.env["HARNESS_SHOW_STATUS"] === "1";
 	return createStore<TuiState>((set) => {
 		const append = (entry: TranscriptEntry) =>
@@ -64,6 +64,7 @@ export function createTuiStore(sessionId: string) {
 			});
 		return {
 			sessionId,
+			pwd,
 			entries: [],
 			followUps: [],
 			running: false,
@@ -230,6 +231,7 @@ export function createTuiStore(sessionId: string) {
 
 export type TuiState = {
 	sessionId: string;
+	pwd: string;
 	entries: TranscriptEntry[];
 	followUps: FollowUp[];
 	running: boolean;
