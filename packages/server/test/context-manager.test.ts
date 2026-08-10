@@ -284,6 +284,113 @@ describe("ContextManager", () => {
 		store.db.close();
 	});
 
+	test("retires and evicts a completed tool exchange as one group", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		const assistant = manager.record({
+			sessionId,
+			kind: "assistant",
+			payload: { role: "assistant", content: "tool call" },
+			tokenCost: 40,
+			groupId: "exchange-1",
+			lifecycle: "active",
+			reason: "active tool call",
+		});
+		const result = manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "large output" },
+			compactPayload: { role: "user", content: "observation://old" },
+			tokenCost: 60,
+			compactTokenCost: 5,
+			groupId: "exchange-1",
+			lifecycle: "active",
+			reason: "active tool result",
+			source: { toolCallId: "call-1", toolName: "read" },
+		});
+		const secondResult = manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "other output" },
+			compactPayload: { role: "user", content: "observation://other" },
+			tokenCost: 10,
+			compactTokenCost: 2,
+			groupId: "exchange-1",
+			lifecycle: "active",
+			reason: "active tool result",
+			source: { toolCallId: "call-2", toolName: "read" },
+		});
+
+		manager.completeTurn(sessionId);
+		expect(store.contextItem(assistant.id)?.lifecycle).toBe("retained");
+		expect(store.contextItem(result.id)?.lifecycle).toBe("retained");
+		expect(store.contextItem(secondResult.id)?.lifecycle).toBe("retained");
+
+		const assembly = manager.assemble(sessionId, {
+			budget: 90,
+			target: 70,
+			overheadTokens: 0,
+		});
+		expect(assembly.evictedIds).toEqual([
+			assistant.id,
+			result.id,
+			secondResult.id,
+		]);
+		expect(assembly.payloads).toEqual([
+			{ role: "user", content: "observation://old" },
+			{ role: "user", content: "observation://other" },
+		]);
+		expect(store.contextItem(assistant.id)?.projection).toBe("omitted");
+		store.db.close();
+	});
+
+	test("retires old text turns while preserving the initial objective", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		const objective = manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "objective" },
+			tokenCost: 20,
+			groupId: "turn-1",
+			lifecycle: "pinned",
+			reason: "initial user objective",
+		});
+		const oldUser = manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "old follow-up" },
+			tokenCost: 40,
+			groupId: "turn-2",
+			lifecycle: "active",
+			reason: "active user turn",
+		});
+		const oldAssistant = manager.record({
+			sessionId,
+			kind: "assistant",
+			payload: { role: "assistant", content: "old reply" },
+			tokenCost: 40,
+			groupId: "turn-2",
+			lifecycle: "active",
+			reason: "recent assistant turn",
+		});
+
+		manager.completeGroup(sessionId, "turn-2");
+		const assembly = manager.assemble(sessionId, {
+			budget: 90,
+			target: 30,
+			overheadTokens: 0,
+		});
+		expect(assembly.evictedIds).toEqual([oldUser.id, oldAssistant.id]);
+		expect(assembly.payloads).toEqual([
+			{ role: "user", content: "objective" },
+		]);
+		expect(store.contextItem(objective.id)?.lifecycle).toBe("pinned");
+		store.db.close();
+	});
+
 	test("rejects an unsatisfiable pinned-only budget", () => {
 		const store = new SessionStore(storePath());
 		const sessionId = store.create();
@@ -481,6 +588,108 @@ describe("ContextManager", () => {
 		expect(() => manager.pin(sessionId, "  ", { budget: 2 })).toThrow(
 			"Pinned note cannot be empty",
 		);
+		store.db.close();
+	});
+
+	test("stores structured subagent handoffs and exposes metadata-only inspection", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		const result = {
+			status: "completed" as const,
+			findings: ["JWT checks happen in middleware"],
+			decisions: ["keep middleware boundary"],
+			changedFiles: ["src/auth.ts"],
+			verification: ["auth tests pass"],
+			unresolvedIssues: [],
+			artifactRefs: ["subagent://task-42"],
+		};
+		const handoff = manager.recordSubagentResult(sessionId, result, {
+			subagentId: "task-42",
+		});
+
+		expect(store.contextItem(handoff.id)?.payload).toEqual(result);
+		expect(manager.assemble(sessionId, {
+			budget: 1_000,
+			target: 800,
+			overheadTokens: 0,
+		}).payloads).toEqual([
+			expect.objectContaining({
+				role: "user",
+				content: expect.stringContaining("JWT checks happen in middleware"),
+			}),
+		]);
+		const inspection = manager.inspect(sessionId);
+		expect(inspection).toMatchObject({
+			sessionId,
+			counts: { pinned: 0, active: 0, retained: 1, archived: 0 },
+			items: [
+				{
+					id: handoff.id,
+					kind: "subagent-handoff",
+					lifecycle: "retained",
+					projection: "compact",
+					reason: "structured subagent handoff",
+				},
+			],
+		});
+		expect("payload" in inspection.items[0]).toBe(false);
+		store.db.close();
+	});
+
+	test("keeps a long tool run below budget without deleting raw history", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		const raw = "x".repeat(16_000);
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "keep the objective" },
+			tokenCost: 10,
+			lifecycle: "pinned",
+			reason: "user objective",
+		});
+		for (let index = 0; index < 100; index++) {
+			const groupId = `group-${index}`;
+			manager.record({
+				sessionId,
+				kind: "assistant",
+				payload: { role: "assistant", content: `call ${index}` },
+				tokenCost: 20,
+				groupId,
+				lifecycle: "retained",
+				reason: "completed tool call",
+			});
+			manager.record({
+				sessionId,
+				kind: "tool-result",
+				payload: { role: "toolResult", content: raw },
+				compactPayload: {
+					role: "user",
+					content: `observation://obs-${index}`,
+				},
+				tokenCost: 4_000,
+				compactTokenCost: 5,
+				groupId,
+				lifecycle: "retained",
+				reason: "completed tool result",
+				source: { toolCallId: `call-${index}`, toolName: "read" },
+			});
+		}
+
+		const assembly = manager.assemble(sessionId, {
+			budget: 2_000,
+			target: 1_600,
+			overheadTokens: 100,
+		});
+		expect(assembly.estimatedTokens).toBeLessThanOrEqual(1_600);
+		expect(JSON.stringify(assembly.payloads)).not.toContain(raw);
+		expect(store.contextItems(sessionId)).toHaveLength(201);
+		expect(store.contextItems(sessionId)[0]).toMatchObject({
+			lifecycle: "pinned",
+			projection: "full",
+		});
 		store.db.close();
 	});
 });

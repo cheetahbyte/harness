@@ -2,7 +2,7 @@ import type { SessionStore } from "./session-store";
 
 export type ContextLifecycle = "pinned" | "active" | "retained" | "archived";
 export type ContextProjection = "full" | "compact" | "reference" | "omitted";
-export type ContextKind =
+type ContextKind =
 	| "system"
 	| "user"
 	| "assistant"
@@ -68,7 +68,7 @@ export type PinOptions = {
 	overheadTokens?: number;
 };
 
-export const DEFAULT_OBSERVATION_RECALL_LIMIT = 16 * 1024;
+const DEFAULT_OBSERVATION_RECALL_LIMIT = 16 * 1024;
 export const MAX_OBSERVATION_RECALL_LIMIT = 64 * 1024;
 
 export class ContextBudgetError extends Error {
@@ -91,6 +91,30 @@ export type SubagentResult = {
 	verification: string[];
 	unresolvedIssues: string[];
 	artifactRefs: string[];
+};
+
+export type ContextInspection = {
+	sessionId: string;
+	estimatedTokens: number;
+	counts: Record<ContextLifecycle, number>;
+	items: Array<
+		Pick<
+			ContextItem,
+			| "id"
+			| "sequence"
+			| "kind"
+			| "tokenCost"
+			| "compactTokenCost"
+			| "source"
+			| "groupId"
+			| "episodeId"
+			| "lifecycle"
+			| "projection"
+			| "reason"
+			| "createdAt"
+			| "updatedAt"
+		>
+	>;
 };
 
 type RecordInput = Omit<NewContextItem, "id" | "createdAt" | "projection"> & {
@@ -148,17 +172,49 @@ export class ContextManager {
 
 	completeTurn(sessionId: string, newToolResultIds: string[] = []): void {
 		const newToolCallIds = new Set(newToolResultIds);
-		for (const item of this.store.contextItems(sessionId))
+		const items = this.store.contextItems(sessionId);
+		const retainedGroups = new Set<string>();
+		for (const item of items)
 			if (
 				item.kind === "tool-result" &&
 				item.lifecycle === "active" &&
 				!newToolCallIds.has(item.source?.toolCallId ?? "")
-			)
+			) {
 				this.store.setContextLifecycle(
 					item.id,
 					"retained",
 					item.projection,
 					"consumed by a later model turn",
+				);
+				if (item.groupId) retainedGroups.add(item.groupId);
+			}
+		for (const item of items)
+			if (
+				item.kind === "assistant" &&
+				item.lifecycle === "active" &&
+				item.groupId &&
+				retainedGroups.has(item.groupId)
+			)
+				this.store.setContextLifecycle(
+					item.id,
+					"retained",
+					item.projection,
+					"tool exchange consumed by a later model turn",
+				);
+	}
+
+	completeGroup(sessionId: string, groupId: string): void {
+		for (const item of this.store.contextItems(sessionId))
+			if (
+				item.groupId === groupId &&
+				item.lifecycle === "active" &&
+				(item.kind === "user" || item.kind === "assistant")
+			)
+				this.store.setContextLifecycle(
+					item.id,
+					"retained",
+					item.projection,
+					"completed conversation turn",
 				);
 	}
 
@@ -214,7 +270,7 @@ export class ContextManager {
 
 	pin(sessionId: string, text: string, options: PinOptions): ContextItem {
 		if (!text.trim()) throw new Error("Pinned note cannot be empty");
-		const payload = { role: "user", content: text };
+		const payload = { role: "user", content: text, timestamp: Date.now() };
 		const note: ContextItem = {
 			id: "",
 			sessionId,
@@ -260,22 +316,24 @@ export class ContextManager {
 
 		if (estimatedTokens > options.budget)
 			for (const item of evictionCandidates(items)) {
-				const archivedProjection =
-					item.compactPayload === undefined ? "reference" : "compact";
-				if (projectionCost(item, archivedProjection) >= projectionCost(item))
+				if (
+					items.find((current) => current.id === item.id)?.lifecycle !==
+					"retained"
+				)
 					continue;
-				this.archive(item.id, "working-context budget");
-				evictedIds.push(item.id);
-				items = items.map((current) =>
-					current.id === item.id
-						? {
-								...current,
-								lifecycle: "archived",
-								projection: archivedProjection,
-								reason: "working-context budget",
-							}
-						: current,
-				);
+				const group = evictionGroup(items, item);
+				if (archivedCost(group) >= currentCost(group)) continue;
+				for (const current of group) {
+					const projection = archivedProjection(current);
+					this.store.setContextLifecycle(
+						current.id,
+						"archived",
+						projection,
+						"working-context budget",
+					);
+					evictedIds.push(current.id);
+				}
+				items = this.store.contextItems(sessionId);
 				estimatedTokens = estimatedCost(items, options.overheadTokens);
 				if (estimatedTokens <= options.target) break;
 			}
@@ -299,15 +357,70 @@ export class ContextManager {
 		result: SubagentResult,
 		source: Pick<ContextSource, "subagentId"> = {},
 	): ContextItem {
+		const compactPayload = {
+			role: "user",
+			content: `Subagent handoff:\n${JSON.stringify(result)}`,
+			timestamp: Date.now(),
+		};
 		return this.record({
 			sessionId,
 			kind: "subagent-handoff",
 			payload: result,
+			compactPayload,
 			tokenCost: Math.ceil(JSON.stringify(result).length / 4),
+			compactTokenCost: Math.ceil(JSON.stringify(compactPayload).length / 4),
 			lifecycle: "retained",
+			projection: "compact",
 			reason: "structured subagent handoff",
 			source,
 		});
+	}
+
+	inspect(sessionId: string, overheadTokens = 0): ContextInspection {
+		const items = this.store.contextItems(sessionId);
+		const counts: Record<ContextLifecycle, number> = {
+			pinned: 0,
+			active: 0,
+			retained: 0,
+			archived: 0,
+		};
+		for (const item of items) counts[item.lifecycle]++;
+		return {
+			sessionId,
+			estimatedTokens: estimatedCost(items, overheadTokens),
+			counts,
+			items: items.map(
+				({
+					id,
+					sequence,
+					kind,
+					tokenCost,
+					compactTokenCost,
+					source,
+					groupId,
+					episodeId,
+					lifecycle,
+					projection,
+					reason,
+					createdAt,
+					updatedAt,
+				}) => ({
+					id,
+					sequence,
+					kind,
+					tokenCost,
+					...(compactTokenCost === undefined ? {} : { compactTokenCost }),
+					...(source === undefined ? {} : { source }),
+					...(groupId === undefined ? {} : { groupId }),
+					...(episodeId === undefined ? {} : { episodeId }),
+					lifecycle,
+					projection,
+					reason,
+					createdAt,
+					updatedAt,
+				}),
+			),
+		};
 	}
 }
 
@@ -327,11 +440,13 @@ function projectedBudget(items: ContextItem[], options: PinOptions): number {
 	let estimatedTokens = estimatedCost(projected, options.overheadTokens ?? 0);
 	if (estimatedTokens <= options.budget) return estimatedTokens;
 	for (const item of evictionCandidates(projected)) {
-		const projection =
-			item.compactPayload === undefined ? "reference" : "compact";
-		if (projectionCost(item, projection) >= projectionCost(item)) continue;
+		const group = evictionGroup(projected, item);
+		if (archivedCost(group) >= currentCost(group)) continue;
+		const ids = new Set(group.map((current) => current.id));
 		projected = projected.map((current) =>
-			current.id === item.id ? { ...current, projection } : current,
+			ids.has(current.id)
+				? { ...current, projection: archivedProjection(current) }
+				: current,
 		);
 		estimatedTokens = estimatedCost(projected, options.overheadTokens ?? 0);
 		if (estimatedTokens <= (options.target ?? options.budget)) break;
@@ -426,14 +541,57 @@ function projectionCost(
 function evictionCandidates(items: ContextItem[]): ContextItem[] {
 	return items
 		.filter(
-			(item) => item.kind === "tool-result" && item.lifecycle === "retained",
+			(item) =>
+				item.lifecycle === "retained" &&
+				(item.kind === "tool-result" ||
+					(item.kind === "assistant" &&
+						item.groupId !== undefined &&
+						!items.some(
+							(result) =>
+								result.groupId === item.groupId &&
+								result.kind === "tool-result" &&
+								result.lifecycle === "retained",
+						))),
 		)
 		.sort(
 			(a, b) => evictionRank(a) - evictionRank(b) || a.sequence - b.sequence,
 		);
 }
 
+function evictionGroup(
+	items: ContextItem[],
+	result: ContextItem,
+): ContextItem[] {
+	if (!result.groupId) return [result];
+	const group = items.filter(
+		(item) =>
+			item.groupId === result.groupId &&
+			item.lifecycle === "retained" &&
+			(item.kind === "user" ||
+				item.kind === "assistant" ||
+				item.kind === "tool-result"),
+	);
+	return group.length ? group : [result];
+}
+
+function archivedProjection(item: ContextItem): ContextProjection {
+	if (item.kind === "assistant" || item.kind === "user") return "omitted";
+	return item.compactPayload === undefined ? "reference" : "compact";
+}
+
+function currentCost(items: ContextItem[]): number {
+	return items.reduce((total, item) => total + projectionCost(item), 0);
+}
+
+function archivedCost(items: ContextItem[]): number {
+	return items.reduce(
+		(total, item) => total + projectionCost(item, archivedProjection(item)),
+		0,
+	);
+}
+
 function evictionRank(item: ContextItem): number {
+	if (item.kind === "assistant") return 5;
 	if (item.source?.isError) return 4;
 	if (item.source?.toolName === "write" || item.source?.toolName === "edit")
 		return 0;
