@@ -14,12 +14,8 @@ import {
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import type { ModelConfig } from "../../shared/src/protocol";
 
-export type HarnessModelConfig = {
-	provider: string;
-	model: string;
-	baseUrl?: string;
-};
 export class HarnessProviderError extends Error {
 	constructor(
 		message: string,
@@ -118,7 +114,7 @@ export function createHarnessModels(
 }
 
 export function providerModels(
-	config: HarnessModelConfig,
+	config: ModelConfig,
 	credentials: CredentialStore,
 	models: Models,
 ) {

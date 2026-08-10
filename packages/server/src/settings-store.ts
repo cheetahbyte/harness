@@ -7,9 +7,9 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { HarnessModelConfig } from "./provider";
+import type { ModelConfig } from "../../shared/src/protocol";
 
-type Settings = { model?: HarnessModelConfig };
+type Settings = { model?: ModelConfig };
 
 export function globalHarnessPath(file: string): string {
 	return join(
@@ -31,11 +31,11 @@ export class SettingsStore {
 		this.project = readSettings(projectPath);
 	}
 
-	modelConfig(): HarnessModelConfig | undefined {
+	modelConfig(): ModelConfig | undefined {
 		return this.project.model ?? this.global.model;
 	}
 
-	setModelConfig(model: HarnessModelConfig): void {
+	setModelConfig(model: ModelConfig): void {
 		const project = existsSync(this.projectPath);
 		const settings = project ? this.project : this.global;
 		settings.model = model;

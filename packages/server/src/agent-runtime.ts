@@ -14,27 +14,10 @@ import {
 	isRetryableAssistantError,
 	Type,
 } from "@earendil-works/pi-ai";
-import type { ServerEvent } from "../../shared/src/protocol";
+import type { ModelConfig, ServerEvent } from "../../shared/src/protocol";
 import { log } from "./logger";
-import {
-	type HarnessModelConfig,
-	HarnessProviderError,
-	providerModels,
-} from "./provider";
+import { HarnessProviderError, providerModels } from "./provider";
 import type { CoreTools, ToolRequest } from "./tools";
-
-interface AgentRuntime {
-	run(
-		sessionId: string,
-		text: string,
-		config: HarnessModelConfig | undefined,
-		signal: AbortSignal,
-		emit: (event: ServerEvent) => void,
-	): Promise<void>;
-	steer(sessionId: string, text: string, callbacks: QueueCallbacks): boolean;
-	followUp(sessionId: string, text: string, callbacks: QueueCallbacks): boolean;
-	forget(sessionId: string): void;
-}
 
 type QueueCallbacks = {
 	onStarted: () => void;
@@ -51,7 +34,7 @@ type AgentEntry = {
 };
 
 /** Pi is contained here: server code only sees Harness events and model configuration. */
-export class HarnessAgentRuntime implements AgentRuntime {
+export class HarnessAgentRuntime {
 	private readonly agents = new Map<string, AgentEntry>();
 	constructor(
 		private readonly tools: CoreTools,
@@ -62,7 +45,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 	async run(
 		sessionId: string,
 		text: string,
-		config: HarnessModelConfig | undefined,
+		config: ModelConfig | undefined,
 		signal: AbortSignal,
 		emit: (event: ServerEvent) => void,
 	): Promise<void> {

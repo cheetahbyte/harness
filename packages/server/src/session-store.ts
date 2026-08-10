@@ -1,8 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ServerEvent } from "../../shared/src/protocol";
-import type { HarnessModelConfig } from "./provider";
+import type { ModelConfig, ServerEvent } from "../../shared/src/protocol";
 
 export class SessionStore {
 	readonly db: Database;
@@ -33,16 +32,14 @@ export class SessionStore {
 		return !!this.db.query("SELECT 1 FROM sessions WHERE id = ?").get(id);
 	}
 
-	modelConfig(sessionId: string): HarnessModelConfig | undefined {
+	modelConfig(sessionId: string): ModelConfig | undefined {
 		const row = this.db
 			.query("SELECT model_config FROM session_settings WHERE session_id = ?")
 			.get(sessionId) as { model_config: string } | null;
-		return row
-			? (JSON.parse(row.model_config) as HarnessModelConfig)
-			: undefined;
+		return row ? (JSON.parse(row.model_config) as ModelConfig) : undefined;
 	}
 
-	setModelConfig(sessionId: string, config: HarnessModelConfig): void {
+	setModelConfig(sessionId: string, config: ModelConfig): void {
 		this.db
 			.query(
 				"INSERT OR REPLACE INTO session_settings (session_id, model_config) VALUES (?, ?)",

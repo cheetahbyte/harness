@@ -6,8 +6,9 @@ import {
 	type KeyEvent,
 	TextRenderable,
 } from "@opentui/core";
-import type { TuiCommand } from "../plugins";
 import type { FollowUp } from "../store";
+
+type CommandHint = { name: string; description: string };
 
 export class ComposerView {
 	readonly root: BoxRenderable;
@@ -17,12 +18,12 @@ export class ComposerView {
 	private readonly inputRow: BoxRenderable;
 	private hasFollowUps = false;
 	private compact = false;
-	private matches: TuiCommand[] = [];
+	private matches: CommandHint[] = [];
 	private selectedSuggestion = 0;
 
 	constructor(
 		private readonly renderer: CliRenderer,
-		private readonly commands: readonly TuiCommand[],
+		private readonly commands: readonly CommandHint[],
 		private readonly actions: {
 			submit: (text: string, followUp: boolean) => void;
 			abort: () => void;

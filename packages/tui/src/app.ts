@@ -17,7 +17,6 @@ import { FooterView } from "./components/footer";
 import { HeaderView } from "./components/header";
 import { TranscriptView } from "./components/transcript";
 import { WizardView } from "./components/wizard";
-import { type TuiPlugin, TuiPluginHost } from "./plugins";
 import { commandForInput, type TuiState, type WizardState } from "./store";
 
 type WizardFlow =
@@ -25,6 +24,11 @@ type WizardFlow =
 	| { kind: "login-provider"; authType: AuthType }
 	| { kind: "login-active" }
 	| { kind: "model"; provider?: string };
+type AppCommand = {
+	name: string;
+	description: string;
+	run: (args: string) => void | Promise<void>;
+};
 
 export class TuiApp {
 	private readonly root: BoxRenderable;
@@ -33,7 +37,7 @@ export class TuiApp {
 	private readonly composer: ComposerView;
 	private readonly wizard: WizardView;
 	private readonly footer: FooterView;
-	private readonly plugins: TuiPluginHost;
+	private readonly commands: readonly AppCommand[];
 	private readonly unsubscribe: () => void;
 	private flow: WizardFlow | undefined;
 	private renderedWizard: WizardState | undefined;
@@ -43,7 +47,6 @@ export class TuiApp {
 		private readonly renderer: CliRenderer,
 		private readonly store: StoreApi<TuiState>,
 		private readonly send: (command: ClientCommand) => Promise<void>,
-		plugins: readonly TuiPlugin[] = [],
 	) {
 		this.root = new BoxRenderable(renderer, {
 			width: "100%",
@@ -54,29 +57,22 @@ export class TuiApp {
 		});
 		this.header = new HeaderView(renderer);
 		this.transcript = new TranscriptView(renderer);
-		this.plugins = new TuiPluginHost(store, send, [
+		this.commands = [
 			{
-				id: "core-commands",
-				commands: [
-					{
-						name: "/login",
-						description: "Configure provider authentication",
-						run: (args) => this.openLogin(args || undefined),
-					},
-					{
-						name: "/model",
-						description: "Configure provider and model",
-						run: async (args, api) => {
-							if (/^\S+\s+\S+(?:\s+\S+)?\s*$/.test(args))
-								return api.send(commandForInput(`/model ${args}`));
-							this.openModel(args || undefined);
-						},
-					},
-				],
+				name: "/login",
+				description: "Configure provider authentication",
+				run: (args) => this.openLogin(args || undefined),
 			},
-			...plugins,
-		]);
-		this.composer = new ComposerView(renderer, this.plugins.commands, {
+			{
+				name: "/model",
+				description: "Configure provider and model",
+				run: (args) =>
+					/^\S+\s+\S+(?:\s+\S+)?\s*$/.test(args)
+						? this.send(commandForInput(`/model ${args}`))
+						: this.openModel(args || undefined),
+			},
+		];
+		this.composer = new ComposerView(renderer, this.commands, {
 			submit: (text, followUp) => void this.submit(text, followUp),
 			abort: () => this.escape(),
 		});
@@ -99,13 +95,12 @@ export class TuiApp {
 		this.renderer.off(CliRenderEvents.RESIZE, this.updateLayout);
 		this.composer.destroy();
 		this.wizard.destroy();
-		this.plugins.destroy();
 	}
 
 	private async submit(text: string, followUp: boolean) {
 		if (!followUp)
 			try {
-				if (await this.plugins.run(text)) return;
+				if (await this.runCommand(text)) return;
 			} catch (error) {
 				return this.store.getState().apply({
 					type: "error",
@@ -135,6 +130,14 @@ export class TuiApp {
 				message: error instanceof Error ? error.message : String(error),
 			});
 		}
+	}
+
+	private async runCommand(input: string): Promise<boolean> {
+		const [name, ...arguments_] = input.trim().split(/\s+/);
+		const command = this.commands.find((candidate) => candidate.name === name);
+		if (!command) return false;
+		await command.run(arguments_.join(" "));
+		return true;
 	}
 
 	private sync() {
