@@ -146,6 +146,7 @@ export class TuiApp {
 	private sync() {
 		const state = this.store.getState();
 		this.header.update(state);
+		this.transcript.setSkills(state.skills.map((skill) => skill.name));
 		this.transcript.update(state.entries);
 		this.composer.update(state.followUps);
 		this.composer.setCommands([

@@ -4,13 +4,17 @@ import {
 	type CliRenderer,
 	fg,
 	ScrollBoxRenderable,
+	StyledText,
 	TextRenderable,
 	t,
 } from "@opentui/core";
 import type { TranscriptEntry } from "../store";
 
+const ACCENT = "#89b4fa";
+
 export class TranscriptView {
 	readonly root: ScrollBoxRenderable;
+	private skillNames = new Set<string>();
 	private readonly renderedEntries: {
 		row: BoxRenderable;
 		text: TextRenderable;
@@ -30,6 +34,10 @@ export class TranscriptView {
 		});
 	}
 
+	setSkills(skillNames: readonly string[]) {
+		this.skillNames = new Set(skillNames);
+	}
+
 	update(entries: TranscriptEntry[]) {
 		if (entries.length < this.renderedEntries.length) {
 			for (const { row } of this.renderedEntries) this.root.remove(row);
@@ -44,7 +52,9 @@ export class TranscriptView {
 			if (!entry) continue;
 			const toolCall = entry.kind === "tool-call";
 			const text = new TextRenderable(this.renderer, {
-				content: toolCall ? formatToolTitle(entry) : formatEntry(entry),
+				content: toolCall
+					? formatToolTitle(entry)
+					: formatEntry(entry, this.skillNames),
 				fg: entryColor(entry),
 				flexGrow: 1,
 			});
@@ -63,7 +73,7 @@ export class TranscriptView {
 				entry.kind === "user"
 					? new TextRenderable(this.renderer, {
 							content: "▎",
-							fg: entry.pending ? "#6c7086" : "#cba6f7",
+							fg: entry.pending ? "#6c7086" : ACCENT,
 							marginRight: 1,
 						})
 					: undefined;
@@ -88,16 +98,20 @@ export class TranscriptView {
 			if (!rendered) return;
 			rendered.text.content = rendered.detail
 				? formatToolTitle(entry)
-				: formatEntry(entry);
+				: formatEntry(entry, this.skillNames);
 			rendered.text.fg = entryColor(entry);
 			if (rendered.detail) rendered.detail.content = formatToolDetail(entry);
 			if (rendered.gutter)
-				rendered.gutter.fg = entry.pending ? "#6c7086" : "#cba6f7";
+				rendered.gutter.fg = entry.pending ? "#6c7086" : ACCENT;
 		});
 	}
+
 }
 
-function formatEntry(entry: TranscriptEntry): string {
+function formatEntry(
+	entry: TranscriptEntry,
+	skillNames: ReadonlySet<string>,
+): string | StyledText {
 	const prefix = (
 		{
 			user: "",
@@ -112,7 +126,22 @@ function formatEntry(entry: TranscriptEntry): string {
 			aborted: "[",
 		} as const
 	)[entry.kind];
-	return `${prefix}${entry.text}${["status", "aborted"].includes(entry.kind) ? "]" : ""}`;
+	if (entry.kind !== "user")
+		return `${prefix}${entry.text}${["status", "aborted"].includes(entry.kind) ? "]" : ""}`;
+	const chunks = [];
+	let position = 0;
+	for (const match of entry.text.matchAll(
+		/(^|\s)\/([a-z0-9-]+)(?=$|\s|[.,!?;:])/g,
+	)) {
+		const start = (match.index ?? 0) + (match[1] ?? "").length;
+		const skill = match[2] ?? "";
+		if (!skillNames.has(skill)) continue;
+		chunks.push(...t`${entry.text.slice(position, start)}`.chunks);
+		chunks.push(fg(ACCENT)(entry.text.slice(start, start + skill.length + 1)));
+		position = start + skill.length + 1;
+	}
+	chunks.push(...t`${entry.text.slice(position)}`.chunks);
+	return new StyledText(chunks);
 }
 
 function formatToolTitle(entry: TranscriptEntry) {
@@ -140,6 +169,6 @@ function entryColor(entry: TranscriptEntry): string {
 	if (entry.kind === "reasoning") return "#a6adc8";
 	if (entry.kind === "completed") return "#8b8d98";
 	if (entry.kind.startsWith("tool")) return "#89b4fa";
-	if (entry.kind === "user") return "#cba6f7";
+	if (entry.kind === "user") return "#cdd6f4";
 	return "#cdd6f4";
 }

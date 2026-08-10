@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { homedir } from "node:os";
+import { RGBA } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { TuiApp } from "../src/app";
 import { createTuiStore } from "../src/store";
@@ -240,6 +241,38 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("uses the accent for processed messages and their skills", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			store.getState().apply({
+				type: "skills",
+				skills: [{ name: "codebase-design", description: "Design modules" }],
+			});
+			store.getState().addUser("Use /codebase-design");
+			await view.flush();
+			const spans = view.captureSpans().lines.flatMap((line) => line.spans);
+			const accent = RGBA.fromHex("#89b4fa");
+			expect(spans.find((span) => span.text === "▎")?.fg.equals(accent)).toBe(true);
+			expect(
+				spans.find((span) => span.text === "/codebase-design")?.fg.equals(accent),
+			).toBe(true);
+			expect(
+				spans.find((span) => span.text.includes("Use"))?.fg.equals(
+					RGBA.fromHex("#cdd6f4"),
+				),
+			).toBe(true);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("limits and truncates slash suggestions", async () => {
 		const store = createTuiStore("session-1");
 		const view = await createTestRenderer({
@@ -266,6 +299,34 @@ describe("OpenTUI app", () => {
 			for (let index = 0; index < 5; index++) view.mockInput.pressArrow("down");
 			await view.flush();
 			expect(view.captureCharFrame()).toContain("/s4");
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("does not truncate slash command names", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({
+			width: 40,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			store.getState().apply({
+				type: "skills",
+				skills: [
+					{
+						name: "vercel-react-best-practices",
+						description: "A description that should truncate",
+					},
+				],
+			});
+			await view.renderOnce();
+			await view.mockInput.typeText("/");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("/vercel-react-best-practices");
 		} finally {
 			app.destroy();
 			view.renderer.destroy();

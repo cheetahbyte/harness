@@ -78,6 +78,7 @@ export class ComposerView {
 			});
 			const name = new TextRenderable(renderer, {
 				fg: ACCENT,
+				flexShrink: 0,
 				marginRight: 2,
 			});
 			const description = new TextRenderable(renderer, {
