@@ -128,6 +128,10 @@ export class HarnessServer {
 			listener(event, seq);
 		const model = this.modelConfig(id);
 		if (model) listener({ type: "model-config", config: model });
+		listener({
+			type: "ui-settings",
+			disableThinkingBlocks: this.settingsFor(id).disableThinkingBlocks(),
+		});
 		return () => session.events.off("event", listener);
 	}
 
@@ -151,6 +155,18 @@ export class HarnessServer {
 		}
 		if (command.type === "list-skills") {
 			await this.listSkills(id);
+			return;
+		}
+		if (command.type === "set-disable-thinking-blocks") {
+			this.settingsFor(id).setDisableThinkingBlocks(command.disabled);
+			this.publish(
+				id,
+				{
+					type: "ui-settings",
+					disableThinkingBlocks: command.disabled,
+				},
+				false,
+			);
 			return;
 		}
 		if (command.type === "login") {

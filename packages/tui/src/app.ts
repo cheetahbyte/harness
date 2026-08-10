@@ -78,6 +78,7 @@ export class TuiApp {
 		this.composer = new ComposerView(renderer, this.commands, {
 			submit: (text, followUp) => void this.submit(text, followUp),
 			abort: () => this.escape(),
+			toggleThinking: () => this.toggleThinking(),
 		});
 		this.wizard = new WizardView(renderer);
 		this.footer = new FooterView(renderer);
@@ -147,6 +148,7 @@ export class TuiApp {
 		const state = this.store.getState();
 		this.header.update(state);
 		this.transcript.setSkills(state.skills.map((skill) => skill.name));
+		this.transcript.setDisableThinkingBlocks(state.disableThinkingBlocks);
 		this.transcript.update(state.entries);
 		this.composer.update(state.followUps);
 		this.composer.setCommands([
@@ -162,6 +164,27 @@ export class TuiApp {
 			this.renderedWizard = state.wizard;
 			this.renderWizard(state.wizard);
 		}
+	}
+
+	private toggleThinking() {
+		const disabled = !this.store.getState().disableThinkingBlocks;
+		this.store.getState().apply({
+			type: "ui-settings",
+			disableThinkingBlocks: disabled,
+		});
+		void this.send({
+			type: "set-disable-thinking-blocks",
+			disabled,
+		}).catch((error) => {
+			this.store.getState().apply({
+				type: "ui-settings",
+				disableThinkingBlocks: !disabled,
+			});
+			this.store.getState().apply({
+				type: "error",
+				message: error instanceof Error ? error.message : String(error),
+			});
+		});
 	}
 
 	private updateLayout = () => {

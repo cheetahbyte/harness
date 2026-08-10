@@ -324,6 +324,33 @@ describe("first milestone", () => {
 		).toEqual({ model: { provider: "fake", model: "model-1" } });
 	});
 
+	test("persists the thinking block preference", async () => {
+		const { dir, server } = harness();
+		const id = server.createSession();
+
+		await server.command(id, {
+			type: "set-disable-thinking-blocks",
+			disabled: true,
+		});
+
+		expect(
+			JSON.parse(readFileSync(join(dir, "config/settings.json"), "utf8")),
+		).toEqual({ disableThinkingBlocks: true });
+
+		const restarted = new HarnessServer(
+			new SessionStore(join(dir, "fresh.sqlite")),
+			dir,
+			fakeModels(),
+			settings(dir),
+		);
+		const events: ServerEvent[] = [];
+		restarted.subscribe(restarted.createSession(), (event) => events.push(event));
+		expect(events).toContainEqual({
+			type: "ui-settings",
+			disableThinkingBlocks: true,
+		});
+	});
+
 	test("rejects an unknown model before persisting it", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
 		paths.push(dir);

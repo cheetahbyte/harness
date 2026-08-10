@@ -9,7 +9,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ModelConfig } from "../../shared/src/protocol";
 
-type Settings = { model?: ModelConfig };
+type Settings = { model?: ModelConfig; disableThinkingBlocks?: boolean };
 
 export function globalHarnessPath(file: string): string {
 	return join(
@@ -39,6 +39,21 @@ export class SettingsStore {
 		const project = existsSync(this.projectPath);
 		const settings = project ? this.project : this.global;
 		settings.model = model;
+		writeSettings(project ? this.projectPath : this.globalPath, settings);
+	}
+
+	disableThinkingBlocks(): boolean {
+		return (
+			this.project.disableThinkingBlocks ??
+			this.global.disableThinkingBlocks ??
+			false
+		);
+	}
+
+	setDisableThinkingBlocks(disabled: boolean): void {
+		const project = existsSync(this.projectPath);
+		const settings = project ? this.project : this.global;
+		settings.disableThinkingBlocks = disabled;
 		writeSettings(project ? this.projectPath : this.globalPath, settings);
 	}
 }

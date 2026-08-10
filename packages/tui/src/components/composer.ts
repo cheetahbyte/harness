@@ -46,6 +46,7 @@ export class ComposerView {
 		private readonly actions: {
 			submit: (text: string, followUp: boolean) => void;
 			abort: () => void;
+			toggleThinking: () => void;
 		},
 	) {
 		this.commands = commands;
@@ -178,6 +179,11 @@ export class ComposerView {
 
 	private handleKey = (key: KeyEvent) => {
 		if (key.defaultPrevented) return;
+		if (key.ctrl && key.name === "t") {
+			this.actions.toggleThinking();
+			key.preventDefault();
+			return;
+		}
 		if (this.suggestions.visible) {
 			if (key.name === "up" || key.name === "down") {
 				const direction = key.name === "up" ? -1 : 1;

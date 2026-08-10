@@ -71,6 +71,7 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 			skills: [],
 			running: false,
 			status: "ready",
+			disableThinkingBlocks: false,
 			wizard: { kind: "idle" },
 			apply(event) {
 				if (event.type === "session") return;
@@ -201,6 +202,10 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 				}
 				if (event.type === "model-config")
 					return set({ modelConfig: event.config });
+				if (event.type === "ui-settings")
+					return set({
+						disableThinkingBlocks: event.disableThinkingBlocks,
+					});
 				if (event.type !== "status") return;
 				set((state) => ({
 					status: event.text,
@@ -241,6 +246,7 @@ export type TuiState = {
 	running: boolean;
 	status: string;
 	modelConfig?: ModelConfig;
+	disableThinkingBlocks: boolean;
 	wizard: WizardState;
 	apply: (event: ServerEvent) => void;
 	addUser: (text: string) => void;

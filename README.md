@@ -11,4 +11,4 @@ Configure providers and models from the TUI:
 ```
 
 Credentials are stored in `~/.config/harness/auth.json` (or `$XDG_CONFIG_HOME/harness/auth.json`).
-The selected model is stored in `~/.config/harness/settings.json`; if a project has `.harness/settings.json`, its model overrides and receives changes instead.
+The selected model and `disableThinkingBlocks` preference are stored in `~/.config/harness/settings.json`; if a project has `.harness/settings.json`, its values override and receive changes instead.

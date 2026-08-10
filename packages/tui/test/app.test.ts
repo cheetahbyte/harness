@@ -24,7 +24,7 @@ describe("OpenTUI app", () => {
 			type: "tool-result",
 			id: "read-1",
 			name: "read",
-			output: "hello",
+			output: `hello\n${"x".repeat(60)}`,
 		});
 		const view = await createTestRenderer({
 			width: 72,
@@ -36,13 +36,80 @@ describe("OpenTUI app", () => {
 			await view.flush();
 			expect(view.captureCharFrame()).toContain("gpt-5.6-sol (openai-codex)");
 			expect(view.captureCharFrame()).toContain("~/project");
-			expect(view.captureCharFrame()).toContain("Ran 1 file read");
-			expect(view.captureCharFrame()).toContain("╰ hello");
+			expect(view.captureCharFrame()).toContain("Read 1 file");
+			expect(view.captureCharFrame()).toContain(
+				`╰ hello ${"x".repeat(44)}...`,
+			);
+			expect(view.captureCharFrame()).not.toContain("x".repeat(45));
 			expect(view.captureCharFrame()).toContain("›");
 			store.getState().apply({ type: "assistant-delta", text: "stream" });
 			store.getState().apply({ type: "assistant-delta", text: "ing" });
 			await view.flush();
 			expect(view.captureCharFrame()).toContain("streaming");
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("groups consecutive tool calls by operation", async () => {
+		const store = createTuiStore("session-1");
+		for (const [id, name] of [
+			["bash-1", "bash"],
+			["read-1", "read"],
+			["read-2", "read"],
+		] as const) {
+			store.getState().apply({ type: "tool-call", id, name, input: {} });
+			store.getState().apply({
+				type: "tool-result",
+				id,
+				name,
+				output: `${id} output`,
+			});
+		}
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			await view.flush();
+			const frame = view.captureCharFrame();
+			expect(frame).toContain("Ran 1 shell command, read 2 files");
+			expect(frame).toContain("╰ bash-1 output");
+			expect(frame).toContain("╰ read-2 output");
+			expect(frame.match(/Ran|Read/g)).toHaveLength(1);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("ignores trailing whitespace when laying out thinking blocks", async () => {
+		const store = createTuiStore("session-1");
+		store.getState().apply({
+			type: "assistant-reasoning-delta",
+			text: "Inspecting files\n\n\n",
+		});
+		store.getState().apply({
+			type: "tool-call",
+			id: "read-1",
+			name: "read",
+			input: {},
+		});
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			await view.flush();
+			const lines = view.captureCharFrame().split("\n");
+			const thinking = lines.findIndex((line) => line.includes("thinking:"));
+			const tool = lines.findIndex((line) => line.includes("Read 1 file"));
+			expect(tool - thinking - 1).toBe(1);
 		} finally {
 			app.destroy();
 			view.renderer.destroy();
@@ -69,6 +136,40 @@ describe("OpenTUI app", () => {
 				}
 			).transcript;
 			expect(transcript.root.scrollHeight).toBeGreaterThan(transcript.root.height);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("toggles thinking blocks with Ctrl-T", async () => {
+		const store = createTuiStore("session-1");
+		const sent: unknown[] = [];
+		store.getState().apply({
+			type: "assistant-reasoning-delta",
+			text: "checking the implementation",
+		});
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async (command) => {
+			sent.push(command);
+		});
+		try {
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("thinking: checking");
+			view.mockInput.pressKey("t", { ctrl: true });
+			await view.flush();
+			expect(view.captureCharFrame()).not.toContain("thinking: checking");
+			view.mockInput.pressKey("t", { ctrl: true });
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("thinking: checking");
+			expect(sent).toEqual([
+				{ type: "set-disable-thinking-blocks", disabled: true },
+				{ type: "set-disable-thinking-blocks", disabled: false },
+			]);
 		} finally {
 			app.destroy();
 			view.renderer.destroy();

@@ -50,6 +50,7 @@ export type ClientCommand =
 	| { type: "list-providers"; authType?: AuthType }
 	| { type: "list-models"; provider?: string }
 	| { type: "list-skills" }
+	| { type: "set-disable-thinking-blocks"; disabled: boolean }
 	| { type: "login"; provider: string; authType: AuthType }
 	| { type: "auth-answer"; promptId: string; value: string }
 	| { type: "auth-cancel" }
@@ -82,6 +83,7 @@ export type ServerEvent =
 			state: "queued" | "started" | "finished" | "replaced";
 	  }
 	| { type: "model-config"; config: ModelConfig }
+	| { type: "ui-settings"; disableThinkingBlocks: boolean }
 	| { type: "status"; text: string }
 	| { type: "completed"; durationMs?: number }
 	| { type: "aborted" }

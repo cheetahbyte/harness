@@ -11,6 +11,9 @@ import {
 import type { TranscriptEntry } from "../store";
 
 const ACCENT = "#89b4fa";
+type DisplayEntry =
+	| TranscriptEntry
+	| { kind: "tool-group"; tools: TranscriptEntry[] };
 
 export class TranscriptView {
 	readonly root: ScrollBoxRenderable;
@@ -18,9 +21,11 @@ export class TranscriptView {
 	private readonly renderedEntries: {
 		row: BoxRenderable;
 		text: TextRenderable;
+		kind: DisplayEntry["kind"];
 		detail?: TextRenderable;
 		gutter?: TextRenderable;
 	}[] = [];
+	private disableThinkingBlocks = false;
 
 	constructor(private readonly renderer: CliRenderer) {
 		this.root = new ScrollBoxRenderable(renderer, {
@@ -38,24 +43,31 @@ export class TranscriptView {
 		this.skillNames = new Set(skillNames);
 	}
 
+	setDisableThinkingBlocks(disabled: boolean) {
+		this.disableThinkingBlocks = disabled;
+		for (const entry of this.renderedEntries)
+			if (entry.kind === "reasoning") entry.row.visible = !disabled;
+	}
+
 	update(entries: TranscriptEntry[]) {
-		if (entries.length < this.renderedEntries.length) {
+		const displayEntries = groupToolCalls(entries);
+		if (displayEntries.length < this.renderedEntries.length) {
 			for (const { row } of this.renderedEntries) this.root.remove(row);
 			this.renderedEntries.length = 0;
 		}
 		for (
 			let index = this.renderedEntries.length;
-			index < entries.length;
+			index < displayEntries.length;
 			index++
 		) {
-			const entry = entries[index];
+			const entry = displayEntries[index];
 			if (!entry) continue;
-			const toolCall = entry.kind === "tool-call";
+			const toolCall = entry.kind === "tool-group";
 			const text = new TextRenderable(this.renderer, {
 				content: toolCall
-					? formatToolTitle(entry)
+					? formatToolTitle(entry.tools)
 					: formatEntry(entry, this.skillNames),
-				fg: entryColor(entry),
+				fg: toolCall ? ACCENT : entryColor(entry),
 				flexGrow: 1,
 			});
 			const row = new BoxRenderable(this.renderer, {
@@ -65,7 +77,7 @@ export class TranscriptView {
 			});
 			const detail = toolCall
 				? new TextRenderable(this.renderer, {
-						content: formatToolDetail(entry),
+						content: formatToolDetails(entry.tools),
 						flexGrow: 1,
 					})
 				: undefined;
@@ -87,25 +99,41 @@ export class TranscriptView {
 			this.root.add(row);
 			this.renderedEntries.push(
 				gutter
-					? { row, text, gutter }
+					? { row, text, kind: entry.kind, gutter }
 					: detail
-						? { row, text, detail }
-						: { row, text },
+						? { row, text, kind: entry.kind, detail }
+						: { row, text, kind: entry.kind },
 			);
 		}
-		entries.forEach((entry, index) => {
+		displayEntries.forEach((entry, index) => {
 			const rendered = this.renderedEntries[index];
 			if (!rendered) return;
-			rendered.text.content = rendered.detail
-				? formatToolTitle(entry)
+			const toolCall = entry.kind === "tool-group";
+			rendered.kind = entry.kind;
+			rendered.row.visible =
+				entry.kind !== "reasoning" || !this.disableThinkingBlocks;
+			rendered.text.content = toolCall
+				? formatToolTitle(entry.tools)
 				: formatEntry(entry, this.skillNames);
-			rendered.text.fg = entryColor(entry);
-			if (rendered.detail) rendered.detail.content = formatToolDetail(entry);
-			if (rendered.gutter)
+			rendered.text.fg = toolCall ? ACCENT : entryColor(entry);
+			if (rendered.detail && toolCall)
+				rendered.detail.content = formatToolDetails(entry.tools);
+			if (rendered.gutter && entry.kind === "user")
 				rendered.gutter.fg = entry.pending ? "#6c7086" : ACCENT;
 		});
 	}
+}
 
+function groupToolCalls(entries: TranscriptEntry[]): DisplayEntry[] {
+	const grouped: DisplayEntry[] = [];
+	for (const entry of entries) {
+		const last = grouped.at(-1);
+		if (entry.kind === "tool-call") {
+			if (last?.kind === "tool-group") last.tools.push(entry);
+			else grouped.push({ kind: "tool-group", tools: [entry] });
+		} else grouped.push(entry);
+	}
+	return grouped;
 }
 
 function formatEntry(
@@ -127,7 +155,7 @@ function formatEntry(
 		} as const
 	)[entry.kind];
 	if (entry.kind !== "user")
-		return `${prefix}${entry.text}${["status", "aborted"].includes(entry.kind) ? "]" : ""}`;
+		return `${prefix}${entry.kind === "reasoning" ? entry.text.trimEnd() : entry.text}${["status", "aborted"].includes(entry.kind) ? "]" : ""}`;
 	const chunks = [];
 	let position = 0;
 	for (const match of entry.text.matchAll(
@@ -144,24 +172,41 @@ function formatEntry(
 	return new StyledText(chunks);
 }
 
-function formatToolTitle(entry: TranscriptEntry) {
-	return t`Ran ${bold(fg("#f9e2af")("1"))} ${fg("#cdd6f4")(toolName(entry.text))}`;
-}
-
-function formatToolDetail(entry: TranscriptEntry) {
-	if (!entry.detail) return "";
-	return t`${fg(entry.error ? "#f38ba8" : "#a6adc8")(`╰ ${entry.detail}`)}`;
-}
-
-function toolName(name: string): string {
-	return (
-		{
-			bash: "shell command",
-			read: "file read",
-			write: "file write",
-			edit: "file edit",
-		}[name] ?? name
+function formatToolTitle(entries: TranscriptEntry[]) {
+	const counts = new Map<string, number>();
+	for (const entry of entries)
+		counts.set(entry.text, (counts.get(entry.text) ?? 0) + 1);
+	return new StyledText(
+		[...counts].flatMap(([name, count], index) => {
+			const [verb, noun] = toolSummary(name, count);
+			const label = index ? verb : `${verb[0]?.toUpperCase()}${verb.slice(1)}`;
+			return t`${index ? ", " : ""}${fg(ACCENT)(label)} ${bold(fg("#f9e2af")(String(count)))} ${fg("#cdd6f4")(noun)}`
+				.chunks;
+		}),
 	);
+}
+
+function formatToolDetails(entries: TranscriptEntry[]) {
+	const details = entries.filter((entry) => entry.detail);
+	if (!details.length) return "";
+	return new StyledText(
+		details.flatMap((entry, index) => {
+			const output = entry.detail?.replace(/\s+/g, " ").trim() ?? "";
+			const preview = output.length > 50 ? `${output.slice(0, 50)}...` : output;
+			return t`${fg(entry.error ? "#f38ba8" : "#a6adc8")(`${index ? "\n" : ""}╰ ${preview}`)}`
+				.chunks;
+		}),
+	);
+}
+
+function toolSummary(name: string, count: number): [string, string] {
+	const plural = count === 1 ? "" : "s";
+	return ({
+		bash: ["ran", `shell command${plural}`],
+		read: ["read", `file${plural}`],
+		write: ["wrote", `file${plural}`],
+		edit: ["edited", `file${plural}`],
+	}[name] ?? ["used", `${name}${plural}`]) as [string, string];
 }
 
 function entryColor(entry: TranscriptEntry): string {
