@@ -1,8 +1,11 @@
 import {
 	BoxRenderable,
+	bold,
 	type CliRenderer,
+	fg,
 	ScrollBoxRenderable,
 	TextRenderable,
+	t,
 } from "@opentui/core";
 import type { TranscriptEntry } from "../store";
 
@@ -11,6 +14,7 @@ export class TranscriptView {
 	private readonly renderedEntries: {
 		row: BoxRenderable;
 		text: TextRenderable;
+		detail?: TextRenderable;
 		gutter?: TextRenderable;
 	}[] = [];
 
@@ -38,16 +42,23 @@ export class TranscriptView {
 		) {
 			const entry = entries[index];
 			if (!entry) continue;
+			const toolCall = entry.kind === "tool-call";
 			const text = new TextRenderable(this.renderer, {
-				content: formatEntry(entry),
+				content: toolCall ? formatToolTitle(entry) : formatEntry(entry),
 				fg: entryColor(entry),
 				flexGrow: 1,
 			});
 			const row = new BoxRenderable(this.renderer, {
 				width: "100%",
 				marginBottom: 1,
-				flexDirection: "row",
+				flexDirection: toolCall ? "column" : "row",
 			});
+			const detail = toolCall
+				? new TextRenderable(this.renderer, {
+						content: formatToolDetail(entry),
+						flexGrow: 1,
+					})
+				: undefined;
 			const gutter =
 				entry.kind === "user"
 					? new TextRenderable(this.renderer, {
@@ -56,16 +67,30 @@ export class TranscriptView {
 							marginRight: 1,
 						})
 					: undefined;
-			if (gutter) row.add(gutter);
-			row.add(text);
+			if (toolCall) {
+				row.add(text);
+				if (detail) row.add(detail);
+			} else {
+				if (gutter) row.add(gutter);
+				row.add(text);
+			}
 			this.root.add(row);
-			this.renderedEntries.push(gutter ? { row, text, gutter } : { row, text });
+			this.renderedEntries.push(
+				gutter
+					? { row, text, gutter }
+					: detail
+						? { row, text, detail }
+						: { row, text },
+			);
 		}
 		entries.forEach((entry, index) => {
 			const rendered = this.renderedEntries[index];
 			if (!rendered) return;
-			rendered.text.content = formatEntry(entry);
+			rendered.text.content = rendered.detail
+				? formatToolTitle(entry)
+				: formatEntry(entry);
 			rendered.text.fg = entryColor(entry);
+			if (rendered.detail) rendered.detail.content = formatToolDetail(entry);
 			if (rendered.gutter)
 				rendered.gutter.fg = entry.pending ? "#6c7086" : "#cba6f7";
 		});
@@ -78,8 +103,8 @@ function formatEntry(entry: TranscriptEntry): string {
 			user: "",
 			assistant: "",
 			reasoning: "thinking: ",
-			"tool-call": "→ ",
-			"tool-result": "← ",
+			"tool-call": "",
+			"tool-result": "↳ ",
 			error: "error: ",
 			status: "[",
 			usage: "usage: ",
@@ -88,6 +113,26 @@ function formatEntry(entry: TranscriptEntry): string {
 		} as const
 	)[entry.kind];
 	return `${prefix}${entry.text}${["status", "aborted"].includes(entry.kind) ? "]" : ""}`;
+}
+
+function formatToolTitle(entry: TranscriptEntry) {
+	return t`Ran ${bold(fg("#f9e2af")("1"))} ${fg("#cdd6f4")(toolName(entry.text))}`;
+}
+
+function formatToolDetail(entry: TranscriptEntry) {
+	if (!entry.detail) return "";
+	return t`${fg(entry.error ? "#f38ba8" : "#a6adc8")(`╰ ${entry.detail}`)}`;
+}
+
+function toolName(name: string): string {
+	return (
+		{
+			bash: "shell command",
+			read: "file read",
+			write: "file write",
+			edit: "file edit",
+		}[name] ?? name
+	);
 }
 
 function entryColor(entry: TranscriptEntry): string {

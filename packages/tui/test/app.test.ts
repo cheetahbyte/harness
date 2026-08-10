@@ -13,6 +13,12 @@ describe("OpenTUI app", () => {
 				config: { provider: "openai-codex", model: "gpt-5.6-sol" },
 			});
 		store.getState().apply({
+			type: "tool-call",
+			id: "read-1",
+			name: "read",
+			input: { path: "note.txt" },
+		});
+		store.getState().apply({
 			type: "tool-result",
 			id: "read-1",
 			name: "read",
@@ -27,7 +33,8 @@ describe("OpenTUI app", () => {
 		try {
 			await view.flush();
 			expect(view.captureCharFrame()).toContain("gpt-5.6-sol (openai-codex)");
-			expect(view.captureCharFrame()).toContain("read: hello");
+			expect(view.captureCharFrame()).toContain("Ran 1 file read");
+			expect(view.captureCharFrame()).toContain("╰ hello");
 			expect(view.captureCharFrame()).toContain("›");
 			store.getState().apply({ type: "assistant-delta", text: "stream" });
 			store.getState().apply({ type: "assistant-delta", text: "ing" });

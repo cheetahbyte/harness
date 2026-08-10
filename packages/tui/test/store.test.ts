@@ -22,13 +22,21 @@ describe("TUI protocol store", () => {
 			name: "read",
 			input: { path: "note.txt" },
 		});
+		store.getState().apply({
+			type: "tool-result",
+			id: "read-1",
+			name: "read",
+			output: "note contents",
+		});
 		store.getState().apply({ type: "assistant-delta", text: "done" });
 		expect(
-			store.getState().entries.map((entry) => [entry.kind, entry.text]),
+			store
+				.getState()
+				.entries.map((entry) => [entry.kind, entry.text, entry.detail]),
 		).toEqual([
-			["assistant", "hello"],
-			["tool-call", 'read {"path":"note.txt"}'],
-			["assistant", "done"],
+			["assistant", "hello", undefined],
+			["tool-call", "read", "note contents"],
+			["assistant", "done", undefined],
 		]);
 	});
 

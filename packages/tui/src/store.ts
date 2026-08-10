@@ -23,6 +23,7 @@ type TranscriptKind =
 export type TranscriptEntry = {
 	kind: TranscriptKind;
 	text: string;
+	detail?: string;
 	id?: string;
 	error?: boolean;
 	active?: boolean;
@@ -131,14 +132,40 @@ export function createTuiStore(sessionId: string) {
 				if (event.type === "tool-call")
 					return append({
 						kind: "tool-call",
-						text: `${event.name} ${JSON.stringify(event.input)}`,
+						id: event.id,
+						text: event.name,
 					});
-				if (event.type === "tool-result")
+				if (event.type === "tool-result") {
+					let merged = false;
+					set((state) => {
+						const index = state.entries.findLastIndex(
+							(entry) => entry.kind === "tool-call" && entry.id === event.id,
+						);
+						if (index < 0) return state;
+						merged = true;
+						const entry = state.entries[index];
+						if (!entry) return state;
+						return {
+							entries: state.entries.map((current, currentIndex) =>
+								currentIndex === index
+									? {
+											...current,
+											detail: event.output,
+											...(event.isError === undefined
+												? {}
+												: { error: event.isError }),
+										}
+									: current,
+							),
+						};
+					});
+					if (merged) return;
 					return append({
 						kind: "tool-result",
 						text: `${event.name}: ${event.output}`,
 						...(event.isError === undefined ? {} : { error: event.isError }),
 					});
+				}
 				if (event.type === "error") {
 					set((state) => ({
 						running: false,
