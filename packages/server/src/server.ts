@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { resolve } from "node:path";
 import type {
 	AuthEvent,
@@ -27,6 +28,7 @@ import { globalHarnessPath, SettingsStore } from "./settings-store";
 import { CoreTools } from "./tools";
 
 type PendingCommand = { id: string; type: "steer" | "follow-up"; text: string };
+type SessionEvents = { event: [event: ServerEvent] };
 type Login = {
 	provider: string;
 	controller: AbortController;
@@ -37,7 +39,7 @@ type Login = {
 	};
 };
 type Session = {
-	listeners: Set<(event: ServerEvent) => void>;
+	events: EventEmitter<SessionEvents>;
 	running?: AbortController;
 	followUps: PendingCommand[];
 	pendingSteer?: PendingCommand;
@@ -99,18 +101,18 @@ export class HarnessServer {
 
 	createSession(): string {
 		const id = this.store.create();
-		this.sessions.set(id, { listeners: new Set(), followUps: [] });
+		this.sessions.set(id, { events: new EventEmitter(), followUps: [] });
 		log.info({ sessionId: id }, "session created");
 		return id;
 	}
 
 	subscribe(id: string, listener: (event: ServerEvent) => void): () => void {
 		const session = this.session(id);
-		session.listeners.add(listener);
+		session.events.on("event", listener);
 		for (const event of this.store.events(id)) listener(event);
 		const model = this.modelConfig(id);
 		if (model) listener({ type: "model-config", config: model });
-		return () => session.listeners.delete(listener);
+		return () => session.events.off("event", listener);
 	}
 
 	async command(id: string, command: ClientCommand): Promise<void> {
@@ -519,7 +521,7 @@ export class HarnessServer {
 		if (!this.store.exists(id)) throw new Error("session not found");
 		let session = this.sessions.get(id);
 		if (!session) {
-			session = { listeners: new Set(), followUps: [] };
+			session = { events: new EventEmitter(), followUps: [] };
 			this.sessions.set(id, session);
 		}
 		return session;
@@ -531,7 +533,7 @@ export class HarnessServer {
 
 	private publish(id: string, event: ServerEvent, persist = true): void {
 		if (persist) this.store.append(id, event);
-		for (const listener of this.session(id).listeners) listener(event);
+		this.session(id).events.emit("event", event);
 	}
 }
 
