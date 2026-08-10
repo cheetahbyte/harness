@@ -93,3 +93,10 @@ export type ServerEvent =
 	| { type: "auth-completed"; provider: string }
 	| { type: "auth-cancelled"; provider?: string }
 	| { type: "error"; message: string };
+
+/**
+ * One line of the event stream. `seq` is the resume cursor: persisted events
+ * carry theirs so a reconnect can ask for everything after it, while ephemeral
+ * events (auth prompts, provider listings) omit it and are never replayed.
+ */
+export type StreamLine = { seq?: number; event: ServerEvent };

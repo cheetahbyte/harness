@@ -1,4 +1,21 @@
-import type { ClientCommand, ServerEvent } from "../../shared/src/protocol";
+import type {
+	ClientCommand,
+	ServerEvent,
+	StreamLine,
+} from "../../shared/src/protocol";
+
+export type StreamOptions = {
+	signal: AbortSignal;
+	onEvent: (event: ServerEvent) => void;
+	/**
+	 * Reports the resume cursor as each sequenced event is applied. Called before
+	 * the stream can fail, so the caller keeps a usable cursor after a drop.
+	 */
+	onCursor?: (seq: number) => void;
+	onConnected?: () => void;
+	/** Resume after this cursor instead of replaying the whole session. */
+	from?: number;
+};
 
 export class HarnessClient {
 	constructor(
@@ -38,15 +55,11 @@ export class HarnessClient {
 		}
 	}
 
-	async stream(
-		sessionId: string,
-		onEvent: (event: ServerEvent) => void,
-		signal: AbortSignal,
-		onConnected?: () => void,
-	): Promise<void> {
-		const response = await fetch(`${this.base}/sessions/${sessionId}/events`, {
-			signal,
-		});
+	async stream(sessionId: string, options: StreamOptions): Promise<void> {
+		const { signal, onEvent, onCursor, onConnected, from = 0 } = options;
+		const url = new URL(`${this.base}/sessions/${sessionId}/events`);
+		if (from) url.searchParams.set("from", String(from));
+		const response = await fetch(url, { signal });
 		if (!response.body) throw new Error("event stream unavailable");
 		onConnected?.();
 		const reader = response.body.getReader();
@@ -59,8 +72,13 @@ export class HarnessClient {
 				pending += decoder.decode(next.value, { stream: true });
 				const lines = pending.split("\n");
 				pending = lines.pop() ?? "";
-				for (const line of lines)
-					if (line) onEvent(JSON.parse(line) as ServerEvent);
+				// Blank lines are the server's keepalive heartbeat.
+				for (const line of lines) {
+					if (!line) continue;
+					const { seq, event } = JSON.parse(line) as StreamLine;
+					onEvent(event);
+					if (seq !== undefined) onCursor?.(seq);
+				}
 			}
 		} finally {
 			reader.releaseLock();

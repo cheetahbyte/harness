@@ -61,19 +61,34 @@ export class SessionStore {
 			.run(sessionId, JSON.stringify(config));
 	}
 
-	append(sessionId: string, event: ServerEvent): void {
-		this.db
+	/** Returns the row id, which doubles as the event's resume cursor. */
+	append(sessionId: string, event: ServerEvent): number {
+		const { lastInsertRowid } = this.db
 			.query(
 				"INSERT INTO events (session_id, created_at, payload) VALUES (?, ?, ?)",
 			)
 			.run(sessionId, new Date().toISOString(), JSON.stringify(event));
+		return Number(lastInsertRowid);
 	}
 
 	events(sessionId: string): ServerEvent[] {
+		return this.eventsFrom(sessionId).map((row) => row.event);
+	}
+
+	/** Persisted events after the `from` cursor, oldest first. */
+	eventsFrom(
+		sessionId: string,
+		from = 0,
+	): { seq: number; event: ServerEvent }[] {
 		return (
 			this.db
-				.query("SELECT payload FROM events WHERE session_id = ? ORDER BY id")
-				.all(sessionId) as { payload: string }[]
-		).map((row) => JSON.parse(row.payload));
+				.query(
+					"SELECT id, payload FROM events WHERE session_id = ? AND id > ? ORDER BY id",
+				)
+				.all(sessionId, from) as { id: number; payload: string }[]
+		).map((row) => ({
+			seq: row.id,
+			event: JSON.parse(row.payload) as ServerEvent,
+		}));
 	}
 }

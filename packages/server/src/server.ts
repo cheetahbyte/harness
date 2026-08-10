@@ -17,6 +17,7 @@ import type {
 	ProviderOption,
 	ServerEvent,
 	SkillOption,
+	StreamLine,
 } from "../../shared/src/protocol";
 import { HarnessAgentRuntime } from "./agent-runtime";
 import { log } from "./logger";
@@ -31,7 +32,7 @@ import { availableSkills, invokeSkills } from "./skills";
 import { CoreTools } from "./tools";
 
 type PendingCommand = { id: string; type: "steer" | "follow-up"; text: string };
-type SessionEvents = { event: [event: ServerEvent] };
+type SessionEvents = { event: [event: ServerEvent, seq?: number] };
 type Login = {
 	provider: string;
 	controller: AbortController;
@@ -115,13 +116,26 @@ export class HarnessServer {
 		return this.store.workspace(id) ?? this.defaultWorkspace;
 	}
 
-	subscribe(id: string, listener: (event: ServerEvent) => void): () => void {
+	/** Replays persisted events after `from`, then streams live ones. */
+	subscribe(
+		id: string,
+		listener: (event: ServerEvent, seq?: number) => void,
+		from = 0,
+	): () => void {
 		const session = this.session(id);
 		session.events.on("event", listener);
-		for (const event of this.store.events(id)) listener(event);
+		for (const { seq, event } of this.store.eventsFrom(id, from))
+			listener(event, seq);
 		const model = this.modelConfig(id);
 		if (model) listener({ type: "model-config", config: model });
 		return () => session.events.off("event", listener);
+	}
+
+	reportError(id: string, error: unknown): void {
+		this.emit(id, {
+			type: "error",
+			message: error instanceof Error ? error.message : String(error),
+		});
 	}
 
 	async command(id: string, command: ClientCommand): Promise<void> {
@@ -564,8 +578,8 @@ export class HarnessServer {
 	}
 
 	private publish(id: string, event: ServerEvent, persist = true): void {
-		if (persist) this.store.append(id, event);
-		this.session(id).events.emit("event", event);
+		const seq = persist ? this.store.append(id, event) : undefined;
+		this.session(id).events.emit("event", event, seq);
 	}
 }
 
@@ -659,15 +673,34 @@ export function serveHarness(
 			if (!id) return new Response("not found", { status: 404 });
 			try {
 				if (request.method === "GET" && action === "events") {
-					log.info({ requestId, sessionId: id }, "event stream connected");
+					// A reconnecting client resumes after the last cursor it applied.
+					const from = Math.max(0, Number(url.searchParams.get("from")) || 0);
+					log.info(
+						{ requestId, sessionId: id, from },
+						"event stream connected",
+					);
 					const stream = new ReadableStream<Uint8Array>({
 						start(controller) {
-							const write = (event: ServerEvent) =>
+							const encoder = new TextEncoder();
+							const write = (event: ServerEvent, seq?: number) =>
 								controller.enqueue(
-									new TextEncoder().encode(`${JSON.stringify(event)}\n`),
+									encoder.encode(
+										`${JSON.stringify(
+											seq === undefined
+												? ({ event } satisfies StreamLine)
+												: ({ seq, event } satisfies StreamLine),
+										)}\n`,
+									),
 								);
 							write({ type: "session", sessionId: id });
-							const unsubscribe = harness.subscribe(id, write);
+							const unsubscribe = harness.subscribe(id, write, from);
+							const heartbeat = setInterval(() => {
+								try {
+									controller.enqueue(encoder.encode("\n"));
+								} catch {
+									clearInterval(heartbeat);
+								}
+							}, 30_000);
 							request.signal.addEventListener(
 								"abort",
 								() => {
@@ -675,8 +708,18 @@ export function serveHarness(
 										{ requestId, sessionId: id },
 										"event stream disconnected",
 									);
+									clearInterval(heartbeat);
 									unsubscribe();
-									void harness.command(id, { type: "auth-cancel" });
+									// Reconnects make disconnects routine, so this must never
+									// escape as an unhandled rejection.
+									void harness
+										.command(id, { type: "auth-cancel" })
+										.catch((error) =>
+											log.error(
+												{ err: error, requestId, sessionId: id },
+												"auth cancel on disconnect failed",
+											),
+										);
 									controller.close();
 								},
 								{ once: true },
@@ -691,7 +734,16 @@ export function serveHarness(
 					});
 				}
 				if (request.method === "POST" && action === "commands") {
-					await harness.command(id, (await request.json()) as ClientCommand);
+					harness.workspace(id); // Throws 404 for unknown sessions before detaching.
+					void harness
+						.command(id, (await request.json()) as ClientCommand)
+						.catch((error) => {
+							log.error(
+								{ err: error, requestId, sessionId: id },
+								"command failed",
+							);
+							harness.reportError(id, error);
+						});
 					return new Response(null, { status: 202 });
 				}
 				if (request.method === "GET" && !action)
