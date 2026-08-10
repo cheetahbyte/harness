@@ -2,7 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ContextManager } from "../src/context-manager";
+import {
+	ContextBudgetError,
+	ContextManager,
+	MAX_OBSERVATION_RECALL_LIMIT,
+} from "../src/context-manager";
 import { SessionStore } from "../src/session-store";
 
 const paths: string[] = [];
@@ -165,5 +169,318 @@ describe("ContextManager", () => {
 			},
 		]);
 		reopened.db.close();
+	});
+
+	test("evicts retained tool results only after crossing the budget", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "keep" },
+			tokenCost: 49,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+		const oldTool = manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "large output" },
+			compactPayload: { role: "toolResult", content: "observation://old" },
+			tokenCost: 50,
+			compactTokenCost: 10,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "read" },
+		});
+
+		expect(
+			manager.assemble(sessionId, {
+				budget: 100,
+				target: 80,
+				overheadTokens: 0,
+			}).estimatedTokens,
+		).toBe(99);
+		expect(store.contextItem(oldTool.id)?.lifecycle).toBe("retained");
+
+		manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "new output" },
+			tokenCost: 2,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "bash" },
+		});
+		const assembly = manager.assemble(sessionId, {
+			budget: 100,
+			target: 80,
+			overheadTokens: 0,
+		});
+
+		expect(assembly.estimatedTokens).toBeLessThanOrEqual(80);
+		expect(assembly.evictedIds).toEqual([oldTool.id]);
+		expect(store.contextItem(oldTool.id)?.reason).toBe(
+			"working-context budget",
+		);
+		store.db.close();
+	});
+
+	test("evicts successful tool results in deterministic priority order", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "keep" },
+			tokenCost: 10,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+		const bash = manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "bash" },
+			compactPayload: { role: "toolResult", content: "bash ref" },
+			tokenCost: 50,
+			compactTokenCost: 10,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "bash" },
+		});
+		const read = manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "read" },
+			compactPayload: { role: "toolResult", content: "read ref" },
+			tokenCost: 50,
+			compactTokenCost: 10,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "read" },
+		});
+		const write = manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "write" },
+			compactPayload: { role: "toolResult", content: "write ref" },
+			tokenCost: 50,
+			compactTokenCost: 10,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "write" },
+		});
+
+		const assembly = manager.assemble(sessionId, {
+			budget: 150,
+			target: 80,
+			overheadTokens: 0,
+		});
+
+		expect(assembly.evictedIds).toEqual([write.id, read.id]);
+		expect(store.contextItem(bash.id)?.lifecycle).toBe("retained");
+		store.db.close();
+	});
+
+	test("rejects an unsatisfiable pinned-only budget", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "cannot remove" },
+			tokenCost: 11,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+
+		expect(() =>
+			manager.assemble(sessionId, {
+				budget: 10,
+				target: 8,
+				overheadTokens: 0,
+			}),
+		).toThrow(ContextBudgetError);
+		store.db.close();
+	});
+
+	test("recalls exact observation slices from canonical URIs", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		const observation = manager.recordObservation(sessionId, "0123456789", {
+			toolCallId: "call-1",
+			toolName: "read",
+		});
+		const observationId = observation.source?.observationId;
+
+		expect(observation).toMatchObject({
+			id: observationId,
+			kind: "observation",
+			lifecycle: "archived",
+			projection: "omitted",
+			payload: "0123456789",
+		});
+		expect(
+			manager.recall(sessionId, `observation://${observationId}?offset=3&limit=4`),
+		).toMatchObject({
+			observationId,
+			text: "3456",
+			offset: 3,
+			limit: 4,
+			totalLength: 10,
+		});
+		store.db.close();
+	});
+
+	test("rejects cross-session and invalid observation recalls", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const observation = new ContextManager(store).recordObservation(
+			sessionId,
+			"private",
+		);
+		const uri = `observation://${observation.source?.observationId}`;
+
+		expect(() => new ContextManager(store).recall(store.create(), uri)).toThrow(
+			"Observation not found",
+		);
+		expect(() => new ContextManager(store).recall(sessionId, "not-a-uri")).toThrow(
+			"Invalid observation URI",
+		);
+		expect(() => new ContextManager(store).recall(sessionId, `${uri}?limit=1.5`)).toThrow(
+			"Invalid observation limit",
+		);
+		store.db.close();
+	});
+
+	test("limits observation recalls to 64k characters", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const observation = new ContextManager(store).recordObservation(
+			sessionId,
+			"x".repeat(MAX_OBSERVATION_RECALL_LIMIT + 1),
+		);
+		const uri = `observation://${observation.source?.observationId}`;
+
+		expect(
+			new ContextManager(store).recall(
+				sessionId,
+				`${uri}?limit=${MAX_OBSERVATION_RECALL_LIMIT}`,
+			).text,
+		).toHaveLength(MAX_OBSERVATION_RECALL_LIMIT);
+		expect(() =>
+			new ContextManager(store).recall(
+				sessionId,
+				`${uri}?limit=${MAX_OBSERVATION_RECALL_LIMIT + 1}`,
+			),
+		).toThrow("Invalid observation limit");
+		store.db.close();
+	});
+
+	test("keeps omitted observations recoverable after eviction and reopen", () => {
+		const path = storePath();
+		const store = new SessionStore(path);
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		const observation = manager.recordObservation(sessionId, "exact raw output");
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "keep" },
+			tokenCost: 49,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+		const tool = manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "large output" },
+			compactPayload: { role: "toolResult", content: "reference" },
+			tokenCost: 50,
+			compactTokenCost: 10,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "read" },
+		});
+		manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "new output" },
+			tokenCost: 2,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "bash" },
+		});
+
+		expect(
+			manager.assemble(sessionId, {
+				budget: 100,
+				target: 80,
+				overheadTokens: 0,
+			}).evictedIds,
+		).toEqual([tool.id]);
+		store.db.close();
+
+		const reopened = new SessionStore(path);
+		expect(
+			new ContextManager(reopened).recall(
+				sessionId,
+				`observation://${observation.source?.observationId}`,
+			).text,
+		).toBe("exact raw output");
+		reopened.db.close();
+	});
+
+	test("pins model-valid notes atomically within the current budget", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		const tool = manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "large" },
+			compactPayload: { role: "toolResult", content: "ref" },
+			tokenCost: 10,
+			compactTokenCost: 1,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "read" },
+		});
+		const note = manager.pin(sessionId, "note", {
+			budget: 2,
+			target: 2,
+			overheadTokens: 0,
+		});
+
+		expect(note).toMatchObject({
+			kind: "pinned-note",
+			payload: { role: "user", content: "note" },
+		});
+		expect(
+			manager.assemble(sessionId, {
+				budget: 2,
+				target: 2,
+				overheadTokens: 0,
+			}).estimatedTokens,
+		).toBeLessThanOrEqual(2);
+		expect(store.contextItem(tool.id)?.lifecycle).toBe("archived");
+
+		const before = store.contextItems(sessionId);
+		expect(() =>
+			manager.pin(sessionId, "another", {
+				budget: 2,
+				target: 2,
+				overheadTokens: 0,
+			}),
+		).toThrow(ContextBudgetError);
+		expect(store.contextItems(sessionId)).toEqual(before);
+		expect(() => manager.pin(sessionId, "  ", { budget: 2 })).toThrow(
+			"Pinned note cannot be empty",
+		);
+		store.db.close();
 	});
 });
