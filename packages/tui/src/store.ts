@@ -3,6 +3,7 @@ import type {
 	AuthNotifyEvent,
 	AuthPromptEvent,
 	ClientCommand,
+	ModelConfig,
 	ModelOption,
 	ProviderOption,
 	ServerEvent,
@@ -66,7 +67,6 @@ export function createTuiStore(sessionId: string) {
 			followUps: [],
 			running: false,
 			status: "ready",
-			configuredStatus: "",
 			wizard: { kind: "idle" },
 			apply(event) {
 				if (event.type === "session") return;
@@ -168,12 +168,11 @@ export function createTuiStore(sessionId: string) {
 					if (showStatus) return append({ kind: event.type, text: event.type });
 					return;
 				}
+				if (event.type === "model-config")
+					return set({ modelConfig: event.config });
 				if (event.type !== "status") return;
 				set((state) => ({
 					status: event.text,
-					configuredStatus: event.text.startsWith("configured ")
-						? event.text
-						: state.configuredStatus,
 					running: event.text === "running" ? true : state.running,
 				}));
 				if (showStatus) append({ kind: "status", text: event.text });
@@ -208,7 +207,7 @@ export type TuiState = {
 	followUps: FollowUp[];
 	running: boolean;
 	status: string;
-	configuredStatus: string;
+	modelConfig?: ModelConfig;
 	wizard: WizardState;
 	apply: (event: ServerEvent) => void;
 	addUser: (text: string) => void;
@@ -228,11 +227,6 @@ function formatDuration(durationMs: number): string {
 	const seconds = Math.round(durationMs / 1000);
 	const minutes = Math.floor(seconds / 60);
 	return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
-}
-
-export function parseModelStatus(status: string): string | undefined {
-	// Temporary protocol compatibility adapter; replace when configuration is structured.
-	return status.match(/^configured\s+(.+)$/)?.[1];
 }
 
 export function commandForInput(text: string): ClientCommand {

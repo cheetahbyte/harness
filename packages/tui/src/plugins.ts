@@ -1,5 +1,5 @@
 import type { StoreApi } from "zustand/vanilla";
-import type { ClientCommand } from "../../shared/src/protocol";
+import type { ClientCommand, ModelConfig } from "../../shared/src/protocol";
 import type { FollowUp, TranscriptEntry, TuiState, WizardState } from "./store";
 
 export type TuiSnapshot = {
@@ -8,7 +8,7 @@ export type TuiSnapshot = {
 	followUps: readonly FollowUp[];
 	running: boolean;
 	status: string;
-	configuredStatus: string;
+	modelConfig?: ModelConfig;
 	wizard: WizardState;
 };
 
@@ -85,7 +85,7 @@ function snapshot(state: TuiState): TuiSnapshot {
 		followUps: state.followUps,
 		running: state.running,
 		status: state.status,
-		configuredStatus: state.configuredStatus,
+		...(state.modelConfig ? { modelConfig: state.modelConfig } : {}),
 		wizard: state.wizard,
 	});
 }

@@ -176,6 +176,8 @@ describe("first milestone", () => {
 			settings(dir),
 		);
 		const id = server.createSession();
+		const events: ServerEvent[] = [];
+		server.subscribe(id, (event) => events.push(event));
 
 		await server.command(id, {
 			type: "configure",
@@ -186,6 +188,10 @@ describe("first milestone", () => {
 		expect(server.store.modelConfig(id)).toEqual({
 			provider: "fake",
 			model: "model-1",
+		});
+		expect(events).toContainEqual({
+			type: "model-config",
+			config: { provider: "fake", model: "model-1" },
 		});
 		expect(
 			JSON.parse(
@@ -199,11 +205,13 @@ describe("first milestone", () => {
 			fakeModels(),
 			settings(dir),
 		);
-		const events: ServerEvent[] = [];
-		restarted.subscribe(restarted.createSession(), (event) => events.push(event));
-		expect(events).toContainEqual({
-			type: "status",
-			text: "configured fake/model-1",
+		const restartedEvents: ServerEvent[] = [];
+		restarted.subscribe(restarted.createSession(), (event) =>
+			restartedEvents.push(event),
+		);
+		expect(restartedEvents).toContainEqual({
+			type: "model-config",
+			config: { provider: "fake", model: "model-1" },
 		});
 
 		mkdirSync(join(dir, ".harness"));
@@ -220,8 +228,8 @@ describe("first milestone", () => {
 		const projectEvents: ServerEvent[] = [];
 		project.subscribe(project.createSession(), (event) => projectEvents.push(event));
 		expect(projectEvents).toContainEqual({
-			type: "status",
-			text: "configured project/model-2",
+			type: "model-config",
+			config: { provider: "project", model: "model-2" },
 		});
 		const projectId = project.createSession();
 		await project.command(projectId, {

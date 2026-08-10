@@ -14,6 +14,12 @@ export type ModelOption = {
 	name: string;
 };
 
+export type ModelConfig = {
+	provider: string;
+	model: string;
+	baseUrl?: string;
+};
+
 export type AuthPromptEvent =
 	| {
 			id: string;
@@ -38,12 +44,7 @@ export type ClientCommand =
 	| { type: "prompt"; text: string }
 	| { type: "steer"; text: string; id?: string }
 	| { type: "follow-up"; text: string; id?: string }
-	| {
-			type: "configure";
-			provider: string;
-			model: string;
-			baseUrl?: string;
-	  }
+	| ({ type: "configure" } & ModelConfig)
 	| { type: "list-providers"; authType?: AuthType }
 	| { type: "list-models"; provider?: string }
 	| { type: "login"; provider: string; authType: AuthType }
@@ -77,6 +78,7 @@ export type ServerEvent =
 			command: "steer" | "follow-up";
 			state: "queued" | "started" | "finished" | "replaced";
 	  }
+	| { type: "model-config"; config: ModelConfig }
 	| { type: "status"; text: string }
 	| { type: "completed"; durationMs?: number }
 	| { type: "aborted" }

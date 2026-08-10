@@ -36,7 +36,10 @@ describe("TUI protocol store", () => {
 		const store = createStoreWithStatus(false);
 		store
 			.getState()
-			.apply({ type: "status", text: "configured openai-codex/gpt-5.6-sol" });
+			.apply({
+				type: "model-config",
+				config: { provider: "openai-codex", model: "gpt-5.6-sol" },
+			});
 		store.getState().apply({ type: "status", text: "running" });
 		store
 			.getState()
@@ -58,9 +61,10 @@ describe("TUI protocol store", () => {
 		});
 		store.getState().apply({ type: "completed", durationMs: 257_000 });
 		expect(store.getState().running).toBe(false);
-		expect(store.getState().configuredStatus).toBe(
-			"configured openai-codex/gpt-5.6-sol",
-		);
+		expect(store.getState().modelConfig).toEqual({
+			provider: "openai-codex",
+			model: "gpt-5.6-sol",
+		});
 		expect(store.getState().entries.map((entry) => entry.kind)).toEqual([
 			"reasoning",
 			"tool-result",

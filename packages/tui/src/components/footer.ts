@@ -1,10 +1,10 @@
-import { BoxRenderable, type CliRenderer} from "@opentui/core";
+import { BoxRenderable, type CliRenderer } from "@opentui/core";
 import type { TuiState } from "../store";
 import { ModelView } from "./model";
 
 export class FooterView {
-  readonly root: BoxRenderable;
-  private readonly modelLabel: ModelView;
+	readonly root: BoxRenderable;
+	private readonly modelLabel: ModelView;
 
 	constructor(renderer: CliRenderer) {
 		this.root = new BoxRenderable(renderer, {
@@ -12,7 +12,7 @@ export class FooterView {
 			flexDirection: "row",
 		});
 		this.modelLabel = new ModelView(renderer);
-		this.root.add(this.modelLabel);
+		this.root.add(this.modelLabel.box);
 	}
 
 	update(state: TuiState) {

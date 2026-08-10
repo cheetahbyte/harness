@@ -9,7 +9,10 @@ describe("OpenTUI app", () => {
 		const store = createTuiStore("session-1");
 		store
 			.getState()
-			.apply({ type: "status", text: "configured openai-codex/gpt-5.6-sol" });
+			.apply({
+				type: "model-config",
+				config: { provider: "openai-codex", model: "gpt-5.6-sol" },
+			});
 		store.getState().apply({
 			type: "tool-result",
 			id: "read-1",
@@ -24,7 +27,7 @@ describe("OpenTUI app", () => {
 		const app = new TuiApp(view.renderer, store, async () => {});
 		try {
 			await view.flush();
-			expect(view.captureCharFrame()).toContain("openai-codex/gpt-5.6-sol");
+			expect(view.captureCharFrame()).toContain("gpt-5.6-sol(openai-codex)");
 			expect(view.captureCharFrame()).toContain("read: hello");
 			expect(view.captureCharFrame()).toContain("›");
 			store.getState().apply({ type: "assistant-delta", text: "stream" });

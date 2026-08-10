@@ -109,11 +109,7 @@ export class HarnessServer {
 		session.listeners.add(listener);
 		for (const event of this.store.events(id)) listener(event);
 		const model = this.modelConfig(id);
-		if (model)
-			listener({
-				type: "status",
-				text: `configured ${model.provider}/${model.model}`,
-			});
+		if (model) listener({ type: "model-config", config: model });
 		return () => session.listeners.delete(listener);
 	}
 
@@ -159,10 +155,7 @@ export class HarnessServer {
 			this.store.setModelConfig(id, config);
 			this.settings.setModelConfig(config);
 			this.runtime.forget(id);
-			this.emit(id, {
-				type: "status",
-				text: `configured ${command.provider}/${command.model}`,
-			});
+			this.emit(id, { type: "model-config", config });
 			return;
 		}
 		if (command.type === "follow-up") {
