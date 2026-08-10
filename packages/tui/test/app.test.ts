@@ -211,6 +211,67 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("suggests skills inside a prompt", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			store.getState().apply({
+				type: "skills",
+				skills: [{ name: "review", description: "Review a change" }],
+			});
+			await view.renderOnce();
+			await view.mockInput.typeText("Please /r");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("/review  Review a change");
+			expect(view.captureCharFrame()).not.toContain("/model");
+			view.mockInput.pressTab();
+			await view.flush();
+			expect((app as unknown as { composer: { value: string } }).composer.value).toBe(
+				"Please /review ",
+			);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("limits and truncates slash suggestions", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({
+			width: 40,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			store.getState().apply({
+				type: "skills",
+				skills: Array.from({ length: 5 }, (_, index) => ({
+					name: `s${index + 1}`,
+					description: "A description that is too long for this suggestion row",
+				})),
+			});
+			await view.renderOnce();
+			await view.mockInput.typeText("/");
+			await view.flush();
+			const frame = view.captureCharFrame();
+			expect(frame).toContain("/s3");
+			expect(frame).not.toContain("/s4");
+			expect(frame).not.toContain("suggestion row");
+			for (let index = 0; index < 5; index++) view.mockInput.pressArrow("down");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("/s4");
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("submits the selected slash command with Enter", async () => {
 		const store = createTuiStore("session-1");
 		const sent: unknown[] = [];

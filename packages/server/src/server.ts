@@ -16,6 +16,7 @@ import type {
 	ModelOption,
 	ProviderOption,
 	ServerEvent,
+	SkillOption,
 } from "../../shared/src/protocol";
 import { HarnessAgentRuntime } from "./agent-runtime";
 import { log } from "./logger";
@@ -26,6 +27,7 @@ import {
 } from "./provider";
 import { SessionStore } from "./session-store";
 import { globalHarnessPath, SettingsStore } from "./settings-store";
+import { availableSkills, invokeSkills } from "./skills";
 import { CoreTools } from "./tools";
 
 type PendingCommand = { id: string; type: "steer" | "follow-up"; text: string };
@@ -131,6 +133,10 @@ export class HarnessServer {
 		}
 		if (command.type === "list-models") {
 			await this.listModels(id, command.provider);
+			return;
+		}
+		if (command.type === "list-skills") {
+			await this.listSkills(id);
 			return;
 		}
 		if (command.type === "login") {
@@ -295,6 +301,13 @@ export class HarnessServer {
 		this.publish(id, { type: "models", models: options }, false);
 	}
 
+	private async listSkills(id: string): Promise<void> {
+		const skills: SkillOption[] = (
+			await availableSkills(this.workspace(id))
+		).map(({ name, description }) => ({ name, description }));
+		this.publish(id, { type: "skills", skills }, false);
+	}
+
 	private startLogin(id: string, providerId: string, authType: AuthType): void {
 		const session = this.session(id);
 		if (session.login) {
@@ -436,6 +449,7 @@ export class HarnessServer {
 		session.running = controller;
 		const pending = typeof command === "string" ? undefined : command;
 		const text = typeof command === "string" ? command : command.text;
+		const prompt = await invokeSkills(this.workspace(id), text);
 		if (pending)
 			this.emit(id, {
 				type: "command",
@@ -457,7 +471,7 @@ export class HarnessServer {
 		try {
 			await this.runtime.run(
 				id,
-				text,
+				prompt,
 				this.modelConfig(id),
 				new CoreTools(this.workspace(id)),
 				controller.signal,

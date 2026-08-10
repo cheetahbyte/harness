@@ -27,6 +27,7 @@ type WizardFlow =
 type AppCommand = {
 	name: string;
 	description: string;
+	kind: "command";
 	run: (args: string) => void | Promise<void>;
 };
 
@@ -61,11 +62,13 @@ export class TuiApp {
 			{
 				name: "/login",
 				description: "Configure provider authentication",
+				kind: "command",
 				run: (args) => this.openLogin(args || undefined),
 			},
 			{
 				name: "/model",
 				description: "Configure provider and model",
+				kind: "command",
 				run: (args) =>
 					/^\S+\s+\S+(?:\s+\S+)?\s*$/.test(args)
 						? this.send(commandForInput(`/model ${args}`))
@@ -145,6 +148,14 @@ export class TuiApp {
 		this.header.update(state);
 		this.transcript.update(state.entries);
 		this.composer.update(state.followUps);
+		this.composer.setCommands([
+			...this.commands,
+			...state.skills.map((skill) => ({
+				name: `/${skill.name}`,
+				description: skill.description,
+				kind: "skill" as const,
+			})),
+		]);
 		this.footer.update(state);
 		if (state.wizard !== this.renderedWizard) {
 			this.renderedWizard = state.wizard;

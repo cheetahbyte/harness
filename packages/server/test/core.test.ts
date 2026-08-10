@@ -227,6 +227,27 @@ describe("first milestone", () => {
 		expect(server.store.events(id)).toEqual([]);
 	});
 
+	test("lists skills for composer suggestions", async () => {
+		const { dir, server } = harness();
+		mkdirSync(join(dir, ".harness/skills/review"), { recursive: true });
+		writeFileSync(
+			join(dir, ".harness/skills/review/SKILL.md"),
+			"---\nname: review\ndescription: Review changes\n---\nReview carefully.",
+		);
+		const id = server.createSession();
+		const events: ServerEvent[] = [];
+		server.subscribe(id, (event) => events.push(event));
+
+		await server.command(id, { type: "list-skills" });
+
+		expect(events).toContainEqual({
+			type: "skills",
+			skills: expect.arrayContaining([
+				{ name: "review", description: "Review changes" },
+			]),
+		});
+	});
+
 	test("persists a selected non-OpenAI model", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
 		paths.push(dir);
@@ -499,10 +520,12 @@ describe("first milestone", () => {
 	test("streams an OpenAI-compatible model through the Pi agent loop and core tools", async () => {
 		process.env["HARNESS_OPENAI_API_KEY"] = "test";
 		let calls = 0;
+		const requests: string[] = [];
 		const provider = Bun.serve({
 			port: 0,
 			fetch: async (request) => {
 				expect(request.headers.get("authorization")).toBe("Bearer test");
+				requests.push(await request.text());
 				calls++;
 				const body =
 					calls === 1
@@ -531,6 +554,11 @@ describe("first milestone", () => {
 		try {
 			const { dir, server } = harness();
 			writeFileSync(join(dir, "note.txt"), "hello");
+			mkdirSync(join(dir, ".harness/skills/review"), { recursive: true });
+			writeFileSync(
+				join(dir, ".harness/skills/review/SKILL.md"),
+				"---\nname: review\ndescription: review instructions\n---\nReview carefully.",
+			);
 			const id = server.createSession();
 			await server.command(id, {
 				type: "configure",
@@ -538,9 +566,13 @@ describe("first milestone", () => {
 				model: "test-model",
 				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
 			});
-			await server.command(id, { type: "prompt", text: "read note.txt" });
+			await server.command(id, {
+				type: "prompt",
+				text: "Please /review read note.txt",
+			});
 			const events = server.store.events(id);
 			expect(calls).toBe(2);
+			expect(requests[0]).toContain("Review carefully.");
 			expect(
 				events.some(
 					(event) => event.type === "assistant-delta" && event.text === "done",

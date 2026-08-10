@@ -7,6 +7,7 @@ import type {
 	ModelOption,
 	ProviderOption,
 	ServerEvent,
+	SkillOption,
 } from "../../shared/src/protocol";
 
 type TranscriptKind =
@@ -67,11 +68,13 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 			pwd,
 			entries: [],
 			followUps: [],
+			skills: [],
 			running: false,
 			status: "ready",
 			wizard: { kind: "idle" },
 			apply(event) {
 				if (event.type === "session") return;
+				if (event.type === "skills") return set({ skills: event.skills });
 				if (event.type === "providers")
 					return set({
 						wizard: { kind: "providers", providers: event.providers },
@@ -234,6 +237,7 @@ export type TuiState = {
 	pwd: string;
 	entries: TranscriptEntry[];
 	followUps: FollowUp[];
+	skills: SkillOption[];
 	running: boolean;
 	status: string;
 	modelConfig?: ModelConfig;

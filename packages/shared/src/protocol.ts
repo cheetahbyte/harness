@@ -14,6 +14,8 @@ export type ModelOption = {
 	name: string;
 };
 
+export type SkillOption = { name: string; description: string };
+
 export type ModelConfig = {
 	provider: string;
 	model: string;
@@ -47,6 +49,7 @@ export type ClientCommand =
 	| ({ type: "configure" } & ModelConfig)
 	| { type: "list-providers"; authType?: AuthType }
 	| { type: "list-models"; provider?: string }
+	| { type: "list-skills" }
 	| { type: "login"; provider: string; authType: AuthType }
 	| { type: "auth-answer"; promptId: string; value: string }
 	| { type: "auth-cancel" }
@@ -84,6 +87,7 @@ export type ServerEvent =
 	| { type: "aborted" }
 	| { type: "providers"; providers: ProviderOption[] }
 	| { type: "models"; models: ModelOption[] }
+	| { type: "skills"; skills: SkillOption[] }
 	| { type: "auth-prompt"; prompt: AuthPromptEvent }
 	| { type: "auth-notify"; notification: AuthNotifyEvent }
 	| { type: "auth-completed"; provider: string }

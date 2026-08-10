@@ -12,7 +12,12 @@ const app = new TuiApp(renderer, store, (command) =>
 	client.send(sessionId, command),
 );
 void client
-	.stream(sessionId, store.getState().apply, controller.signal)
+	.stream(
+		sessionId,
+		store.getState().apply,
+		controller.signal,
+		() => void client.send(sessionId, { type: "list-skills" }),
+	)
 	.catch((error) => {
 		if (!controller.signal.aborted)
 			store.getState().apply({

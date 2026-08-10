@@ -42,11 +42,13 @@ export class HarnessClient {
 		sessionId: string,
 		onEvent: (event: ServerEvent) => void,
 		signal: AbortSignal,
+		onConnected?: () => void,
 	): Promise<void> {
 		const response = await fetch(`${this.base}/sessions/${sessionId}/events`, {
 			signal,
 		});
 		if (!response.body) throw new Error("event stream unavailable");
+		onConnected?.();
 		const reader = response.body.getReader();
 		const decoder = new TextDecoder();
 		let pending = "";
