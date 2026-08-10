@@ -5,10 +5,14 @@ export class HarnessClient {
 		readonly base = process.env["HARNESS_URL"] ?? "http://localhost:7432",
 	) {}
 
-	async createSession(): Promise<string> {
+	async createSession(workspace = process.cwd()): Promise<string> {
 		return (
 			(await (
-				await fetch(`${this.base}/sessions`, { method: "POST" })
+				await fetch(`${this.base}/sessions`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ cwd: workspace }),
+				})
 			).json()) as { sessionId: string }
 		).sessionId;
 	}

@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import type {
 	AuthEvent,
@@ -80,30 +81,36 @@ export class HarnessServer {
 	private readonly runtime: HarnessAgentRuntime;
 	private readonly credentials: CredentialStore;
 	private readonly models: ModelRegistry;
+	private readonly defaultWorkspace: string;
 
 	constructor(
 		readonly store = new SessionStore(),
 		workspace = process.cwd(),
 		models?: ModelRegistry,
-		private readonly settings = new SettingsStore(
+		private readonly defaultSettings = new SettingsStore(
 			globalHarnessPath("settings.json"),
 			resolve(workspace, ".harness/settings.json"),
 		),
 	) {
+		this.defaultWorkspace = workspacePath(workspace);
 		this.credentials = new JsonCredentialStore(globalHarnessPath("auth.json"));
 		this.models = models ?? createHarnessModels(this.credentials);
 		this.runtime = new HarnessAgentRuntime(
-			new CoreTools(resolve(workspace)),
 			this.credentials,
 			this.models as Models,
 		);
 	}
 
-	createSession(): string {
-		const id = this.store.create();
+	createSession(workspace = this.defaultWorkspace): string {
+		const id = this.store.create(workspacePath(workspace));
 		this.sessions.set(id, { events: new EventEmitter(), followUps: [] });
 		log.info({ sessionId: id }, "session created");
 		return id;
+	}
+
+	workspace(id: string): string {
+		if (!this.store.exists(id)) throw new Error("session not found");
+		return this.store.workspace(id) ?? this.defaultWorkspace;
 	}
 
 	subscribe(id: string, listener: (event: ServerEvent) => void): () => void {
@@ -155,7 +162,7 @@ export class HarnessServer {
 			};
 			providerModels(config, this.credentials, this.models as Models);
 			this.store.setModelConfig(id, config);
-			this.settings.setModelConfig(config);
+			this.settingsFor(id).setModelConfig(config);
 			this.runtime.forget(id);
 			this.emit(id, { type: "model-config", config });
 			return;
@@ -452,6 +459,7 @@ export class HarnessServer {
 				id,
 				text,
 				this.modelConfig(id),
+				new CoreTools(this.workspace(id)),
 				controller.signal,
 				(event) => this.emit(id, event),
 			);
@@ -504,7 +512,17 @@ export class HarnessServer {
 	}
 
 	private modelConfig(id: string) {
-		return this.store.modelConfig(id) ?? this.settings.modelConfig();
+		return this.store.modelConfig(id) ?? this.settingsFor(id).modelConfig();
+	}
+
+	private settingsFor(id: string): SettingsStore {
+		const workspace = this.workspace(id);
+		return workspace === this.defaultWorkspace
+			? this.defaultSettings
+			: new SettingsStore(
+					globalHarnessPath("settings.json"),
+					resolve(workspace, ".harness/settings.json"),
+				);
 	}
 
 	private pending(
@@ -582,6 +600,14 @@ function abortError(): Error {
 	return new DOMException("login cancelled", "AbortError");
 }
 
+function workspacePath(path: string): string {
+	const workspace = resolve(path);
+	try {
+		if (statSync(workspace).isDirectory()) return workspace;
+	} catch {}
+	throw new Error("workspace must be an existing directory");
+}
+
 export function serveHarness(
 	options: { port?: number; workspace?: string; databasePath?: string } = {},
 ): ReturnType<typeof Bun.serve> {
@@ -599,8 +625,18 @@ export function serveHarness(
 				{ requestId, method: request.method, path: url.pathname },
 				"http request",
 			);
-			if (request.method === "POST" && url.pathname === "/sessions")
-				return Response.json({ sessionId: harness.createSession() });
+			if (request.method === "POST" && url.pathname === "/sessions") {
+				try {
+					return Response.json({
+						sessionId: harness.createSession(await sessionWorkspace(request)),
+					});
+				} catch (error) {
+					return Response.json(
+						{ error: error instanceof Error ? error.message : String(error) },
+						{ status: 400 },
+					);
+				}
+			}
 			const match = url.pathname.match(
 				/^\/sessions\/([^/]+)(?:\/(events|commands))?$/,
 			);
@@ -662,4 +698,21 @@ export function serveHarness(
 			return new Response("not found", { status: 404 });
 		},
 	});
+}
+
+async function sessionWorkspace(request: Request): Promise<string | undefined> {
+	const text = await request.text();
+	if (!text) return undefined;
+	let body: unknown;
+	try {
+		body = JSON.parse(text);
+	} catch {
+		throw new Error("session body must be valid JSON");
+	}
+	if (!body || typeof body !== "object" || Array.isArray(body))
+		throw new Error("session body must be an object");
+	const cwd = (body as { cwd?: unknown }).cwd;
+	if (cwd !== undefined && (typeof cwd !== "string" || !cwd))
+		throw new Error("cwd must be a non-empty string");
+	return cwd;
 }

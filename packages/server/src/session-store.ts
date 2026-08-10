@@ -10,8 +10,13 @@ export class SessionStore {
 		mkdirSync(dirname(path), { recursive: true });
 		this.db = new Database(path, { create: true });
 		this.db.run(
-			"CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, created_at TEXT NOT NULL)",
+			"CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, workspace TEXT)",
 		);
+		const columns = this.db.query("PRAGMA table_info(sessions)").all() as {
+			name: string;
+		}[];
+		if (!columns.some((column) => column.name === "workspace"))
+			this.db.run("ALTER TABLE sessions ADD COLUMN workspace TEXT");
 		this.db.run(
 			"CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL)",
 		);
@@ -20,16 +25,25 @@ export class SessionStore {
 		);
 	}
 
-	create(): string {
+	create(workspace: string): string {
 		const id = crypto.randomUUID();
 		this.db
-			.query("INSERT INTO sessions VALUES (?, ?)")
-			.run(id, new Date().toISOString());
+			.query(
+				"INSERT INTO sessions (id, created_at, workspace) VALUES (?, ?, ?)",
+			)
+			.run(id, new Date().toISOString(), workspace);
 		return id;
 	}
 
 	exists(id: string): boolean {
 		return !!this.db.query("SELECT 1 FROM sessions WHERE id = ?").get(id);
+	}
+
+	workspace(sessionId: string): string | undefined {
+		const row = this.db
+			.query("SELECT workspace FROM sessions WHERE id = ?")
+			.get(sessionId) as { workspace: string | null } | null;
+		return row?.workspace ?? undefined;
 	}
 
 	modelConfig(sessionId: string): ModelConfig | undefined {

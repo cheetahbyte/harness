@@ -11,6 +11,33 @@ afterEach(() => {
 });
 
 describe("HTTP event stream", () => {
+	test("creates a session in its requested workspace", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
+		paths.push(dir);
+		const server = serveHarness({
+			port: 0,
+			workspace: dir,
+			databasePath: join(dir, "state.sqlite"),
+		});
+		try {
+			const base = server.url.toString().replace(/\/$/, "");
+			const created = await fetch(`${base}/sessions`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ cwd: dir }),
+			});
+			expect(created.status).toBe(200);
+			const invalid = await fetch(`${base}/sessions`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ cwd: join(dir, "missing") }),
+			});
+			expect(invalid.status).toBe(400);
+		} finally {
+			server.stop(true);
+		}
+	});
+
 	test("stays connected past Bun's default idle timeout", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
 		paths.push(dir);

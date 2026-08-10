@@ -88,6 +88,67 @@ async function until(assertion: () => void): Promise<void> {
 }
 
 describe("first milestone", () => {
+	test("keeps each session's workspace", () => {
+		const first = mkdtempSync(join(tmpdir(), "harness-workspace-test-"));
+		const second = mkdtempSync(join(tmpdir(), "harness-workspace-test-"));
+		paths.push(first, second);
+		const server = new HarnessServer(
+			new SessionStore(join(first, "state.sqlite")),
+			first,
+			fakeModels(),
+			settings(first),
+		);
+
+		const firstId = server.createSession(first);
+		const secondId = server.createSession(second);
+
+		expect(server.workspace(firstId)).toBe(first);
+		expect(server.workspace(secondId)).toBe(second);
+		const restarted = new HarnessServer(
+			new SessionStore(join(first, "state.sqlite")),
+			first,
+			fakeModels(),
+			settings(first),
+		);
+		expect(restarted.workspace(secondId)).toBe(second);
+	});
+
+	test("uses project settings from each session workspace", () => {
+		const first = mkdtempSync(join(tmpdir(), "harness-workspace-test-"));
+		const second = mkdtempSync(join(tmpdir(), "harness-workspace-test-"));
+		paths.push(first, second);
+		for (const [dir, model] of [
+			[first, "first-model"],
+			[second, "second-model"],
+		] as const) {
+			mkdirSync(join(dir, ".harness"));
+			writeFileSync(
+				join(dir, ".harness/settings.json"),
+				JSON.stringify({ model: { provider: "fake", model } }),
+			);
+		}
+		const server = new HarnessServer(
+			new SessionStore(join(first, "state.sqlite")),
+			first,
+			fakeModels(),
+			settings(first),
+		);
+		const events: ServerEvent[] = [];
+		const firstId = server.createSession(first);
+		const secondId = server.createSession(second);
+		server.subscribe(firstId, (event) => events.push(event));
+		server.subscribe(secondId, (event) => events.push(event));
+
+		expect(events).toContainEqual({
+			type: "model-config",
+			config: { provider: "fake", model: "first-model" },
+		});
+		expect(events).toContainEqual({
+			type: "model-config",
+			config: { provider: "fake", model: "second-model" },
+		});
+	});
+
 	test("does not persist a credential after its queued write is cancelled", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
 		paths.push(dir);

@@ -37,7 +37,6 @@ type AgentEntry = {
 export class HarnessAgentRuntime {
 	private readonly agents = new Map<string, AgentEntry>();
 	constructor(
-		private readonly tools: CoreTools,
 		private readonly credentials: CredentialStore,
 		private readonly models: Models,
 	) {}
@@ -46,6 +45,7 @@ export class HarnessAgentRuntime {
 		sessionId: string,
 		text: string,
 		config: ModelConfig | undefined,
+		tools: CoreTools,
 		signal: AbortSignal,
 		emit: (event: ServerEvent) => void,
 	): Promise<void> {
@@ -68,7 +68,7 @@ export class HarnessAgentRuntime {
 					thinkingLevel: "medium",
 					systemPrompt:
 						"You are Harness, a coding agent. Use the provided tools to inspect and change the current workspace.",
-					tools: this.agentTools(),
+					tools: this.agentTools(tools),
 				},
 				streamFn: (_unused, context, options) =>
 					streamWithRetry(
@@ -130,7 +130,7 @@ export class HarnessAgentRuntime {
 		this.agents.delete(sessionId);
 	}
 
-	private agentTools(): AgentTool[] {
+	private agentTools(tools: CoreTools): AgentTool[] {
 		return (["read", "write", "edit", "bash"] as const).map((name) => ({
 			name,
 			label: name,
@@ -140,7 +140,7 @@ export class HarnessAgentRuntime {
 				content: [
 					{
 						type: "text",
-						text: await this.tools.execute(
+						text: await tools.execute(
 							{ name, input: input as Record<string, unknown> },
 							signal ?? new AbortController().signal,
 						),
