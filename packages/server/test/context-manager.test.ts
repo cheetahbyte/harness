@@ -71,6 +71,86 @@ describe("ContextManager", () => {
 		reopened.db.close();
 	});
 
+	test("validates and reconstructs episode boundaries while attaching active work", () => {
+		const path = storePath();
+		const store = new SessionStore(path);
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		const exploration = manager.startEpisode(sessionId, {
+			name: "inspect-auth",
+			kind: "exploration",
+		});
+
+		expect(() =>
+			manager.startEpisode(sessionId, { name: "other", kind: "exploration" }),
+		).toThrow("already active");
+		expect(() => manager.endEpisode(sessionId)).toThrow("conclusion");
+		const attached = manager.record({
+			sessionId,
+			kind: "assistant",
+			payload: { role: "assistant", content: "reading auth" },
+			tokenCost: 2,
+			lifecycle: "active",
+			reason: "work",
+		});
+		expect(attached.episodeId).toBe(exploration.id);
+		expect(
+			manager.record({
+				sessionId,
+				episodeId: "explicit-episode",
+				kind: "assistant",
+				payload: { role: "assistant", content: "separate" },
+				tokenCost: 1,
+				lifecycle: "active",
+				reason: "work",
+			}).episodeId,
+		).toBe("explicit-episode");
+		expect(
+			manager.record({
+				sessionId,
+				kind: "user",
+				payload: { role: "user", content: "do not lose this" },
+				tokenCost: 2,
+				lifecycle: "active",
+				reason: "input",
+			}).lifecycle,
+		).toBe("pinned");
+		manager.endEpisode(sessionId, "JWT validation happens before routing.");
+		expect(() =>
+			manager.startEpisode(sessionId, {
+				name: "inspect-auth",
+				kind: "exploration",
+			}),
+		).toThrow("unique");
+		expect(() =>
+			manager.startEpisode(sessionId, {
+				name: "bad-exploration",
+				kind: "exploration",
+				dependencies: [exploration.id],
+			}),
+		).toThrow("cannot have dependencies");
+		expect(() =>
+			manager.startEpisode(sessionId, { name: "no-dependency", kind: "action" }),
+		).toThrow("require an exploration dependency");
+		const action = manager.startEpisode(sessionId, {
+			name: "patch-auth",
+			kind: "action",
+			dependencies: [exploration.id],
+		});
+		expect(() => manager.endEpisode(sessionId, "not allowed")).toThrow(
+			"cannot have a conclusion",
+		);
+		manager.endEpisode(sessionId);
+		store.db.close();
+
+		const reopened = new SessionStore(path);
+		expect(new ContextManager(reopened).episodes(sessionId)).toMatchObject([
+			{ id: exploration.id, state: "completed", conclusion: "JWT validation happens before routing." },
+			{ id: action.id, state: "completed", dependencies: [exploration.id] },
+		]);
+		reopened.db.close();
+	});
+
 	test("records unknown kinds and lifecycles as pinned", () => {
 		const store = new SessionStore(storePath());
 		const manager = new ContextManager(store);
@@ -169,6 +249,138 @@ describe("ContextManager", () => {
 			},
 		]);
 		reopened.db.close();
+	});
+
+	test("archives actions before explorations and preserves compact conclusions", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "keep" },
+			tokenCost: 10,
+			lifecycle: "active",
+			reason: "input",
+		});
+		const exploration = manager.startEpisode(sessionId, {
+			name: "inspect-auth",
+			kind: "exploration",
+		});
+		const raw = { role: "assistant", content: "long investigation" };
+		const explorationItem = manager.record({
+			sessionId,
+			kind: "assistant",
+			payload: raw,
+			tokenCost: 30,
+			lifecycle: "active",
+			reason: "investigating",
+		});
+		manager.endEpisode(sessionId, "JWT validation happens before routing.");
+		const action = manager.startEpisode(sessionId, {
+			name: "patch-auth",
+			kind: "action",
+			dependencies: [exploration.id],
+		});
+		const actionItem = manager.record({
+			sessionId,
+			kind: "assistant",
+			payload: { role: "assistant", content: "apply patch" },
+			tokenCost: 30,
+			lifecycle: "active",
+			reason: "editing",
+		});
+		manager.endEpisode(sessionId);
+		const open = manager.startEpisode(sessionId, {
+			name: "verify",
+			kind: "exploration",
+		});
+		const openItem = manager.record({
+			sessionId,
+			kind: "assistant",
+			payload: { role: "assistant", content: "checking" },
+			tokenCost: 30,
+			lifecycle: "active",
+			reason: "verifying",
+		});
+
+		const assembly = manager.assemble(sessionId, {
+			budget: 90,
+			target: 60,
+			overheadTokens: 0,
+		});
+		const inspection = manager.inspect(sessionId, {
+			budget: 90,
+			target: 60,
+			overheadTokens: 0,
+		});
+
+		expect(assembly.evictedIds).toEqual([actionItem.id, explorationItem.id]);
+		expect(inspection).toMatchObject({
+			budget: 90,
+			target: 60,
+			overheadTokens: 0,
+			episodes: [
+				{ id: exploration.id, state: "archived" },
+				{ id: action.id, state: "archived" },
+				{ id: open.id, state: "active" },
+			],
+		});
+		expect(assembly.payloads).toContainEqual(
+			expect.objectContaining({ content: expect.stringContaining("JWT validation") }),
+		);
+		expect(store.contextItem(explorationItem.id)?.payload).toEqual(raw);
+		expect(store.contextItem(openItem.id)?.lifecycle).toBe("active");
+		expect("payload" in inspection.items[0]).toBe(false);
+		store.db.close();
+	});
+
+	test("keeps an exploration completed while a dependent action remains live", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "keep" },
+			tokenCost: 10,
+			lifecycle: "pinned",
+			reason: "input",
+		});
+		const exploration = manager.startEpisode(sessionId, {
+			name: "inspect",
+			kind: "exploration",
+		});
+		manager.record({
+			sessionId,
+			kind: "assistant",
+			payload: { role: "assistant", content: "findings" },
+			tokenCost: 40,
+			lifecycle: "active",
+			reason: "work",
+		});
+		manager.endEpisode(sessionId, "The failure is in auth.");
+		const action = manager.startEpisode(sessionId, {
+			name: "fix",
+			kind: "action",
+			dependencies: [exploration.id],
+		});
+		manager.record({
+			sessionId,
+			kind: "assistant",
+			payload: { role: "assistant", content: "patch" },
+			tokenCost: 40,
+			lifecycle: "active",
+			reason: "work",
+		});
+		manager.endEpisode(sessionId);
+
+		manager.assemble(sessionId, { budget: 80, target: 50, overheadTokens: 0 });
+		expect(manager.episodes(sessionId)).toMatchObject([
+			{ id: exploration.id, state: "completed" },
+			{ id: action.id, state: "archived" },
+		]);
+		store.db.close();
 	});
 
 	test("evicts retained tool results only after crossing the budget", () => {
@@ -358,10 +570,10 @@ describe("ContextManager", () => {
 			lifecycle: "pinned",
 			reason: "initial user objective",
 		});
-		const oldUser = manager.record({
+		const oldMessage = manager.record({
 			sessionId,
-			kind: "user",
-			payload: { role: "user", content: "old follow-up" },
+			kind: "assistant",
+			payload: { role: "assistant", content: "old follow-up" },
 			tokenCost: 40,
 			groupId: "turn-2",
 			lifecycle: "active",
@@ -383,7 +595,7 @@ describe("ContextManager", () => {
 			target: 30,
 			overheadTokens: 0,
 		});
-		expect(assembly.evictedIds).toEqual([oldUser.id, oldAssistant.id]);
+		expect(assembly.evictedIds).toEqual([oldMessage.id, oldAssistant.id]);
 		expect(assembly.payloads).toEqual([
 			{ role: "user", content: "objective" },
 		]);
@@ -411,6 +623,39 @@ describe("ContextManager", () => {
 				overheadTokens: 0,
 			}),
 		).toThrow(ContextBudgetError);
+		store.db.close();
+	});
+
+	test("accepts protected context below the hard budget when target is unreachable", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "protected" },
+			tokenCost: 70,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+		manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "large" },
+			compactPayload: { role: "user", content: "reference" },
+			tokenCost: 40,
+			compactTokenCost: 10,
+			lifecycle: "retained",
+			reason: "consumed",
+		});
+
+		expect(
+			manager.assemble(sessionId, {
+				budget: 100,
+				target: 50,
+				overheadTokens: 0,
+			}).estimatedTokens,
+		).toBe(80);
 		store.db.close();
 	});
 
@@ -557,7 +802,7 @@ describe("ContextManager", () => {
 			reason: "consumed",
 			source: { toolName: "read" },
 		});
-		const note = manager.pin(sessionId, "note", {
+		const note = manager.pin(sessionId, "constraint", "note", {
 			budget: 2,
 			target: 2,
 			overheadTokens: 0,
@@ -565,7 +810,7 @@ describe("ContextManager", () => {
 
 		expect(note).toMatchObject({
 			kind: "pinned-note",
-			payload: { role: "user", content: "note" },
+			payload: { role: "user", content: "note", kind: "constraint" },
 		});
 		expect(
 			manager.assemble(sessionId, {
@@ -578,14 +823,16 @@ describe("ContextManager", () => {
 
 		const before = store.contextItems(sessionId);
 		expect(() =>
-			manager.pin(sessionId, "another", {
+			manager.pin(sessionId, "decision", "another", {
 				budget: 2,
 				target: 2,
 				overheadTokens: 0,
 			}),
 		).toThrow(ContextBudgetError);
 		expect(store.contextItems(sessionId)).toEqual(before);
-		expect(() => manager.pin(sessionId, "  ", { budget: 2 })).toThrow(
+		expect(() =>
+			manager.pin(sessionId, "constraint", "  ", { budget: 2 }),
+		).toThrow(
 			"Pinned note cannot be empty",
 		);
 		store.db.close();

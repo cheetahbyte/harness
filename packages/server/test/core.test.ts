@@ -335,7 +335,7 @@ describe("first milestone", () => {
 			);
 			await restarted.command(id, {
 				type: "prompt",
-				text: "continue ".repeat(400),
+				text: "continue ".repeat(250),
 			});
 
 			expect(calls).toBe(3);
@@ -375,6 +375,7 @@ describe("first milestone", () => {
 				const chunks =
 					calls === 1
 						? toolCallChunks("call-pin", "pin_context", {
+								kind: "constraint",
 								text: "keep this needle",
 							})
 						: calls === 2
@@ -424,6 +425,87 @@ describe("first milestone", () => {
 		}
 	});
 
+	test("uses episode boundaries and preserves exploration conclusions after eviction", async () => {
+		process.env.HARNESS_OPENAI_API_KEY = "test";
+		const bodies: {
+			messages: { role: string; content?: string; tool_call_id?: string }[];
+		}[] = [];
+		let calls = 0;
+		const provider = Bun.serve({
+			port: 0,
+			fetch: async (request) => {
+				const body = (await request.json()) as (typeof bodies)[number];
+				bodies.push(body);
+				calls++;
+				const chunks =
+					calls === 1
+						? toolCallChunks("episode-explore", "episode", {
+								action: "start",
+								name: "inspect-auth",
+								kind: "exploration",
+							})
+						: calls === 2
+							? toolCallChunks("read-auth", "read", { path: "note.txt" })
+							: calls === 3
+								? toolCallChunks("episode-end-explore", "episode", {
+										action: "end",
+										conclusion: "JWT validation happens before routing.",
+									})
+								: calls === 4
+									? toolCallChunks("episode-action", "episode", {
+											action: "start",
+											name: "apply-auth-fix",
+											kind: "action",
+											dependencies: [
+												episodeId(body, "episode-explore"),
+											],
+										})
+									: calls === 5
+										? toolCallChunks("write-fix", "write", {
+												path: "changed.txt",
+												content: "done",
+											})
+										: calls === 6
+											? toolCallChunks("episode-end-action", "episode", {
+													action: "end",
+												})
+											: doneChunks();
+				return sseResponse(chunks);
+			},
+		});
+		try {
+			const { dir, server } = harness(1_600);
+			writeFileSync(join(dir, "note.txt"), "auth uses JWT");
+			const id = server.createSession();
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			await server.command(id, { type: "prompt", text: "inspect then fix auth" });
+			await server.command(id, {
+				type: "prompt",
+				text: "follow-up ".repeat(200),
+			});
+
+			expect(calls).toBe(8);
+			expect(JSON.stringify(bodies.at(-1))).toContain(
+				"JWT validation happens before routing.",
+			);
+			expect(server.contextStatus(id).episodes).toMatchObject([
+				{ name: "inspect-auth", state: "archived" },
+				{ name: "apply-auth-fix", state: "archived" },
+			]);
+			expect(JSON.stringify(server.store.contextItems(id))).toContain(
+				"auth uses JWT",
+			);
+		} finally {
+			provider.stop(true);
+			delete process.env.HARNESS_OPENAI_API_KEY;
+		}
+	});
+
 	test("rejects an over-budget prompt before calling the provider", async () => {
 		process.env.HARNESS_OPENAI_API_KEY = "test";
 		let calls = 0;
@@ -461,7 +543,7 @@ describe("first milestone", () => {
 		}
 	});
 
-	test("compacts completed text turns without losing the initial objective", async () => {
+	test("compacts assistant turns without removing user-authored messages", async () => {
 		process.env.HARNESS_OPENAI_API_KEY = "test";
 		const bodies: unknown[] = [];
 		let calls = 0;
@@ -490,13 +572,14 @@ describe("first milestone", () => {
 
 			expect(calls).toBe(5);
 			expect(JSON.stringify(bodies.at(-1))).toContain("durable objective");
+			expect(JSON.stringify(bodies.at(-1))).toContain("follow-up 4");
 			expect(JSON.stringify(bodies.at(-1))).not.toContain("reply-1-");
 			expect(JSON.stringify(server.store.contextItems(id))).toContain("reply-1-");
 			expect(
 				server.store
 					.contextItems(id)
 					.filter((item) => item.kind === "user" && item.lifecycle === "pinned"),
-			).toHaveLength(1);
+			).toHaveLength(5);
 		} finally {
 			provider.stop(true);
 			delete process.env.HARNESS_OPENAI_API_KEY;
@@ -554,4 +637,15 @@ function observationReference(
 		?.content?.match(/observation:\/\/obs-[\w-]+/)?.[0];
 	if (!reference) throw new Error("provider did not receive an observation URI");
 	return reference;
+}
+
+function episodeId(
+	body: { messages: { content?: string; tool_call_id?: string }[] },
+	toolCallId: string,
+): string {
+	const id = body.messages
+		.find((message) => message.tool_call_id === toolCallId)
+		?.content?.match(/\(([0-9a-f-]{36})\)/)?.[1];
+	if (!id) throw new Error("provider did not receive an episode ID");
+	return id;
 }

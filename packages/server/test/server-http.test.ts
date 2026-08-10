@@ -29,7 +29,10 @@ describe("HTTP event stream", () => {
 			).json()) as Record<string, unknown>;
 			expect(inspection).toMatchObject({
 				sessionId,
+				budget: 80_000,
+				target: 64_000,
 				counts: { pinned: 0, active: 0, retained: 0, archived: 0 },
+				episodes: [],
 				items: [],
 			});
 			expect(inspection.estimatedTokens).toBeGreaterThan(0);
@@ -39,7 +42,7 @@ describe("HTTP event stream", () => {
 		}
 	});
 
-	test("accepts compact subagent handoffs and archives their trace", async () => {
+	test("accepts a fake subagent handoff without importing its trace", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
 		paths.push(dir);
 		const server = serveHarness({
@@ -52,23 +55,15 @@ describe("HTTP event stream", () => {
 			const { sessionId } = (await (
 				await fetch(`${base}/sessions`, { method: "POST" })
 			).json()) as { sessionId: string };
+			const fake = stubSubagentHandoff();
 			const response = await fetch(
 				`${base}/sessions/${sessionId}/subagent-results`,
 				{
 					method: "POST",
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify({
-						subagentId: "task-42",
-						trace: "full private trace",
-						result: {
-							status: "completed",
-							findings: ["found the boundary"],
-							decisions: [],
-							changedFiles: [],
-							verification: ["tests pass"],
-							unresolvedIssues: [],
-							artifactRefs: [],
-						},
+						subagentId: fake.subagentId,
+						result: fake.result,
 					}),
 				},
 			);
@@ -76,15 +71,46 @@ describe("HTTP event stream", () => {
 			const handoff = (await response.json()) as {
 				payload: { artifactRefs: string[] };
 			};
-			expect(handoff.payload.artifactRefs[0]).toMatch(/^observation:\/\//);
+			expect(handoff.payload.artifactRefs).toEqual(["subagent://child-1"]);
+			expect(JSON.stringify(handoff)).not.toContain(fake.childTrace);
 			const inspection = (await (
 				await fetch(`${base}/sessions/${sessionId}/context`)
 			).json()) as { counts: Record<string, number>; items: { kind: string }[] };
-			expect(inspection.counts).toMatchObject({ retained: 1, archived: 1 });
+			expect(inspection.counts).toMatchObject({ retained: 1, archived: 0 });
 			expect(inspection.items.map((item) => item.kind)).toEqual([
-				"observation",
 				"subagent-handoff",
 			]);
+			const rejected = await fetch(
+				`${base}/sessions/${sessionId}/subagent-results`,
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						subagentId: fake.subagentId,
+						result: fake.result,
+						trace: fake.childTrace,
+					}),
+				},
+			);
+			expect(rejected.status).toBe(404);
+			expect(await rejected.json()).toEqual({
+				error: "subagent traces must remain external",
+			});
+			const invalid = await fetch(
+				`${base}/sessions/${sessionId}/subagent-results`,
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						subagentId: fake.subagentId,
+						result: { ...fake.result, status: "unknown" },
+					}),
+				},
+			);
+			expect(invalid.status).toBe(404);
+			expect(await invalid.json()).toEqual({
+				error: "invalid subagent status",
+			});
 		} finally {
 			server.stop(true);
 		}
@@ -120,3 +146,19 @@ describe("HTTP event stream", () => {
 		}
 	}, 15_000);
 });
+
+function stubSubagentHandoff() {
+	return {
+		subagentId: "child-1",
+		childTrace: "CHILD_TRACE_SENTINEL",
+		result: {
+			status: "completed" as const,
+			findings: ["found the boundary"],
+			decisions: [],
+			changedFiles: [],
+			verification: ["tests pass"],
+			unresolvedIssues: [],
+			artifactRefs: ["subagent://child-1"],
+		},
+	};
+}

@@ -51,25 +51,9 @@ export class HarnessServer {
 		return this.runtime.inspect(id);
 	}
 
-	acceptSubagentResult(
-		id: string,
-		result: SubagentResult,
-		subagentId: string,
-		trace?: string,
-	) {
+	acceptSubagentResult(id: string, result: SubagentResult, subagentId: string) {
 		this.session(id);
-		const artifactRefs = [...result.artifactRefs];
-		if (trace !== undefined) {
-			const observation = this.context.recordObservation(id, trace, {
-				subagentId,
-			});
-			artifactRefs.push(`observation://${observation.id}`);
-		}
-		return this.context.recordSubagentResult(
-			id,
-			{ ...result, artifactRefs: [...new Set(artifactRefs)] },
-			{ subagentId },
-		);
+		return this.context.recordSubagentResult(id, result, { subagentId });
 	}
 
 	subscribe(id: string, listener: (event: ServerEvent) => void): () => void {
@@ -254,7 +238,6 @@ export function serveHarness(
 							id,
 							handoff.result,
 							handoff.subagentId,
-							handoff.trace,
 						),
 						{ status: 201 },
 					);
@@ -311,7 +294,6 @@ export function serveHarness(
 function parseSubagentHandoff(value: unknown): {
 	subagentId: string;
 	result: SubagentResult;
-	trace?: string;
 } {
 	if (!value || typeof value !== "object" || Array.isArray(value))
 		throw new Error("invalid subagent result");
@@ -324,8 +306,8 @@ function parseSubagentHandoff(value: unknown): {
 		Array.isArray(input.result)
 	)
 		throw new Error("invalid subagent result");
-	if (input.trace !== undefined && typeof input.trace !== "string")
-		throw new Error("invalid subagent trace");
+	if (input.trace !== undefined)
+		throw new Error("subagent traces must remain external");
 	const result = input.result as Record<string, unknown>;
 	if (
 		result.status !== "completed" &&
@@ -347,7 +329,6 @@ function parseSubagentHandoff(value: unknown): {
 			),
 			artifactRefs: stringArray(result.artifactRefs, "artifact refs"),
 		},
-		...(input.trace === undefined ? {} : { trace: input.trace }),
 	};
 }
 

@@ -38,11 +38,13 @@ type AgentEntry = {
 };
 
 const SYSTEM_PROMPT =
-	"You are Harness, a coding agent. Use the provided tools to inspect and change the current workspace.";
+	"You are Harness, a coding agent. Use the provided tools to inspect and change the current workspace. Use episode boundaries for non-trivial work: close explorations with a concise conclusion, then make actions depend on the completed exploration IDs they use. Pin durable decisions and constraints with pin_context.";
 const DEFAULT_CONTEXT_BUDGET = 80_000;
 const RECALL_DESCRIPTION =
 	"Read an exact slice from an archived observation:// reference.";
 const PIN_DESCRIPTION = "Keep a short instruction in all future model context.";
+const EPISODE_DESCRIPTION =
+	"Start or end one semantic work episode. Actions depend on completed exploration IDs.";
 const TOOL_OVERHEAD_TOKENS = estimateTokens({
 	tools: [
 		...(["read", "write", "edit", "bash"] as const).map((name) => ({
@@ -59,6 +61,11 @@ const TOOL_OVERHEAD_TOKENS = estimateTokens({
 			name: "pin_context",
 			description: PIN_DESCRIPTION,
 			parameters: pinSchema(),
+		},
+		{
+			name: "episode",
+			description: EPISODE_DESCRIPTION,
+			parameters: episodeSchema(),
 		},
 	],
 });
@@ -130,7 +137,15 @@ export class HarnessAgentRuntime implements AgentRuntime {
 	}
 
 	inspect(sessionId: string): ReturnType<ContextManager["inspect"]> {
-		return this.context.inspect(sessionId, TOOL_OVERHEAD_TOKENS);
+		const model = this.agents.get(sessionId)?.agent.state.model;
+		const options = model
+			? this.contextOptions(model)
+			: {
+					budget: this.contextBudget,
+					target: Math.floor(this.contextBudget * 0.8),
+					overheadTokens: TOOL_OVERHEAD_TOKENS,
+				};
+		return this.context.inspect(sessionId, options);
 	}
 
 	private createAgent(
@@ -243,15 +258,41 @@ export class HarnessAgentRuntime implements AgentRuntime {
 				description: PIN_DESCRIPTION,
 				parameters: pinSchema(),
 				execute: async (_id, input) => {
-					const { text } = input as { text: string };
+					const { kind, text } = input as {
+						kind: "decision" | "constraint";
+						text: string;
+					};
 					const item = this.context.pin(
 						sessionId,
+						kind,
 						text,
 						this.contextOptions(model),
 					);
 					return {
 						content: [{ type: "text", text: `Pinned context: ${item.id}` }],
 						details: { id: item.id },
+					};
+				},
+			},
+			{
+				name: "episode",
+				label: "episode",
+				description: EPISODE_DESCRIPTION,
+				parameters: episodeSchema(),
+				execute: async (_id, input) => {
+					const request = input as EpisodeInput;
+					const episode =
+						request.action === "start"
+							? this.context.startEpisode(sessionId, request)
+							: this.context.endEpisode(sessionId, request.conclusion);
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `${episode.state} ${episode.kind} episode ${episode.name} (${episode.id})`,
+							},
+						],
+						details: episode,
 					};
 				},
 			},
@@ -371,16 +412,13 @@ export class HarnessAgentRuntime implements AgentRuntime {
 			});
 			return;
 		}
-		const firstUser = !this.store
-			.contextItems(sessionId)
-			.some((item) => item.kind === "user");
 		this.context.record({
 			sessionId,
 			kind: "user",
 			payload: message,
 			tokenCost,
-			lifecycle: firstUser ? "pinned" : "active",
-			reason: firstUser ? "initial user objective" : "active user turn",
+			lifecycle: "pinned",
+			reason: "user-authored message",
 			...(entry.promptGroupId ? { groupId: entry.promptGroupId } : {}),
 		});
 	}
@@ -525,7 +563,32 @@ function recallSchema() {
 	return Type.Object({ reference: Type.String({ minLength: 1 }) });
 }
 function pinSchema() {
-	return Type.Object({ text: Type.String({ minLength: 1 }) });
+	return Type.Object({
+		kind: Type.Union([Type.Literal("decision"), Type.Literal("constraint")]),
+		text: Type.String({ minLength: 1 }),
+	});
+}
+type EpisodeInput =
+	| {
+			action: "start";
+			name: string;
+			kind: "exploration" | "action";
+			dependencies?: string[];
+	  }
+	| { action: "end"; conclusion?: string };
+function episodeSchema() {
+	return Type.Union([
+		Type.Object({
+			action: Type.Literal("start"),
+			name: Type.String({ minLength: 1 }),
+			kind: Type.Union([Type.Literal("exploration"), Type.Literal("action")]),
+			dependencies: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+		}),
+		Type.Object({
+			action: Type.Literal("end"),
+			conclusion: Type.Optional(Type.String({ minLength: 1 })),
+		}),
+	]);
 }
 function parseTool(text: string): ToolRequest | undefined {
 	const [head, ...body] = text.split("\n");

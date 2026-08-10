@@ -48,6 +48,15 @@ export type NewEpisodeEvent = {
 	createdAt: string;
 };
 export type ContextEpisodeEvent = NewEpisodeEvent & { sequence: number };
+export type ContextEpisode = {
+	id: string;
+	sessionId: string;
+	name: string;
+	kind: "exploration" | "action";
+	dependencies: string[];
+	conclusion?: string;
+	state: "active" | "completed" | "archived";
+};
 
 export type ObservationRecallInput = {
 	observationId: string;
@@ -64,6 +73,12 @@ export type ObservationRecall = {
 };
 export type PinOptions = {
 	budget: number;
+	target?: number;
+	overheadTokens?: number;
+};
+export type PinKind = "decision" | "constraint";
+export type InspectOptions = {
+	budget?: number;
 	target?: number;
 	overheadTokens?: number;
 };
@@ -96,7 +111,11 @@ export type SubagentResult = {
 export type ContextInspection = {
 	sessionId: string;
 	estimatedTokens: number;
+	budget?: number;
+	target?: number;
+	overheadTokens: number;
 	counts: Record<ContextLifecycle, number>;
+	episodes: ContextEpisode[];
 	items: Array<
 		Pick<
 			ContextItem,
@@ -145,14 +164,23 @@ export class ContextManager {
 	record(input: RecordInput): ContextItem {
 		const knownKind = kinds.has(input.kind);
 		const createdAt = input.createdAt ?? new Date().toISOString();
+		// ponytail: replay on writes; cache only if long-session profiling warrants it.
+		const activeEpisode = this.episodes(input.sessionId).find(
+			(episode) => episode.state === "active",
+		);
 		return this.store.appendContextItem({
 			...input,
 			id: input.id ?? crypto.randomUUID(),
+			...(!("episodeId" in input) && activeEpisode
+				? { episodeId: activeEpisode.id }
+				: {}),
 			kind: knownKind ? input.kind : "pinned-note",
 			lifecycle:
-				knownKind && lifecycles.has(input.lifecycle)
-					? input.lifecycle
-					: "pinned",
+				input.kind === "user"
+					? "pinned"
+					: knownKind && lifecycles.has(input.lifecycle)
+						? input.lifecycle
+						: "pinned",
 			projection: input.projection ?? "full",
 			createdAt,
 		});
@@ -173,11 +201,17 @@ export class ContextManager {
 	completeTurn(sessionId: string, newToolResultIds: string[] = []): void {
 		const newToolCallIds = new Set(newToolResultIds);
 		const items = this.store.contextItems(sessionId);
+		const activeEpisodeIds = new Set(
+			this.episodes(sessionId)
+				.filter((episode) => episode.state === "active")
+				.map((episode) => episode.id),
+		);
 		const retainedGroups = new Set<string>();
 		for (const item of items)
 			if (
 				item.kind === "tool-result" &&
 				item.lifecycle === "active" &&
+				!activeEpisodeIds.has(item.episodeId ?? "") &&
 				!newToolCallIds.has(item.source?.toolCallId ?? "")
 			) {
 				this.store.setContextLifecycle(
@@ -204,11 +238,17 @@ export class ContextManager {
 	}
 
 	completeGroup(sessionId: string, groupId: string): void {
+		const activeEpisodeIds = new Set(
+			this.episodes(sessionId)
+				.filter((episode) => episode.state === "active")
+				.map((episode) => episode.id),
+		);
 		for (const item of this.store.contextItems(sessionId))
 			if (
 				item.groupId === groupId &&
 				item.lifecycle === "active" &&
-				(item.kind === "user" || item.kind === "assistant")
+				!activeEpisodeIds.has(item.episodeId ?? "") &&
+				item.kind === "assistant"
 			)
 				this.store.setContextLifecycle(
 					item.id,
@@ -216,6 +256,132 @@ export class ContextManager {
 					item.projection,
 					"completed conversation turn",
 				);
+	}
+
+	startEpisode(
+		sessionId: string,
+		input: {
+			name: string;
+			kind: ContextEpisode["kind"];
+			dependencies?: string[];
+		},
+	): ContextEpisode {
+		if (input.kind !== "exploration" && input.kind !== "action")
+			throw new Error("Episode kind must be exploration or action");
+		const name = input.name.trim();
+		if (!name) throw new Error("Episode name cannot be empty");
+		const episodes = this.episodes(sessionId);
+		if (episodes.some((episode) => episode.state === "active"))
+			throw new Error("An episode is already active");
+		if (episodes.some((episode) => episode.name === name))
+			throw new Error("Episode name must be unique");
+		const dependencies = input.dependencies ?? [];
+		if (input.kind === "exploration" && dependencies.length)
+			throw new Error("Exploration episodes cannot have dependencies");
+		if (input.kind === "action") {
+			if (!dependencies.length)
+				throw new Error("Action episodes require an exploration dependency");
+			if (
+				dependencies.some(
+					(dependency) =>
+						!episodes.some(
+							(episode) =>
+								episode.id === dependency &&
+								episode.kind === "exploration" &&
+								episode.state !== "active",
+						),
+				)
+			)
+				throw new Error(
+					"Action dependencies must reference completed exploration episodes",
+				);
+		}
+		const episodeId = crypto.randomUUID();
+		this.store.appendEpisodeEvent({
+			id: crypto.randomUUID(),
+			sessionId,
+			episodeId,
+			action: "start",
+			name,
+			kind: input.kind,
+			dependencies: [...dependencies],
+			createdAt: new Date().toISOString(),
+		});
+		const episode = this.episodes(sessionId).find(
+			(current) => current.id === episodeId,
+		);
+		if (!episode) throw new Error("Episode was not persisted");
+		return episode;
+	}
+
+	endEpisode(sessionId: string, conclusion?: string): ContextEpisode {
+		const episode = this.episodes(sessionId).find(
+			(current) => current.state === "active",
+		);
+		if (!episode) throw new Error("No active episode");
+		const trimmedConclusion = conclusion?.trim();
+		if (episode.kind === "exploration" && !trimmedConclusion)
+			throw new Error("Exploration episodes require a conclusion");
+		if (episode.kind === "action" && conclusion !== undefined)
+			throw new Error("Action episodes cannot have a conclusion");
+		this.store.appendEpisodeEvent({
+			id: crypto.randomUUID(),
+			sessionId,
+			episodeId: episode.id,
+			action: "end",
+			name: episode.name,
+			kind: episode.kind,
+			dependencies: episode.dependencies,
+			...(trimmedConclusion === undefined
+				? {}
+				: { conclusion: trimmedConclusion }),
+			createdAt: new Date().toISOString(),
+		});
+		const completed = this.episodes(sessionId).find(
+			(current) => current.id === episode.id,
+		);
+		if (!completed) throw new Error("Episode was not persisted");
+		return completed;
+	}
+
+	episodes(sessionId: string): ContextEpisode[] {
+		const snapshots = replayEpisodes(this.store.episodeEvents(sessionId));
+		const items = this.store.contextItems(sessionId);
+		const archivedActionIds = new Set(
+			snapshots.flatMap(({ episode, malformed }) => {
+				const episodeItems = items.filter(
+					(item) => item.episodeId === episode.id,
+				);
+				return !malformed &&
+					episode.kind === "action" &&
+					episode.state === "completed" &&
+					episodeItems.some(isEpisodeItemEvictable) &&
+					episodeItems
+						.filter(isEpisodeItemEvictable)
+						.every((item) => item.lifecycle === "archived")
+					? [episode.id]
+					: [];
+			}),
+		);
+		return snapshots.map(({ episode, malformed }) => {
+			if (malformed || episode.state !== "completed") return episode;
+			const episodeItems = items.filter(
+				(item) => item.episodeId === episode.id,
+			);
+			const archived =
+				episodeItems.some(isEpisodeItemEvictable) &&
+				episodeItems
+					.filter(isEpisodeItemEvictable)
+					.every((item) => item.lifecycle === "archived") &&
+				(episode.kind === "action" ||
+					!snapshots.some(
+						({ episode: dependent }) =>
+							dependent.kind === "action" &&
+							dependent.dependencies.includes(episode.id) &&
+							!archivedActionIds.has(dependent.id),
+					));
+			return archived ? { ...episode, state: "archived" } : episode;
+		});
 	}
 
 	recordObservation(
@@ -268,9 +434,21 @@ export class ContextManager {
 		};
 	}
 
-	pin(sessionId: string, text: string, options: PinOptions): ContextItem {
+	pin(
+		sessionId: string,
+		kind: PinKind,
+		text: string,
+		options: PinOptions,
+	): ContextItem {
+		if (kind !== "decision" && kind !== "constraint")
+			throw new Error("Pinned note kind must be decision or constraint");
 		if (!text.trim()) throw new Error("Pinned note cannot be empty");
-		const payload = { role: "user", content: text, timestamp: Date.now() };
+		const payload = {
+			role: "user",
+			content: text,
+			timestamp: Date.now(),
+			kind,
+		};
 		const note: ContextItem = {
 			id: "",
 			sessionId,
@@ -287,6 +465,7 @@ export class ContextManager {
 		const estimatedTokens = projectedBudget(
 			[...this.store.contextItems(sessionId), note],
 			options,
+			this.episodes(sessionId),
 		);
 		if (estimatedTokens > options.budget)
 			throw new ContextBudgetError(estimatedTokens, options.budget);
@@ -296,7 +475,7 @@ export class ContextManager {
 			payload,
 			tokenCost: note.tokenCost,
 			lifecycle: "pinned",
-			reason: "pinned note",
+			reason: `pinned ${kind}`,
 		});
 		this.assemble(sessionId, {
 			budget: options.budget,
@@ -311,11 +490,24 @@ export class ContextManager {
 		options: { budget: number; target: number; overheadTokens: number },
 	): { payloads: unknown[]; estimatedTokens: number; evictedIds: string[] } {
 		let items = this.store.contextItems(sessionId);
-		let estimatedTokens = estimatedCost(items, options.overheadTokens);
+		let episodes = this.episodes(sessionId);
+		let estimatedTokens = estimatedCost(
+			items,
+			options.overheadTokens,
+			episodes,
+		);
 		const evictedIds: string[] = [];
+		const underPressure = estimatedTokens > options.budget;
 
-		if (estimatedTokens > options.budget)
-			for (const item of evictionCandidates(items)) {
+		if (underPressure)
+			for (const item of evictionCandidates(
+				items,
+				new Set(
+					episodes
+						.filter((episode) => episode.state !== "completed")
+						.map((episode) => episode.id),
+				),
+			)) {
 				if (
 					items.find((current) => current.id === item.id)?.lifecycle !==
 					"retained"
@@ -334,19 +526,58 @@ export class ContextManager {
 					evictedIds.push(current.id);
 				}
 				items = this.store.contextItems(sessionId);
-				estimatedTokens = estimatedCost(items, options.overheadTokens);
+				episodes = this.episodes(sessionId);
+				estimatedTokens = estimatedCost(
+					items,
+					options.overheadTokens,
+					episodes,
+				);
 				if (estimatedTokens <= options.target) break;
 			}
 
-		if (estimatedTokens > options.budget)
+		if (underPressure && estimatedTokens > options.target) {
+			const triedEpisodeIds = new Set<string>();
+			while (estimatedTokens > options.target) {
+				const episode = structuralEvictionCandidates(episodes).find(
+					(current) => !triedEpisodeIds.has(current.id),
+				);
+				if (!episode) break;
+				triedEpisodeIds.add(episode.id);
+				for (const item of structuralEvictionItems(items, episode.id)) {
+					if (item.lifecycle === "archived") continue;
+					this.store.setContextLifecycle(
+						item.id,
+						"archived",
+						episode.kind === "exploration"
+							? "omitted"
+							: archivedProjection(item),
+						"structural episode eviction",
+					);
+					evictedIds.push(item.id);
+				}
+				items = this.store.contextItems(sessionId);
+				episodes = this.episodes(sessionId);
+				estimatedTokens = estimatedCost(
+					items,
+					options.overheadTokens,
+					episodes,
+				);
+				if (estimatedTokens <= options.target) break;
+			}
+		}
+
+		if (underPressure && estimatedTokens > options.budget)
 			throw new ContextBudgetError(estimatedTokens, options.budget);
 
 		return {
-			payloads: items.flatMap((item) => {
-				if (item.kind === "system" || item.kind === "observation") return [];
-				const payload = projectedPayload(item);
-				return payload === undefined ? [] : [payload];
-			}),
+			payloads: [
+				...items.flatMap((item) => {
+					if (item.kind === "system" || item.kind === "observation") return [];
+					const payload = projectedPayload(item);
+					return payload === undefined ? [] : [payload];
+				}),
+				...episodeConclusionPayloads(items, episodes),
+			],
 			estimatedTokens,
 			evictedIds,
 		};
@@ -376,8 +607,15 @@ export class ContextManager {
 		});
 	}
 
-	inspect(sessionId: string, overheadTokens = 0): ContextInspection {
+	inspect(
+		sessionId: string,
+		options: number | InspectOptions = 0,
+	): ContextInspection {
+		const inspectOptions =
+			typeof options === "number" ? { overheadTokens: options } : options;
+		const overheadTokens = inspectOptions.overheadTokens ?? 0;
 		const items = this.store.contextItems(sessionId);
+		const episodes = this.episodes(sessionId);
 		const counts: Record<ContextLifecycle, number> = {
 			pinned: 0,
 			active: 0,
@@ -387,8 +625,16 @@ export class ContextManager {
 		for (const item of items) counts[item.lifecycle]++;
 		return {
 			sessionId,
-			estimatedTokens: estimatedCost(items, overheadTokens),
+			estimatedTokens: estimatedCost(items, overheadTokens, episodes),
+			...(inspectOptions.budget === undefined
+				? {}
+				: { budget: inspectOptions.budget }),
+			...(inspectOptions.target === undefined
+				? {}
+				: { target: inspectOptions.target }),
+			overheadTokens,
 			counts,
+			episodes,
 			items: items.map(
 				({
 					id,
@@ -424,22 +670,189 @@ export class ContextManager {
 	}
 }
 
-function estimatedCost(items: ContextItem[], overheadTokens: number): number {
+type EpisodeSnapshot = { episode: ContextEpisode; malformed: boolean };
+
+function replayEpisodes(events: ContextEpisodeEvent[]): EpisodeSnapshot[] {
+	const snapshots: EpisodeSnapshot[] = [];
+	const byId = new Map<string, EpisodeSnapshot>();
+	for (const event of events) {
+		if (event.action === "start") {
+			const validKind = event.kind === "exploration" || event.kind === "action";
+			const duplicate =
+				byId.has(event.episodeId) ||
+				snapshots.some(({ episode }) => episode.name === event.name);
+			const priorEpisodes = snapshots.map(({ episode }) => episode);
+			const validDependencies =
+				(event.kind === "exploration" && event.dependencies.length === 0) ||
+				(event.kind === "action" &&
+					event.dependencies.length > 0 &&
+					event.dependencies.every((dependency) =>
+						priorEpisodes.some(
+							(episode) =>
+								episode.id === dependency &&
+								episode.kind === "exploration" &&
+								episode.state === "completed",
+						),
+					));
+			if (!validKind || duplicate || !event.name.trim()) continue;
+			const snapshot: EpisodeSnapshot = {
+				episode: {
+					id: event.episodeId,
+					sessionId: event.sessionId,
+					name: event.name,
+					kind: event.kind,
+					dependencies: [...event.dependencies],
+					state: "active",
+				},
+				malformed: !validDependencies,
+			};
+			snapshots.push(snapshot);
+			byId.set(event.episodeId, snapshot);
+			continue;
+		}
+		const snapshot = byId.get(event.episodeId);
+		if (snapshot?.episode.state !== "active") continue;
+		const matchingBoundary =
+			event.name === snapshot.episode.name &&
+			event.kind === snapshot.episode.kind &&
+			event.dependencies.length === snapshot.episode.dependencies.length &&
+			event.dependencies.every(
+				(dependency, index) =>
+					dependency === snapshot.episode.dependencies[index],
+			);
+		const validConclusion =
+			snapshot.episode.kind === "exploration"
+				? !!event.conclusion?.trim()
+				: event.conclusion === undefined;
+		if (!matchingBoundary || !validConclusion) {
+			snapshot.malformed = true;
+			continue;
+		}
+		snapshot.episode = {
+			...snapshot.episode,
+			state: "completed",
+			...(event.conclusion === undefined
+				? {}
+				: { conclusion: event.conclusion }),
+		};
+	}
+	return snapshots;
+}
+
+function isEpisodeItemEvictable(item: ContextItem): boolean {
+	return item.kind !== "user" && item.lifecycle !== "pinned";
+}
+
+function structuralEvictionCandidates(
+	episodes: ContextEpisode[],
+): ContextEpisode[] {
+	const actions = episodes.filter(
+		(episode) => episode.kind === "action" && episode.state === "completed",
+	);
+	if (actions.length) return actions;
+	return episodes.filter(
+		(episode) =>
+			episode.kind === "exploration" &&
+			episode.state === "completed" &&
+			!episodes.some(
+				(dependent) =>
+					dependent.kind === "action" &&
+					dependent.dependencies.includes(episode.id) &&
+					dependent.state !== "archived",
+			),
+	);
+}
+
+function structuralEvictionItems(
+	items: ContextItem[],
+	episodeId: string,
+): ContextItem[] {
+	const result = new Map<string, ContextItem>();
+	for (const item of items) {
+		if (item.episodeId !== episodeId || !isEpisodeItemEvictable(item)) continue;
+		const group = item.groupId
+			? items.filter((current) => current.groupId === item.groupId)
+			: [item];
+		if (
+			group.some(
+				(current) =>
+					current.episodeId !== episodeId || !isEpisodeItemEvictable(current),
+			)
+		)
+			continue;
+		for (const current of group) result.set(current.id, current);
+	}
+	return [...result.values()].sort((a, b) => a.sequence - b.sequence);
+}
+
+function episodeConclusionPayloads(
+	items: ContextItem[],
+	episodes: ContextEpisode[],
+): Array<{ role: "user"; content: string }> {
+	return episodes.flatMap((episode) => {
+		if (
+			episode.kind !== "exploration" ||
+			episode.state !== "archived" ||
+			episode.conclusion === undefined
+		)
+			return [];
+		const references = [
+			...new Set(
+				items
+					.filter((item) => item.episodeId === episode.id)
+					.flatMap((item) =>
+						item.source?.observationId ? [item.source.observationId] : [],
+					),
+			),
+		];
+		return [
+			{
+				role: "user",
+				content: `Exploration conclusion (${episode.name}): ${episode.conclusion}${references.length ? `\nObservation references: ${references.map((id) => `observation://${id}`).join(", ")}` : ""}`,
+			},
+		];
+	});
+}
+
+function estimatedCost(
+	items: ContextItem[],
+	overheadTokens: number,
+	episodes: ContextEpisode[] = [],
+): number {
 	return (
 		overheadTokens +
 		items.reduce(
 			(total, item) =>
 				total + (item.kind === "observation" ? 0 : projectionCost(item)),
 			0,
+		) +
+		episodeConclusionPayloads(items, episodes).reduce(
+			(total, payload) => total + characterCost(payload.content),
+			0,
 		)
 	);
 }
 
-function projectedBudget(items: ContextItem[], options: PinOptions): number {
+function projectedBudget(
+	items: ContextItem[],
+	options: PinOptions,
+	episodes: ContextEpisode[],
+): number {
 	let projected = items;
-	let estimatedTokens = estimatedCost(projected, options.overheadTokens ?? 0);
+	let estimatedTokens = estimatedCost(
+		projected,
+		options.overheadTokens ?? 0,
+		episodes,
+	);
 	if (estimatedTokens <= options.budget) return estimatedTokens;
-	for (const item of evictionCandidates(projected)) {
+	for (const item of evictionCandidates(
+		projected,
+		new Set(
+			episodes
+				.filter((episode) => episode.state !== "completed")
+				.map((episode) => episode.id),
+		),
+	)) {
 		const group = evictionGroup(projected, item);
 		if (archivedCost(group) >= currentCost(group)) continue;
 		const ids = new Set(group.map((current) => current.id));
@@ -448,7 +861,11 @@ function projectedBudget(items: ContextItem[], options: PinOptions): number {
 				? { ...current, projection: archivedProjection(current) }
 				: current,
 		);
-		estimatedTokens = estimatedCost(projected, options.overheadTokens ?? 0);
+		estimatedTokens = estimatedCost(
+			projected,
+			options.overheadTokens ?? 0,
+			episodes,
+		);
 		if (estimatedTokens <= (options.target ?? options.budget)) break;
 	}
 	return estimatedTokens;
@@ -538,11 +955,16 @@ function projectionCost(
 				: (item.compactTokenCost ?? item.tokenCost);
 }
 
-function evictionCandidates(items: ContextItem[]): ContextItem[] {
+function evictionCandidates(
+	items: ContextItem[],
+	protectedEpisodeIds = new Set<string>(),
+): ContextItem[] {
 	return items
 		.filter(
 			(item) =>
 				item.lifecycle === "retained" &&
+				(item.episodeId === undefined ||
+					!protectedEpisodeIds.has(item.episodeId)) &&
 				(item.kind === "tool-result" ||
 					(item.kind === "assistant" &&
 						item.groupId !== undefined &&
@@ -567,15 +989,13 @@ function evictionGroup(
 		(item) =>
 			item.groupId === result.groupId &&
 			item.lifecycle === "retained" &&
-			(item.kind === "user" ||
-				item.kind === "assistant" ||
-				item.kind === "tool-result"),
+			(item.kind === "assistant" || item.kind === "tool-result"),
 	);
 	return group.length ? group : [result];
 }
 
 function archivedProjection(item: ContextItem): ContextProjection {
-	if (item.kind === "assistant" || item.kind === "user") return "omitted";
+	if (item.kind === "assistant") return "omitted";
 	return item.compactPayload === undefined ? "reference" : "compact";
 }
 
