@@ -21,7 +21,6 @@ export class FooterView {
 		});
 		this.root.add(this.pwdLabel);
 		this.root.add(this.modelLabel.box);
-
 	}
 
 	update(state: TuiState) {

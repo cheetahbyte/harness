@@ -12,12 +12,11 @@ import type {
 import {
 	createAssistantMessageEventStream,
 	isRetryableAssistantError,
-	Type,
 } from "@earendil-works/pi-ai";
 import type { ModelConfig, ServerEvent } from "../../shared/src/protocol";
 import { log } from "./logger";
 import { HarnessProviderError, providerModels } from "./provider";
-import type { CoreTools, ToolRequest } from "./tools";
+import type { CoreTools } from "./tools";
 
 type QueueCallbacks = {
 	onStarted: () => void;
@@ -131,24 +130,7 @@ export class HarnessAgentRuntime {
 	}
 
 	private agentTools(tools: CoreTools): AgentTool[] {
-		return (["read", "write", "edit", "bash"] as const).map((name) => ({
-			name,
-			label: name,
-			description: toolDescription(name),
-			parameters: toolSchema(name),
-			execute: async (id, input, signal) => ({
-				content: [
-					{
-						type: "text",
-						text: await tools.execute(
-							{ name, input: input as Record<string, unknown> },
-							signal ?? new AbortController().signal,
-						),
-					},
-				],
-				details: { id },
-			}),
-		}));
+		return tools.agentTools();
 	}
 
 	private translate(
@@ -322,27 +304,4 @@ function streamWithRetry(
 		}
 	})();
 	return out;
-}
-
-function toolDescription(name: ToolRequest["name"]): string {
-	switch (name) {
-		case "read":
-			return "Read a text file in the workspace.";
-		case "write":
-			return "Write a text file in the workspace.";
-		case "edit":
-			return "Replace exact text in a file.";
-		case "bash":
-			return "Run a shell command in the workspace.";
-	}
-}
-function toolSchema(name: ToolRequest["name"]) {
-	const path = Type.String({ minLength: 1 });
-	return name === "read"
-		? Type.Object({ path })
-		: name === "write"
-			? Type.Object({ path, content: Type.String() })
-			: name === "edit"
-				? Type.Object({ path, oldText: Type.String(), newText: Type.String() })
-				: Type.Object({ command: Type.String({ minLength: 1 }) });
 }
