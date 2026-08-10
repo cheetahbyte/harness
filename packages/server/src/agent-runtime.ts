@@ -75,7 +75,7 @@ export class HarnessAgentRuntime {
 						options?.signal,
 						{ sessionId, provider: config.provider, model: config.model },
 					),
-				toolExecution: "sequential",
+				toolExecution: "parallel",
 			});
 			const created: AgentEntry = {
 				key,
