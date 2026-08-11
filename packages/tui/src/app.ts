@@ -74,6 +74,53 @@ export class TuiApp {
 						? this.send(commandForInput(`/model ${args}`))
 						: this.openModel(args || undefined),
 			},
+			{
+				name: "/ack-effects",
+				description: "Acknowledge unknown effects from the prior task",
+				kind: "command",
+				run: async () => {
+					const taskId = this.store.getState().activeTaskId;
+					if (!taskId) throw new Error("no active task");
+					await this.send({ type: "acknowledge-unknown-effects", taskId });
+				},
+			},
+			{
+				name: "/supersede",
+				description: "Stop the active task and send a replacement",
+				kind: "command",
+				run: async (text) => {
+					if (!text.trim()) throw new Error("replacement text is required");
+					const taskId = this.store.getState().activeTaskId;
+					await this.send({
+						type: "supersede",
+						text,
+						...(taskId ? { taskId } : {}),
+					});
+				},
+			},
+			{
+				name: "/resume-queued",
+				description: "Resume a blocked queued task",
+				kind: "command",
+				run: (args) =>
+					this.send({ type: "resume-queued", taskId: this.queuedTaskId(args) }),
+			},
+			{
+				name: "/cancel-queued",
+				description: "Cancel a blocked queued task",
+				kind: "command",
+				run: (args) =>
+					this.send({ type: "cancel-queued", taskId: this.queuedTaskId(args) }),
+			},
+			{
+				name: "/replace-queued",
+				description: "Replace a blocked queued task",
+				kind: "command",
+				run: (args) => {
+					const { taskId, text } = this.queuedReplacement(args);
+					return this.send({ type: "replace-queued", taskId, text });
+				},
+			},
 		];
 		this.composer = new ComposerView(renderer, this.commands, {
 			submit: (text, followUp) => void this.submit(text, followUp),
@@ -142,6 +189,25 @@ export class TuiApp {
 		if (!command) return false;
 		await command.run(arguments_.join(" "));
 		return true;
+	}
+
+	private queuedTaskId(args: string): string {
+		const taskId = args.trim() || this.store.getState().blockedQueueId;
+		if (!taskId) throw new Error("blocked queued task id is required");
+		return taskId;
+	}
+
+	private queuedReplacement(args: string): { taskId: string; text: string } {
+		const input = args.trim();
+		const defaultTaskId = this.store.getState().blockedQueueId;
+		if (defaultTaskId && !input.startsWith(`${defaultTaskId} `)) {
+			if (!input) throw new Error("replacement text is required");
+			return { taskId: defaultTaskId, text: input };
+		}
+		const [taskId, ...text] = input.split(/\s+/);
+		if (!taskId) throw new Error("blocked queued task id is required");
+		if (!text.length) throw new Error("replacement text is required");
+		return { taskId, text: text.join(" ") };
 	}
 
 	private sync() {

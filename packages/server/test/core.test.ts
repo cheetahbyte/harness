@@ -14,6 +14,7 @@ import { JsonCredentialStore } from "../src/provider";
 import { HarnessServer } from "../src/server";
 import { SessionStore } from "../src/session-store";
 import { SettingsStore } from "../src/settings-store";
+import { BashTool } from "../src/tools/bash";
 
 const paths: string[] = [];
 afterEach(() => {
@@ -588,6 +589,54 @@ function episodeId(
 		]);
 	});
 
+	test("queues commands submitted while task construction is in progress", async () => {
+		const { server } = harness();
+		const internals = server as unknown as {
+			createTask: (...args: never[]) => Promise<unknown>;
+			runtime: { run: (_id: string, text: string) => Promise<void> };
+		};
+		const originalCreateTask = internals.createTask.bind(server);
+		let constructionStarted!: () => void;
+		let releaseConstruction!: () => void;
+		let releaseFirstRun!: () => void;
+		const constructing = new Promise<void>(
+			(resolve) => (constructionStarted = resolve),
+		);
+		const constructionGate = new Promise<void>(
+			(resolve) => (releaseConstruction = resolve),
+		);
+		const firstRunGate = new Promise<void>(
+			(resolve) => (releaseFirstRun = resolve),
+		);
+		internals.createTask = async (...args) => {
+			constructionStarted();
+			await constructionGate;
+			return await originalCreateTask(...args);
+		};
+		const prompts: string[] = [];
+		internals.runtime.run = async (_id, text) => {
+			prompts.push(text);
+			if (prompts.length === 1) await firstRunGate;
+		};
+		const id = server.createSession();
+		const first = server.command(id, { type: "prompt", text: "first" });
+		await constructing;
+		const second = server.command(id, { type: "prompt", text: "second" });
+		releaseConstruction();
+		await until(() => expect(prompts).toEqual(["first"]));
+		releaseFirstRun();
+		await Promise.all([first, second]);
+
+		expect(prompts).toEqual(["first", "second"]);
+		expect(
+			server.store
+				.events(id)
+				.filter(
+					(event) => event.type === "task-state" && event.state === "terminal",
+				),
+		).toHaveLength(2);
+	});
+
 	test("persists an explicit provider/model selection for resume", async () => {
 		const { dir, server } = harness();
 		const id = server.createSession();
@@ -651,7 +700,7 @@ function episodeId(
 			mkdirSync(join(dir, ".harness/skills/review"), { recursive: true });
 			writeFileSync(
 				join(dir, ".harness/skills/review/SKILL.md"),
-				"---\nname: review\ndescription: review instructions\n---\nReview carefully.",
+				"---\nid: review\ndescription: review instructions\nmodelInvocable: true\n---\nReview carefully.",
 			);
 			const id = server.createSession();
 			await server.command(id, {
@@ -753,7 +802,7 @@ function episodeId(
 			const events = server.store.events(id);
 			expect(calls).toBe(3);
 			expect(events.filter((event) => event.type === "completed")).toHaveLength(
-				1,
+				2,
 			);
 			expect(
 				events
@@ -827,7 +876,7 @@ function episodeId(
 		}
 	});
 
-	test("does not complete or drain follow-ups after a runtime error", async () => {
+	test("drains an independent follow-up after a runtime error", async () => {
 		const { server } = harness();
 		let calls = 0;
 		(server as unknown as { runtime: { run: () => Promise<void> } }).runtime.run =
@@ -842,10 +891,259 @@ function episodeId(
 			text: "after failure",
 		});
 		await server.command(id, { type: "prompt", text: "fail" });
-		expect(calls).toBe(1);
+		expect(calls).toBe(2);
 		expect(
 			server.store.events(id).some((event) => event.type === "completed"),
 		).toBe(false);
+	});
+
+	test("blocks only an explicitly success-dependent queued task", async () => {
+		const { server } = harness();
+		let calls = 0;
+		(server as unknown as { runtime: { run: () => Promise<void> } }).runtime.run =
+			async () => {
+				calls++;
+				throw new Error("runtime failed");
+			};
+		const id = server.createSession();
+		await server.command(id, {
+			type: "enqueue",
+			id: "dependent-1",
+			text: "only after success",
+			requirePredecessorSuccess: true,
+		});
+		await server.command(id, { type: "prompt", text: "fail" });
+
+		expect(calls).toBe(1);
+		expect(server.store.events(id)).toContainEqual({
+			type: "task-state",
+			taskId: "dependent-1",
+			state: "blocked",
+		});
+	});
+
+	test("resumes, cancels, or replaces a blocked queued task", async () => {
+		for (const recovery of ["resume", "cancel", "replace"] as const) {
+			const { server } = harness();
+			const prompts: string[] = [];
+			(
+				server as unknown as {
+					runtime: { run: (_id: string, text: string) => Promise<void> };
+				}
+			).runtime.run = async (_id, text) => {
+				prompts.push(text);
+				if (prompts.length === 1) throw new Error("runtime failed");
+			};
+			const id = server.createSession();
+			await server.command(id, {
+				type: "enqueue",
+				id: "blocked-1",
+				text: "dependent",
+				requirePredecessorSuccess: true,
+			});
+			await server.command(id, {
+				type: "follow-up",
+				id: "after-1",
+				text: "after",
+			});
+			await server.command(id, { type: "prompt", text: "fail" });
+
+			if (recovery === "resume")
+				await server.command(id, {
+					type: "resume-queued",
+					taskId: "blocked-1",
+				});
+			else if (recovery === "cancel")
+				await server.command(id, {
+					type: "cancel-queued",
+					taskId: "blocked-1",
+				});
+			else
+				await server.command(id, {
+					type: "replace-queued",
+					taskId: "blocked-1",
+					id: "replacement-1",
+					text: "replacement",
+				});
+
+			expect(prompts).toEqual(
+				recovery === "resume"
+					? ["fail", "dependent", "after"]
+					: recovery === "cancel"
+						? ["fail", "after"]
+						: ["fail", "replacement", "after"],
+			);
+			expect(server.store.events(id)).toContainEqual({
+				type: "command",
+				id: "blocked-1",
+				command: "follow-up",
+				state: recovery === "resume" ? "queued" : "cancelled",
+			});
+		}
+	});
+
+	test("supersedes during an in-flight tool call and drains the replacement", async () => {
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
+		let calls = 0;
+		const provider = Bun.serve({
+			port: 0,
+			fetch: () => {
+				calls++;
+				return sseResponse(
+					calls === 1
+						? toolCallChunks("call-wait", "bash", { command: "sleep 5" })
+						: textChunks("replacement complete"),
+				);
+			},
+		});
+		try {
+			const { server } = harness();
+			const id = server.createSession();
+			let toolStarted!: () => void;
+			const toolCall = new Promise<void>((resolve) => (toolStarted = resolve));
+			let firstTaskId: string | undefined;
+			server.subscribe(id, (event) => {
+				if (event.type === "task-state" && event.state === "running")
+					firstTaskId ??= event.taskId;
+				if (event.type === "tool-call" && event.name === "bash") toolStarted();
+			});
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			const running = server.command(id, { type: "prompt", text: "wait" });
+			await toolCall;
+			const steering = server.command(id, {
+				type: "steer",
+				id: "stale-steer",
+				text: "stale direction",
+			});
+			const superseding = server.command(id, {
+				type: "supersede",
+				id: "replacement-1",
+				text: "continue safely",
+			});
+			await Promise.all([steering, superseding]);
+			await running;
+
+			const events = server.store.events(id);
+			expect(calls).toBe(2);
+			expect(
+				events
+					.filter(
+						(event): event is Extract<ServerEvent, { type: "task-state" }> =>
+							event.type === "task-state" && event.state === "terminal",
+					)
+					.map((event) => event.status),
+			).toEqual(["superseded", "completed"]);
+			expect(events).not.toContainEqual({
+				type: "error",
+				message: "TASK_ALREADY_CANCELLING",
+			});
+			expect(events).toContainEqual({
+				type: "command",
+				id: "stale-steer",
+				command: "steer",
+				state: "replaced",
+			});
+			expect(
+				events
+					.filter(
+						(event): event is Extract<ServerEvent, { type: "command" }> =>
+							event.type === "command" && event.id === "replacement-1",
+					)
+					.map((event) => event.state),
+			).toEqual(["queued", "started", "finished"]);
+			if (!firstTaskId) throw new Error("missing first task id");
+			expect(
+				server.store
+					.taskLedger(id, firstTaskId)
+					.filter((entry) => entry.type === "cancellation_requested"),
+			).toHaveLength(1);
+		} finally {
+			provider.stop(true);
+			delete process.env["HARNESS_OPENAI_API_KEY"];
+		}
+	});
+
+	test("does not retain output from a tool that settles after cancellation", async () => {
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
+		const originalExecute = BashTool.prototype.execute;
+		let toolStarted!: () => void;
+		let releaseTool!: () => void;
+		const started = new Promise<void>((resolve) => (toolStarted = resolve));
+		const toolGate = new Promise<void>((resolve) => (releaseTool = resolve));
+		BashTool.prototype.execute = async () => {
+			toolStarted();
+			await toolGate;
+			return "late output";
+		};
+		let calls = 0;
+		const provider = Bun.serve({
+			port: 0,
+			fetch: () => {
+				calls++;
+				return sseResponse(
+					toolCallChunks("call-wait", "bash", { command: "wait" }),
+				);
+			},
+		});
+		try {
+			const { server } = harness();
+			const id = server.createSession();
+			const context = (
+				server as unknown as {
+					context: {
+						recordObservation: (...args: never[]) => unknown;
+					};
+				}
+			).context;
+			const recordObservation = context.recordObservation.bind(context);
+			let observations = 0;
+			context.recordObservation = (...args) => {
+				observations++;
+				return recordObservation(...args);
+			};
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			const running = server.command(id, { type: "prompt", text: "wait" });
+			await started;
+			const active = (
+				server as unknown as {
+					session: (sessionId: string) => {
+						running?: { task: { cancellationGraceMs: number } };
+					};
+				}
+			).session(id).running;
+			if (!active) throw new Error("missing active task");
+			active.task.cancellationGraceMs = 0;
+			await server.command(id, {
+				type: "steer",
+				id: "cancelled-steer",
+				text: "do not resume",
+			});
+			await server.command(id, { type: "abort" });
+			releaseTool();
+			await running;
+			expect(observations).toBe(0);
+			expect(calls).toBe(1);
+			expect(server.store.events(id)).toContainEqual({
+				type: "command",
+				id: "cancelled-steer",
+				command: "steer",
+				state: "cancelled",
+			});
+		} finally {
+			BashTool.prototype.execute = originalExecute;
+			provider.stop(true);
+			delete process.env["HARNESS_OPENAI_API_KEY"];
+		}
 	});
 
 	test("aborts an in-flight OpenAI-compatible Pi request", async () => {
@@ -895,7 +1193,7 @@ function episodeId(
 			delete process.env["HARNESS_OPENAI_API_KEY"];
 		}
 	});
-	test("rebuilds managed context after restart without losing raw tool history", async () => {
+	test("projects terminal conversation after restart without tool traffic", async () => {
 		process.env["HARNESS_OPENAI_API_KEY"] = "test";
 		const bodies: { messages: { role: string; tool_calls?: { id: string }[] }[] }[] =
 			[];
@@ -971,8 +1269,11 @@ function episodeId(
 
 			expect(calls).toBe(3);
 			expect(JSON.stringify(bodies[2])).not.toContain(output);
-			expect(JSON.stringify(bodies[2])).toContain("Earlier read output was compacted");
-			expect(JSON.stringify(bodies[2])).toContain("observation://obs-");
+			expect(JSON.stringify(bodies[2])).not.toContain(
+				"Earlier read output was compacted",
+			);
+			expect(JSON.stringify(bodies[2])).not.toContain("observation://obs-");
+			expect(JSON.stringify(bodies[2])).toContain("done");
 			for (const body of bodies)
 				for (const call of body.messages.flatMap(
 					(message) => message.tool_calls ?? [],
@@ -1056,7 +1357,7 @@ function episodeId(
 		}
 	});
 
-	test("uses episode boundaries and preserves exploration conclusions after eviction", async () => {
+	test("does not project predecessor episode traffic into a new task", async () => {
 		process.env["HARNESS_OPENAI_API_KEY"] = "test";
 		const bodies: {
 			messages: { role: string; content?: string; tool_call_id?: string }[];
@@ -1121,7 +1422,7 @@ function episodeId(
 			});
 
 			expect(calls).toBe(8);
-			expect(JSON.stringify(bodies.at(-1))).toContain(
+			expect(JSON.stringify(bodies.at(-1))).not.toContain(
 				"JWT validation happens before routing.",
 			);
 			expect(server.contextStatus(id).episodes).toMatchObject([

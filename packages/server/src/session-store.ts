@@ -10,6 +10,7 @@ import type {
 	NewContextItem,
 	NewEpisodeEvent,
 } from "./context-manager";
+import type { ExecutionLedgerEntry, TaskTerminalStatus } from "./task-runtime";
 
 export class SessionStore {
 	readonly db: Database;
@@ -39,6 +40,12 @@ export class SessionStore {
 		);
 		this.db.run(
 			"CREATE TABLE IF NOT EXISTS context_episode_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL, episode_id TEXT NOT NULL, action TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, dependencies TEXT NOT NULL, conclusion TEXT, created_at TEXT NOT NULL)",
+		);
+		this.db.run(
+			"CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, state TEXT NOT NULL, status TEXT, started_at TEXT NOT NULL, finished_at TEXT)",
+		);
+		this.db.run(
+			"CREATE TABLE IF NOT EXISTS task_ledger (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, task_id TEXT NOT NULL, payload TEXT NOT NULL)",
 		);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS context_items_session_sequence ON context_items(session_id, sequence)",
@@ -89,6 +96,44 @@ export class SessionStore {
 			)
 			.run(sessionId, new Date().toISOString(), JSON.stringify(event));
 		return Number(lastInsertRowid);
+	}
+
+	appendTaskLedger(
+		sessionId: string,
+		taskId: string,
+		entries: readonly ExecutionLedgerEntry[],
+	): void {
+		this.db.transaction(() => {
+			for (const entry of entries)
+				this.db
+					.query(
+						"INSERT INTO task_ledger (session_id, task_id, payload) VALUES (?, ?, ?)",
+					)
+					.run(sessionId, taskId, JSON.stringify(entry));
+		})();
+	}
+
+	taskLedger(sessionId: string, taskId: string): ExecutionLedgerEntry[] {
+		return (
+			this.db
+				.query(
+					"SELECT payload FROM task_ledger WHERE session_id = ? AND task_id = ? ORDER BY sequence",
+				)
+				.all(sessionId, taskId) as { payload: string }[]
+		).map(({ payload }) => JSON.parse(payload) as ExecutionLedgerEntry);
+	}
+
+	recordTaskTerminal(
+		sessionId: string,
+		taskId: string,
+		status: TaskTerminalStatus,
+		startedAt: string,
+	): void {
+		this.db
+			.query(
+				"INSERT OR REPLACE INTO tasks (id, session_id, state, status, started_at, finished_at) VALUES (?, ?, 'terminal', ?, ?, ?)",
+			)
+			.run(taskId, sessionId, status, startedAt, new Date().toISOString());
 	}
 
 	events(sessionId: string): ServerEvent[] {

@@ -17,10 +17,13 @@ import {
 } from "@earendil-works/pi-ai";
 import { abortableSleep } from "../../shared/src/abortable-sleep";
 import type { ModelConfig, ServerEvent } from "../../shared/src/protocol";
+import type { TokenAccountant } from "./capability-control";
 import type { ContextManager } from "./context-manager";
 import { log } from "./logger";
 import { HarnessProviderError, providerModels } from "./provider";
 import type { SessionStore } from "./session-store";
+import { activateSkill, type SkillSnapshotEntry } from "./skills";
+import type { TaskRuntime } from "./task-runtime";
 import { tokenCost } from "./token-cost";
 import type { CoreTools } from "./tools";
 
@@ -30,6 +33,8 @@ interface AgentRuntime {
 		text: string,
 		config: ModelConfig | undefined,
 		tools: CoreTools,
+		task: TaskRuntime,
+		skills: readonly SkillSnapshotEntry[],
 		signal: AbortSignal,
 		emit: (event: ServerEvent) => void,
 	): Promise<void>;
@@ -54,14 +59,15 @@ type AgentEntry = {
 	steering: QueuedMessage | undefined;
 	queued: WeakMap<object, QueuedMessage>;
 	active: QueuedMessage[];
+	task: TaskRuntime;
 };
 
 const SYSTEM_PROMPT =
-	"You are Harness, a coding agent. Use the provided tools to inspect and change the current workspace. Use episode boundaries for non-trivial work: close explorations with a concise conclusion, then make actions depend on the completed exploration IDs they use. Pin durable decisions and constraints with pin_context.";
+	"You are Harness, a coding agent. Use deterministic capability discovery when you need more context, and use the provided tools to inspect and change the current workspace. Runtime context belongs only to the current task.";
 const DEFAULT_CONTEXT_BUDGET = 80_000;
 const RECALL_DESCRIPTION =
 	"Read an exact slice from an archived observation:// reference.";
-const PIN_DESCRIPTION = "Keep a short instruction in all future model context.";
+const PIN_DESCRIPTION = "Keep a short instruction for the current task.";
 const EPISODE_DESCRIPTION =
 	"Start or end one semantic work episode. Actions depend on completed exploration IDs.";
 const TOOL_OVERHEAD_TOKENS = tokenCost({
@@ -105,6 +111,8 @@ export class HarnessAgentRuntime implements AgentRuntime {
 		text: string,
 		config: ModelConfig | undefined,
 		tools: CoreTools,
+		task: TaskRuntime,
+		skills: readonly SkillSnapshotEntry[],
 		signal: AbortSignal,
 		emit: (event: ServerEvent) => void,
 	): Promise<void> {
@@ -113,7 +121,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 				"no model configured; use /model",
 				"configuration",
 			);
-		const key = JSON.stringify(config);
+		const key = `${JSON.stringify(config)}:${task.id}`;
 		let entry = this.agents.get(sessionId);
 		if (!entry || entry.key !== key) {
 			const { models, model } = providerModels(
@@ -128,6 +136,8 @@ export class HarnessAgentRuntime implements AgentRuntime {
 				models,
 				tools,
 				config,
+				task,
+				skills,
 			);
 			created.agent.subscribe((event) =>
 				this.translate(sessionId, created, event, emit),
@@ -143,7 +153,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 		entry.promptGroupId = crypto.randomUUID();
 		this.recordMessage(sessionId, entry, message);
 		try {
-			this.managedMessages(sessionId, entry.agent.state.model);
+			this.managedMessages(sessionId, entry.agent.state.model, entry.task);
 		} catch (error) {
 			this.context.completeGroup(sessionId, entry.promptGroupId);
 			entry.promptGroupId = undefined;
@@ -214,6 +224,8 @@ export class HarnessAgentRuntime implements AgentRuntime {
 		models: ReturnType<typeof providerModels>["models"],
 		tools: CoreTools,
 		config: ModelConfig,
+		task: TaskRuntime,
+		skills: readonly SkillSnapshotEntry[],
 	): AgentEntry {
 		this.ensureSystem(sessionId);
 		const entry: AgentEntry = {
@@ -227,11 +239,12 @@ export class HarnessAgentRuntime implements AgentRuntime {
 			queued: new WeakMap(),
 			active: [],
 			steering: undefined,
+			task,
 		};
 		const managed = (): AgentMessage[] => {
 			try {
 				entry.contextError = undefined;
-				return this.managedMessages(sessionId, model);
+				return this.managedMessages(sessionId, model, task);
 			} catch (error) {
 				entry.contextError = asError(error);
 				return [];
@@ -242,8 +255,8 @@ export class HarnessAgentRuntime implements AgentRuntime {
 				model,
 				thinkingLevel: "medium",
 				systemPrompt: SYSTEM_PROMPT,
-				tools: this.agentTools(sessionId, model, tools),
-				messages: this.managedMessages(sessionId, model),
+				tools: this.agentTools(sessionId, model, tools, task, skills),
+				messages: this.managedMessages(sessionId, model, task),
 			},
 			transformContext: async () => managed(),
 			prepareNextTurnWithContext: (turn) => {
@@ -274,12 +287,25 @@ export class HarnessAgentRuntime implements AgentRuntime {
 		sessionId: string,
 		model: Model<Api>,
 		tools: CoreTools,
+		task: TaskRuntime,
+		skills: readonly SkillSnapshotEntry[],
 	): AgentTool[] {
 		const core = tools.agentTools().map(
 			(tool): AgentTool => ({
 				...tool,
 				execute: async (id, input, signal, onUpdate) => {
-					const result = await tool.execute(id, input, signal, onUpdate);
+					const ref = task.snapshot.reference(`tool:${tool.name}`);
+					const result = (await task.execute(ref, input, {
+						execute: async (_input, runtimeSignal) =>
+							await tool.execute(
+								id,
+								input,
+								combinedSignal(signal, runtimeSignal),
+								onUpdate,
+							),
+					})) as Awaited<ReturnType<typeof tool.execute>>;
+					if (signal?.aborted || task.state !== "running")
+						throw new DOMException("Aborted", "AbortError");
 					const output = result.content
 						.map(
 							(content: { type: string; text?: string }) => content.text ?? "",
@@ -314,6 +340,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 			}),
 		);
 		return [
+			...capabilityTools(task, model, skills),
 			...core,
 			{
 				name: "recall_observation",
@@ -414,6 +441,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 				this.recordMessage(sessionId, entry, event.message);
 			if (event.message.role === "assistant") {
 				const usage = event.message.usage;
+				entry.task.reconcileProviderUsage(usage.input);
 				emit({
 					type: "usage",
 					input: usage.input,
@@ -458,6 +486,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 		entry: AgentEntry,
 		message: AgentMessage,
 	): void {
+		if (entry.task.state !== "running" && message.role !== "user") return;
 		const messageTokenCost = tokenCost(message, 1);
 		if (message.role === "assistant") {
 			const calls = message.content.filter(
@@ -508,18 +537,15 @@ export class HarnessAgentRuntime implements AgentRuntime {
 			});
 			return;
 		}
-		this.context.record(
-			{
-				sessionId,
-				kind: "user",
-				payload: message,
-				tokenCost: messageTokenCost,
-				lifecycle: "pinned",
-				reason: "user-authored message",
-				...(entry.promptGroupId ? { groupId: entry.promptGroupId } : {}),
-			},
-			this.contextOptions(entry.agent.state.model),
-		);
+		this.context.record({
+			sessionId,
+			kind: "user",
+			payload: message,
+			tokenCost: messageTokenCost,
+			lifecycle: "pinned",
+			reason: "user-authored message",
+			...(entry.promptGroupId ? { groupId: entry.promptGroupId } : {}),
+		});
 	}
 
 	private externalizeToolResult(
@@ -549,11 +575,64 @@ export class HarnessAgentRuntime implements AgentRuntime {
 	private managedMessages(
 		sessionId: string,
 		model: Model<Api>,
+		task?: TaskRuntime,
 	): AgentMessage[] {
-		if (this.store.contextItems(sessionId).length === 0) return [];
+		if (
+			this.store.contextItems(sessionId).length === 0 &&
+			!task?.context.items().length
+		)
+			return [];
 		const options = this.contextOptions(model);
-		const assembly = this.context.assemble(sessionId, options);
-		return assembly.payloads as AgentMessage[];
+		const assembly =
+			task?.submissionWatermark !== undefined &&
+			task.taskStartSequence !== undefined
+				? this.context.assembleTask(
+						sessionId,
+						options,
+						task.submissionWatermark,
+						task.taskStartSequence,
+						task.predecessorTerminalMessageIds,
+					)
+				: this.context.assemble(sessionId, options);
+		const messages = assembly.payloads as AgentMessage[];
+		const dynamic: AgentMessage[] = [
+			...(task?.predecessorDigest
+				? [
+						{
+							role: "user" as const,
+							content: [
+								{
+									type: "text" as const,
+									text: `Advisory predecessor control-plane digest:\n${JSON.stringify(task.predecessorDigest)}`,
+								},
+							],
+							timestamp: new Date(task.startedAt).getTime(),
+						},
+					]
+				: []),
+			...(task?.context.items().map(
+				(item): AgentMessage => ({
+					role: "user",
+					content: [
+						{
+							type: "text",
+							text: `Task capability context (${item.capability.id}):\n${typeof item.content === "string" ? item.content : JSON.stringify(item.content)}`,
+						},
+					],
+					timestamp: new Date(task.startedAt).getTime(),
+				}),
+			) ?? []),
+		];
+		const lastUser = messages.findLastIndex(
+			(message) => message.role === "user",
+		);
+		return lastUser < 0
+			? [...messages, ...dynamic]
+			: [
+					...messages.slice(0, lastUser),
+					...dynamic,
+					...messages.slice(lastUser),
+				];
 	}
 
 	private ensureSystem(sessionId: string): void {
@@ -602,6 +681,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 			entry.agent.state.messages = this.managedMessages(
 				sessionId,
 				entry.agent.state.model,
+				entry.task,
 			);
 		} catch (error) {
 			entry.contextError = asError(error);
@@ -699,6 +779,160 @@ function streamWithRetry(
 		}
 	})();
 	return out;
+}
+
+function capabilityTools(
+	task: TaskRuntime,
+	model: Model<Api>,
+	skills: readonly SkillSnapshotEntry[],
+): AgentTool[] {
+	const accountant: TokenAccountant = {
+		modelId: model.id,
+		serializerVersion: "pi-json-v1",
+		method: "conservative_estimate",
+		count: (request) => tokenCost(request),
+	};
+	return [
+		{
+			name: "capabilities_list",
+			label: "list capabilities",
+			description: "List permitted capabilities with bounded pagination.",
+			parameters: Type.Object({
+				kind: Type.Optional(
+					Type.Union([Type.Literal("tool"), Type.Literal("skill")]),
+				),
+				limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+				cursor: Type.Optional(Type.String()),
+			}),
+			execute: async (_id, input) => ({
+				content: [
+					{
+						type: "text" as const,
+						text: JSON.stringify(task.snapshot.list(input as never)),
+					},
+				],
+				details: {},
+			}),
+		},
+		{
+			name: "capabilities_search",
+			label: "search capabilities",
+			description: "Search permitted capability metadata lexically.",
+			parameters: Type.Object({
+				query: Type.String({ minLength: 1 }),
+				kind: Type.Optional(
+					Type.Union([Type.Literal("tool"), Type.Literal("skill")]),
+				),
+				limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+				cursor: Type.Optional(Type.String()),
+			}),
+			execute: async (_id, input) => {
+				const { query, ...options } = input as {
+					query: string;
+					kind?: "tool" | "skill";
+					limit?: number;
+					cursor?: string;
+				};
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: JSON.stringify(task.snapshot.search(query, options)),
+						},
+					],
+					details: {},
+				};
+			},
+		},
+		{
+			name: "capabilities_inspect",
+			label: "inspect capability",
+			description: "Inspect one capability contract by canonical id.",
+			parameters: Type.Object({ id: Type.String({ minLength: 1 }) }),
+			execute: async (_id, input) => {
+				const ref = task.snapshot.reference((input as { id: string }).id);
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: JSON.stringify(task.snapshot.inspect(ref)),
+						},
+					],
+					details: { ref },
+				};
+			},
+		},
+		{
+			name: "tools_load",
+			label: "load tool",
+			description: "Admit one inspected tool schema into task context.",
+			parameters: Type.Object({ id: Type.String({ minLength: 1 }) }),
+			execute: async (_id, input) => {
+				const ref = task.snapshot.reference((input as { id: string }).id);
+				task.snapshot.require(ref, "load");
+				const inspected = task.snapshot.inspect(ref);
+				if (inspected.kind !== "tool") throw new Error("CAPABILITY_NOT_A_TOOL");
+				const admission = task.context.admit({
+					capability: ref,
+					scope: "task",
+					contentHash: ref.contractHash,
+					content: inspected.contract,
+					accountant,
+				});
+				if (admission.status === "rejected")
+					throw new Error(JSON.stringify(admission));
+				task.load(ref);
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Loaded ${inspected.name}`,
+						},
+					],
+					details: { contextItemId: admission.item?.id },
+					addedToolNames: [inspected.name],
+				};
+			},
+		},
+		{
+			name: "skills_activate",
+			label: "activate skill",
+			description: "Verify and activate one skill for this task.",
+			parameters: Type.Object({ id: Type.String({ minLength: 1 }) }),
+			execute: async (_id, input) => {
+				const ref = task.snapshot.reference((input as { id: string }).id);
+				task.snapshot.require(ref, "activate");
+				const entry = skills.find((candidate) => candidate.ref.id === ref.id);
+				if (!entry) throw new Error("STALE_CAPABILITY");
+				const admission = await activateSkill(
+					entry,
+					ref,
+					task.context,
+					accountant,
+				);
+				if (admission.status === "rejected")
+					throw new Error(JSON.stringify(admission));
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Activated ${entry.capability.name}`,
+						},
+					],
+					details: { contextItemId: admission.item?.id },
+				};
+			},
+		},
+	];
+}
+
+function combinedSignal(
+	providerSignal: AbortSignal | undefined,
+	runtimeSignal: AbortSignal,
+): AbortSignal {
+	return providerSignal
+		? AbortSignal.any([providerSignal, runtimeSignal])
+		: runtimeSignal;
 }
 
 type CoreToolName = "read" | "write" | "edit" | "bash";

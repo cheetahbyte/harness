@@ -313,6 +313,38 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("recovers a blocked queued task with its implicit id", async () => {
+		const store = createTuiStore("session-1");
+		const sent: unknown[] = [];
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async (command) => {
+			sent.push(command);
+		});
+		try {
+			store.getState().addFollowUp("queued-1", "wait for success");
+			store.getState().apply({
+				type: "task-state",
+				taskId: "queued-1",
+				state: "blocked",
+			});
+			await view.renderOnce();
+			expect(view.captureCharFrame()).toContain("blocked (queued-1)");
+			await view.mockInput.typeText("/replace-queued continue now");
+			view.mockInput.pressEnter();
+			await Promise.resolve();
+			expect(sent).toEqual([
+				{ type: "replace-queued", taskId: "queued-1", text: "continue now" },
+			]);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("suggests skills inside a prompt", async () => {
 		const store = createTuiStore("session-1");
 		const view = await createTestRenderer({
@@ -391,15 +423,15 @@ describe("OpenTUI app", () => {
 				})),
 			});
 			await view.renderOnce();
-			await view.mockInput.typeText("/");
+			await view.mockInput.typeText("/s");
 			await view.flush();
 			const frame = view.captureCharFrame();
-			expect(frame).toContain("/s3");
-			expect(frame).not.toContain("/s4");
+			expect(frame).toContain("/s1");
+			expect(frame).not.toContain("/s5");
 			expect(frame).not.toContain("suggestion row");
 			for (let index = 0; index < 5; index++) view.mockInput.pressArrow("down");
 			await view.flush();
-			expect(view.captureCharFrame()).toContain("/s4");
+			expect(view.captureCharFrame()).toContain("/s5");
 		} finally {
 			app.destroy();
 			view.renderer.destroy();
@@ -425,7 +457,7 @@ describe("OpenTUI app", () => {
 				],
 			});
 			await view.renderOnce();
-			await view.mockInput.typeText("/");
+			await view.mockInput.typeText("/v");
 			await view.flush();
 			expect(view.captureCharFrame()).toContain("/vercel-react-best-practices");
 		} finally {

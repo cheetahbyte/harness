@@ -140,6 +140,37 @@ describe("TUI protocol store", () => {
 		expect(
 			store.getState().entries.some((entry) => entry.id === "steer-2"),
 		).toBe(false);
+		store.getState().addSteering("steer-3", "cancelled direction");
+		store.getState().apply({
+			type: "command",
+			id: "steer-3",
+			command: "steer",
+			state: "cancelled",
+		});
+		expect(
+			store.getState().entries.some((entry) => entry.id === "steer-3"),
+		).toBe(false);
+	});
+
+	test("tracks blocked queued tasks and removes cancelled ones", () => {
+		const store = createTuiStore("session");
+		store.getState().apply({
+			type: "task-state",
+			taskId: "queued-1",
+			state: "blocked",
+		});
+		expect(store.getState().followUps).toEqual([
+			{ id: "queued-1", text: "queued task", sending: false, blocked: true },
+		]);
+		expect(store.getState().blockedQueueId).toBe("queued-1");
+		store.getState().apply({
+			type: "command",
+			id: "queued-1",
+			command: "follow-up",
+			state: "cancelled",
+		});
+		expect(store.getState().followUps).toEqual([]);
+		expect(store.getState().blockedQueueId).toBeUndefined();
 	});
 
 	test("projects catalog and authentication events into transient wizard state", () => {

@@ -46,6 +46,18 @@ export type ClientCommand =
 	| { type: "prompt"; text: string }
 	| { type: "steer"; text: string; id?: string }
 	| { type: "follow-up"; text: string; id?: string }
+	| {
+			type: "enqueue";
+			text: string;
+			id?: string;
+			requirePredecessorSuccess?: boolean;
+	  }
+	| { type: "supersede"; text: string; id?: string; taskId?: string }
+	| { type: "resume-queued"; taskId: string }
+	| { type: "cancel-queued"; taskId: string }
+	| { type: "replace-queued"; taskId: string; text: string; id?: string }
+	| { type: "confirm"; taskId: string; callId: string }
+	| { type: "acknowledge-unknown-effects"; taskId: string }
 	| ({ type: "configure" } & ModelConfig)
 	| { type: "list-providers"; authType?: AuthType }
 	| { type: "list-models"; provider?: string }
@@ -54,7 +66,7 @@ export type ClientCommand =
 	| { type: "login"; provider: string; authType: AuthType }
 	| { type: "auth-answer"; promptId: string; value: string }
 	| { type: "auth-cancel" }
-	| { type: "abort" };
+	| { type: "abort"; taskId?: string };
 
 export type ServerEvent =
 	| { type: "session"; sessionId: string }
@@ -79,8 +91,14 @@ export type ServerEvent =
 	| {
 			type: "command";
 			id: string;
-			command: "steer" | "follow-up";
-			state: "queued" | "started" | "finished" | "replaced";
+			command: "steer" | "follow-up" | "supersede";
+			state: "queued" | "started" | "finished" | "cancelled" | "replaced";
+	  }
+	| {
+			type: "task-state";
+			taskId: string;
+			state: "running" | "cancelling" | "quiescing" | "terminal" | "blocked";
+			status?: "completed" | "failed" | "cancelled" | "superseded";
 	  }
 	| { type: "model-config"; config: ModelConfig }
 	| { type: "ui-settings"; disableThinkingBlocks: boolean }

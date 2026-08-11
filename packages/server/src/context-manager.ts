@@ -419,6 +419,42 @@ export class ContextManager {
 		});
 	}
 
+	/** Retains only user-visible task continuity for future top-level tasks. */
+	terminalizeTask(sessionId: string, afterSequence: number): string[] {
+		const scoped = this.store
+			.contextItems(sessionId)
+			.filter((item) => item.sequence > afterSequence);
+		const terminal = [...scoped]
+			.reverse()
+			.find((item) => item.kind === "assistant" && assistantText(item.payload));
+		let terminalId: string | undefined;
+		for (const item of scoped) {
+			if (item.kind === "user" || item.kind === "system") continue;
+			this.store.setContextLifecycle(
+				item.id,
+				"archived",
+				"omitted",
+				"top-level task terminated",
+			);
+		}
+		if (terminal) {
+			const payload = userVisibleAssistant(terminal.payload);
+			if (payload) {
+				terminalId = this.record({
+					sessionId,
+					kind: "assistant",
+					payload,
+					tokenCost: tokenCost(payload, 1),
+					lifecycle: "retained",
+					reason: "predecessor terminal user-visible message",
+					groupId: terminal.groupId ?? crypto.randomUUID(),
+				}).id;
+			}
+		}
+		this.activeEpisodes.delete(sessionId);
+		return terminalId ? [terminalId] : [];
+	}
+
 	recordObservation(
 		sessionId: string,
 		exactOutput: string,
@@ -593,6 +629,40 @@ export class ContextManager {
 			],
 			estimatedTokens,
 			evictedIds,
+		};
+	}
+
+	assembleTask(
+		sessionId: string,
+		options: { budget: number; target: number; overheadTokens: number },
+		submissionWatermark: number,
+		taskStartSequence: number,
+		predecessorTerminalIds: readonly string[],
+	): { payloads: unknown[]; estimatedTokens: number; evictedIds: string[] } {
+		this.assemble(sessionId, options);
+		const terminal = new Set(predecessorTerminalIds);
+		const items = this.store
+			.contextItems(sessionId)
+			.filter(
+				(item) =>
+					item.sequence <= submissionWatermark ||
+					item.sequence > taskStartSequence ||
+					terminal.has(item.id),
+			);
+		const estimatedTokens = items.reduce(
+			(total, item) => total + projectionCost(item),
+			options.overheadTokens,
+		);
+		if (estimatedTokens > options.budget)
+			throw new ContextBudgetError(estimatedTokens, options.budget);
+		return {
+			payloads: items.flatMap((item) => {
+				if (item.kind === "system" || item.kind === "observation") return [];
+				const payload = projectedPayload(item);
+				return payload === undefined ? [] : [payload];
+			}),
+			estimatedTokens,
+			evictedIds: [],
 		};
 	}
 
@@ -909,6 +979,41 @@ function projectedPayload(item: ContextItem): unknown {
 		default:
 			return item.payload;
 	}
+}
+
+function assistantText(payload: unknown): string {
+	if (!payload || typeof payload !== "object") return "";
+	const content = (payload as { content?: unknown }).content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.flatMap((item) =>
+			item &&
+			typeof item === "object" &&
+			(item as { type?: unknown }).type === "text" &&
+			typeof (item as { text?: unknown }).text === "string"
+				? [(item as { text: string }).text]
+				: [],
+		)
+		.join("");
+}
+
+function userVisibleAssistant(payload: unknown): unknown | undefined {
+	if (!payload || typeof payload !== "object") return undefined;
+	const message = structuredClone(payload) as {
+		role?: unknown;
+		content?: unknown;
+	};
+	if (message.role !== "assistant" || !Array.isArray(message.content))
+		return undefined;
+	const content = message.content.filter(
+		(item) =>
+			item &&
+			typeof item === "object" &&
+			(item as { type?: unknown }).type === "text" &&
+			typeof (item as { text?: unknown }).text === "string",
+	);
+	message.content = content;
+	return content.length ? message : undefined;
 }
 
 function projectionCost(

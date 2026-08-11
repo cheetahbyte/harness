@@ -30,7 +30,12 @@ export type TranscriptEntry = {
 	active?: boolean;
 	pending?: boolean;
 };
-export type FollowUp = { id: string; text: string; sending: boolean };
+export type FollowUp = {
+	id: string;
+	text: string;
+	sending: boolean;
+	blocked?: boolean;
+};
 export type WizardState =
 	| { kind: "idle" }
 	| { kind: "providers"; providers: ProviderOption[] }
@@ -71,10 +76,58 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 			skills: [],
 			running: false,
 			status: "ready",
+			activeTaskId: undefined,
+			blockedQueueId: undefined,
 			disableThinkingBlocks: false,
 			wizard: { kind: "idle" },
 			apply(event) {
 				if (event.type === "session") return;
+				if (event.type === "task-state") {
+					const text = event.status ?? event.state;
+					set((state) => {
+						let followUps = state.followUps
+							.map((followUp) =>
+								event.state === "blocked" && followUp.id === event.taskId
+									? { ...followUp, blocked: true, sending: false }
+									: event.state === "running" && followUp.id === event.taskId
+										? { ...followUp, blocked: false, sending: true }
+										: followUp,
+							)
+							.filter(
+								(followUp) =>
+									event.state !== "terminal" || followUp.id !== event.taskId,
+							);
+						if (
+							event.state === "blocked" &&
+							!followUps.some((followUp) => followUp.id === event.taskId)
+						)
+							followUps = [
+								...followUps,
+								{
+									id: event.taskId,
+									text: "queued task",
+									sending: false,
+									blocked: true,
+								},
+							];
+						const blocked = followUps.filter((followUp) => followUp.blocked);
+						return {
+							followUps,
+							blockedQueueId: blocked.length === 1 ? blocked[0]?.id : undefined,
+							running:
+								event.state === "running" ||
+								event.state === "cancelling" ||
+								event.state === "quiescing",
+							status: text,
+							activeTaskId:
+								event.state === "terminal" || event.state === "blocked"
+									? undefined
+									: event.taskId,
+						};
+					});
+					if (showStatus) append({ kind: "status", text });
+					return;
+				}
 				if (event.type === "skills") return set({ skills: event.skills });
 				if (event.type === "providers")
 					return set({
@@ -107,7 +160,7 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 									entry.id === event.id ? { ...entry, pending: false } : entry,
 								),
 							}));
-						if (event.state === "replaced")
+						if (event.state === "replaced" || event.state === "cancelled")
 							return set((state) => ({
 								entries: state.entries.filter((entry) => entry.id !== event.id),
 							}));
@@ -121,11 +174,9 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 										: followUp,
 								),
 							}));
-						if (event.state === "finished")
+						if (event.state === "finished" || event.state === "cancelled")
 							return set((state) => ({
-								followUps: state.followUps.filter(
-									(followUp) => followUp.id !== event.id,
-								),
+								...withoutFollowUp(state, event.id),
 							}));
 					}
 					return;
@@ -227,7 +278,7 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 			removeCommand(id) {
 				set((state) => ({
 					entries: state.entries.filter((entry) => entry.id !== id),
-					followUps: state.followUps.filter((followUp) => followUp.id !== id),
+					...withoutFollowUp(state, id),
 				}));
 			},
 			clearWizard() {
@@ -245,6 +296,8 @@ export type TuiState = {
 	skills: SkillOption[];
 	running: boolean;
 	status: string;
+	activeTaskId: string | undefined;
+	blockedQueueId: string | undefined;
 	modelConfig?: ModelConfig;
 	disableThinkingBlocks: boolean;
 	wizard: WizardState;
@@ -260,6 +313,15 @@ function finishActive(entries: TranscriptEntry[]): TranscriptEntry[] {
 	const last = entries.at(-1);
 	if (!last?.active) return entries;
 	return [...entries.slice(0, -1), { ...last, active: false }];
+}
+
+function withoutFollowUp(state: Pick<TuiState, "followUps">, id: string) {
+	const followUps = state.followUps.filter((followUp) => followUp.id !== id);
+	const blocked = followUps.filter((followUp) => followUp.blocked);
+	return {
+		followUps,
+		blockedQueueId: blocked.length === 1 ? blocked[0]?.id : undefined,
+	};
 }
 
 function formatDuration(durationMs: number): string {

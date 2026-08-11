@@ -4,6 +4,7 @@ import { WorkspaceTool } from "./tool";
 
 export class ReadTool extends WorkspaceTool {
 	readonly name = "read";
+	override readonly effect = "read_only" as const;
 	readonly description = "Read a text file in the workspace.";
 	readonly schema = Type.Object({ path: Type.String({ minLength: 1 }) });
 

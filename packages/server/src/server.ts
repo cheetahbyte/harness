@@ -20,6 +20,7 @@ import type {
 	StreamLine,
 } from "../../shared/src/protocol";
 import { HarnessAgentRuntime } from "./agent-runtime";
+import { CapabilityCatalog, CapabilityContext } from "./capability-control";
 import { ContextManager, type SubagentResult } from "./context-manager";
 import { log } from "./logger";
 import {
@@ -29,10 +30,35 @@ import {
 } from "./provider";
 import { SessionStore } from "./session-store";
 import { globalHarnessPath, SettingsStore } from "./settings-store";
-import { availableSkills, invokeSkills } from "./skills";
+import {
+	activateSkill,
+	availableSkills,
+	type SkillSnapshotEntry,
+	scanSkills,
+} from "./skills";
+import {
+	type QueuedTask,
+	type SchedulerDecision,
+	TaskRuntime,
+	TaskScheduler,
+	type TaskTerminalStatus,
+} from "./task-runtime";
+import { tokenCost } from "./token-cost";
 import { CoreTools } from "./tools";
 
-type PendingCommand = { id: string; type: "steer" | "follow-up"; text: string };
+type PendingSteer = {
+	id: string;
+	type: "steer";
+	text: string;
+};
+type RunningTask = {
+	controller: AbortController;
+	task: TaskRuntime;
+	tools: CoreTools;
+	skills: SkillSnapshotEntry[];
+	prompt: string;
+	contextWatermark: number;
+};
 type SessionEvents = { event: [event: ServerEvent, seq?: number] };
 type Login = {
 	provider: string;
@@ -45,9 +71,10 @@ type Login = {
 };
 type Session = {
 	events: EventEmitter<SessionEvents>;
-	running?: AbortController;
-	followUps: PendingCommand[];
-	pendingSteer?: PendingCommand;
+	starting?: Promise<void>;
+	running?: RunningTask;
+	scheduler: TaskScheduler;
+	pendingSteer?: PendingSteer;
 	login?: Login;
 };
 
@@ -115,11 +142,17 @@ export class HarnessServer {
 			this.context,
 			options.contextBudget,
 		);
+		this.capabilityBudget = 8_000;
 	}
+
+	private readonly capabilityBudget: number;
 
 	createSession(workspace = this.defaultWorkspace): string {
 		const id = this.store.create(workspacePath(workspace));
-		this.sessions.set(id, { events: new EventEmitter(), followUps: [] });
+		this.sessions.set(id, {
+			events: new EventEmitter(),
+			scheduler: new TaskScheduler(),
+		});
 		log.info({ sessionId: id }, "session created");
 		return id;
 	}
@@ -207,9 +240,89 @@ export class HarnessServer {
 			this.cancelLogin(id);
 			return;
 		}
+		if (session.starting) await session.starting;
 		if (command.type === "abort") {
 			log.info({ sessionId: id, running: !!session.running }, "run aborted");
-			session.running?.abort();
+			if (
+				command.taskId &&
+				session.running &&
+				session.running.task.id !== command.taskId
+			)
+				throw new Error("task is not active");
+			if (session.running) {
+				if (session.pendingSteer) {
+					this.emit(id, {
+						type: "command",
+						id: session.pendingSteer.id,
+						command: "steer",
+						state: "cancelled",
+					});
+					delete session.pendingSteer;
+				}
+				this.emit(id, {
+					type: "task-state",
+					taskId: session.running.task.id,
+					state: "cancelling",
+				});
+				session.running.controller.abort();
+				await session.running.task.cancel("cancelled");
+			}
+			return;
+		}
+		if (command.type === "confirm") {
+			if (session.running?.task.id !== command.taskId)
+				throw new Error("task is not active");
+			session.running.task.confirm(command.callId);
+			return;
+		}
+		if (command.type === "acknowledge-unknown-effects") {
+			if (session.running?.task.id !== command.taskId)
+				throw new Error("task is not active");
+			session.running.task.acknowledgeUnknownPriorEffects();
+			return;
+		}
+		if (command.type === "resume-queued") {
+			const queued = session.scheduler.resume(command.taskId);
+			this.emit(id, {
+				type: "command",
+				id: queued.id,
+				command: queued.kind,
+				state: "queued",
+			});
+			await this.advance(id, session.scheduler.next());
+			return;
+		}
+		if (command.type === "cancel-queued") {
+			const queued = session.scheduler.cancelQueued(command.taskId);
+			this.emit(id, {
+				type: "command",
+				id: queued.id,
+				command: queued.kind,
+				state: "cancelled",
+			});
+			await this.advance(id, session.scheduler.next());
+			return;
+		}
+		if (command.type === "replace-queued") {
+			const replacementId = command.id ?? crypto.randomUUID();
+			const { cancelled, queued } = session.scheduler.replaceQueued(
+				command.taskId,
+				{ id: replacementId, text: command.text },
+				this.contextSequence(id),
+			);
+			this.emit(id, {
+				type: "command",
+				id: cancelled.id,
+				command: cancelled.kind,
+				state: "cancelled",
+			});
+			this.emit(id, {
+				type: "command",
+				id: queued.id,
+				command: queued.kind,
+				state: "queued",
+			});
+			await this.advance(id, session.scheduler.next());
 			return;
 		}
 		if (command.type === "configure") {
@@ -226,44 +339,85 @@ export class HarnessServer {
 			this.emit(id, { type: "model-config", config });
 			return;
 		}
-		if (command.type === "follow-up") {
-			const pending = this.pending(command);
-			if (
-				this.runtime.followUp(id, pending.text, {
-					onStarted: () =>
-						this.emit(id, {
-							type: "command",
-							id: pending.id,
-							command: pending.type,
-							state: "started",
-						}),
-					onFinished: () =>
-						this.emit(id, {
-							type: "command",
-							id: pending.id,
-							command: pending.type,
-							state: "finished",
-						}),
-				})
-			)
-				return this.emit(id, {
-					type: "command",
-					id: pending.id,
-					command: pending.type,
-					state: "queued",
-				});
-			session.followUps.push(pending);
+		if (command.type === "follow-up" || command.type === "enqueue") {
+			const pending = session.scheduler.enqueue(
+				{ id: command.id ?? crypto.randomUUID(), text: command.text },
+				this.contextSequence(id),
+				{
+					requirePredecessorSuccess:
+						command.type === "enqueue" &&
+						command.requirePredecessorSuccess === true,
+				},
+			);
 			this.emit(id, {
 				type: "command",
 				id: pending.id,
-				command: pending.type,
+				command: pending.kind,
 				state: "queued",
 			});
 			this.emit(id, { type: "status", text: "follow-up queued" });
 			return;
 		}
+		if (command.type === "supersede") {
+			if (!session.running) {
+				const commandId = command.id ?? crypto.randomUUID();
+				await this.run(id, {
+					id: commandId,
+					kind: "supersede",
+					state: "ready",
+					userInput: {
+						id: commandId,
+						text: command.text,
+					},
+					submissionWatermark: this.contextSequence(id),
+					requirePredecessorSuccess: false,
+				});
+				return;
+			}
+			if (command.taskId && command.taskId !== session.running.task.id)
+				throw new Error("task is not active");
+			if (session.pendingSteer) {
+				this.emit(id, {
+					type: "command",
+					id: session.pendingSteer.id,
+					command: "steer",
+					state: "replaced",
+				});
+				delete session.pendingSteer;
+			}
+			const { queued: pending, replaced } = session.scheduler.requestSupersede(
+				session.running.task.id,
+				{ id: command.id ?? crypto.randomUUID(), text: command.text },
+				this.contextSequence(id),
+			);
+			if (replaced)
+				this.emit(id, {
+					type: "command",
+					id: replaced.id,
+					command: "supersede",
+					state: "replaced",
+				});
+			this.emit(id, {
+				type: "command",
+				id: pending.id,
+				command: "supersede",
+				state: "queued",
+			});
+			this.emit(id, {
+				type: "task-state",
+				taskId: session.running.task.id,
+				state: "cancelling",
+			});
+			session.running.controller.abort();
+			await session.running.task.cancel("superseded");
+			return;
+		}
 		if (command.type === "steer") {
-			const pending = this.pending(command);
+			const pending: PendingSteer = {
+				id: command.id ?? crypto.randomUUID(),
+				type: "steer",
+				text: command.text,
+			};
 			if (session.running) {
 				if (
 					this.runtime.steer(id, pending.text, {
@@ -297,10 +451,23 @@ export class HarnessServer {
 					type: "status",
 					text: "steering after current turn",
 				});
-				session.running.abort();
+				session.running.controller.abort();
 				return;
 			}
 			await this.run(id, pending);
+			return;
+		}
+		if (session.running) {
+			const pending = session.scheduler.enqueue(
+				{ id: crypto.randomUUID(), text: command.text },
+				this.contextSequence(id),
+			);
+			this.emit(id, {
+				type: "command",
+				id: pending.id,
+				command: "follow-up",
+				state: "queued",
+			});
 			return;
 		}
 		await this.run(id, command.text);
@@ -494,30 +661,72 @@ export class HarnessServer {
 
 	private async run(
 		id: string,
-		command: string | PendingCommand,
+		command: string | QueuedTask | PendingSteer,
+		predecessor?: TaskRuntime,
+		resume?: RunningTask,
 	): Promise<void> {
 		const session = this.session(id);
-		if (session.running) return; // The steering command has aborted it; its caller owns the next run.
+		if (session.running) return;
 		const controller = new AbortController();
 		const startedAt = Date.now();
-		session.running = controller;
 		const pending = typeof command === "string" ? undefined : command;
-		const text = typeof command === "string" ? command : command.text;
-		const prompt = await invokeSkills(this.workspace(id), text);
+		const text =
+			typeof command === "string"
+				? command
+				: "userInput" in command
+					? command.userInput.text
+					: command.text;
+		const pendingType = pending
+			? "kind" in pending
+				? pending.kind
+				: pending.type
+			: undefined;
+		let running: RunningTask;
+		if (resume) {
+			running = { ...resume, controller, prompt: text };
+			session.running = running;
+			session.scheduler.activate(running.task);
+		} else {
+			let releaseStarting!: () => void;
+			session.starting = new Promise<void>(
+				(resolve) => (releaseStarting = resolve),
+			);
+			try {
+				running = await this.createTask(
+					id,
+					text,
+					controller,
+					predecessor,
+					pending && "submissionWatermark" in pending
+						? pending.submissionWatermark
+						: undefined,
+				);
+				session.running = running;
+				session.scheduler.activate(running.task);
+			} finally {
+				delete session.starting;
+				releaseStarting();
+			}
+		}
 		if (pending)
 			this.emit(id, {
 				type: "command",
 				id: pending.id,
-				command: pending.type,
+				command: pendingType ?? "follow-up",
 				state: "started",
 			});
 		this.emit(id, { type: "status", text: "running" });
+		this.emit(id, {
+			type: "task-state",
+			taskId: running.task.id,
+			state: "running",
+		});
 		log.info(
 			{
 				sessionId: id,
 				provider: this.modelConfig(id)?.provider,
 				model: this.modelConfig(id)?.model,
-				command: pending?.type ?? "prompt",
+				command: pendingType ?? "prompt",
 				textLength: text.length,
 			},
 			"run started",
@@ -525,9 +734,11 @@ export class HarnessServer {
 		try {
 			await this.runtime.run(
 				id,
-				prompt,
+				running.prompt,
 				this.modelConfig(id),
-				new CoreTools(this.workspace(id)),
+				running.tools,
+				running.task,
+				running.skills,
 				controller.signal,
 				(event) => this.emit(id, event),
 			);
@@ -537,52 +748,238 @@ export class HarnessServer {
 				type: "error",
 				message: error instanceof Error ? error.message : String(error),
 			});
+			const terminalMessageIds = this.context.terminalizeTask(
+				id,
+				running.contextWatermark,
+			);
+			if (!running.task.result()) {
+				running.task.finish({
+					status: "failed",
+					error: {
+						code: "TASK_FAILED",
+						message: error instanceof Error ? error.message : String(error),
+					},
+					terminalMessageIds,
+				});
+			} else running.task.addTerminalMessageIds(terminalMessageIds);
 			delete session.running;
+			const terminalStatus = running.task.result()?.status ?? "failed";
+			this.completeTask(id, running.task, terminalStatus);
+			this.finishPending(id, pending);
+			await this.advance(id, session.scheduler.settle(running.task));
 			return;
 		}
 		delete session.running;
 		if (controller.signal.aborted) {
+			const steer = session.pendingSteer;
+			if (
+				steer &&
+				!session.scheduler.hasPendingSupersede() &&
+				!running.task.result()
+			) {
+				delete session.pendingSteer;
+				this.emit(id, { type: "aborted" });
+				await this.run(id, steer, undefined, running);
+				return;
+			}
+			const terminalMessageIds = this.context.terminalizeTask(
+				id,
+				running.contextWatermark,
+			);
+			if (!running.task.result()) {
+				await running.task.cancel(
+					session.scheduler.hasPendingSupersede() ? "superseded" : "cancelled",
+					terminalMessageIds,
+				);
+			} else running.task.addTerminalMessageIds(terminalMessageIds);
 			log.info(
 				{ sessionId: id, durationMs: Date.now() - startedAt },
 				"run aborted",
 			);
 			this.emit(id, { type: "aborted" });
-			const steer = session.pendingSteer;
-			delete session.pendingSteer;
-			if (pending?.type === "follow-up")
-				this.emit(id, {
-					type: "command",
-					id: pending.id,
-					command: pending.type,
-					state: "finished",
-				});
-			if (steer) await this.run(id, steer);
+			const terminalStatus = running.task.result()?.status ?? "cancelled";
+			this.completeTask(id, running.task, terminalStatus);
+			this.finishPending(id, pending);
+			await this.advance(id, session.scheduler.settle(running.task));
 			return;
 		}
+		const terminalMessageIds = this.context.terminalizeTask(
+			id,
+			running.contextWatermark,
+		);
+		running.task.finish({ status: "completed", terminalMessageIds });
 		log.info(
 			{ sessionId: id, durationMs: Date.now() - startedAt },
 			"run finished",
 		);
 		this.emit(id, { type: "completed", durationMs: Date.now() - startedAt });
-		if (pending?.type === "follow-up")
-			this.emit(id, {
-				type: "command",
-				id: pending.id,
-				command: pending.type,
-				state: "finished",
+		this.completeTask(id, running.task, "completed");
+		this.finishPending(id, pending);
+		await this.advance(id, session.scheduler.settle(running.task));
+	}
+
+	private async createTask(
+		id: string,
+		text: string,
+		controller: AbortController,
+		predecessor?: TaskRuntime,
+		submissionWatermark?: number,
+	): Promise<RunningTask> {
+		const bindingGeneration = crypto.randomUUID();
+		const contextWatermark = this.store.contextItems(id).at(-1)?.sequence ?? 0;
+		const tools = new CoreTools(this.workspace(id));
+		const scanned = await scanSkills(
+			this.workspace(id),
+			undefined,
+			bindingGeneration,
+		);
+		const catalog = new CapabilityCatalog(
+			[
+				...tools.capabilities(bindingGeneration),
+				...scanned.discoverable.map(({ capability }) => capability),
+			],
+			bindingGeneration,
+		);
+		const snapshot = catalog.snapshot({
+			tool: { maxLevel: "execute", confirmation: "none" },
+			skill: { maxLevel: "activate" },
+		});
+		const context = new CapabilityContext(
+			{
+				model: this.modelConfig(id),
+				userInput: text,
+				...(predecessor
+					? { predecessorDigest: predecessor.digest(snapshot) }
+					: {}),
+			},
+			(base, items) => ({
+				base,
+				capabilityContext: items.map(({ content }) => content),
+			}),
+			this.capabilityBudget,
+			512,
+		);
+		const predecessorDigest = predecessor?.digest(snapshot);
+		const task = new TaskRuntime(
+			snapshot,
+			context,
+			crypto.getRandomValues(new Uint8Array(32)),
+			{
+				unknownPriorMutatingEffects:
+					(predecessorDigest?.unknownMutatingCalls ?? 0) > 0,
+				...(predecessorDigest ? { predecessorDigest } : {}),
+				submissionWatermark: submissionWatermark ?? contextWatermark,
+				taskStartSequence: contextWatermark,
+				predecessorTerminalMessageIds:
+					predecessor?.result()?.terminalMessageIds ?? [],
+			},
+		);
+		const accountant = {
+			modelId: this.modelConfig(id)?.model ?? "unconfigured",
+			serializerVersion: "pi-json-v1",
+			method: "conservative_estimate" as const,
+			count: (request: unknown) => tokenCost(request),
+		};
+		for (const item of snapshot.list({ kind: "tool", limit: 100 }).items) {
+			const inspected = snapshot.inspect(item.ref);
+			const admission = context.admit({
+				capability: item.ref,
+				scope: "task",
+				contentHash: item.ref.contractHash,
+				content: inspected.contract,
+				accountant,
 			});
+			if (admission.status === "rejected")
+				throw new Error(JSON.stringify(admission));
+			task.load(item.ref);
+		}
+		const selected = new Set<string>();
+		const prompt = text
+			.replace(
+				/(^|\s)\/([a-z0-9-]+)(?=$|\s|[.,!?;:])/g,
+				(match, prefix: string, name: string) => {
+					if (
+						scanned.discoverable.some((entry) => entry.capability.name === name)
+					) {
+						selected.add(name);
+						return prefix;
+					}
+					return match;
+				},
+			)
+			.trim();
+		for (const name of selected) {
+			const entry = scanned.discoverable.find(
+				(candidate) => candidate.capability.name === name,
+			);
+			if (!entry) continue;
+			const ref = snapshot.reference(entry.capability.id);
+			const admission = await activateSkill(entry, ref, context, accountant);
+			if (admission.status === "rejected")
+				throw new Error(JSON.stringify(admission));
+		}
+		return {
+			controller,
+			task,
+			tools,
+			skills: scanned.discoverable,
+			prompt,
+			contextWatermark,
+		};
+	}
+
+	private completeTask(
+		id: string,
+		task: TaskRuntime,
+		status: TaskTerminalStatus,
+	): void {
+		this.runtime.forget(id);
+		this.store.appendTaskLedger(id, task.id, task.ledger());
+		this.store.recordTaskTerminal(id, task.id, status, task.startedAt);
+		this.emit(id, {
+			type: "task-state",
+			taskId: task.id,
+			state: "terminal",
+			status,
+		});
+	}
+
+	private finishPending(id: string, pending?: QueuedTask | PendingSteer): void {
+		if (!pending) return;
+		this.emit(id, {
+			type: "command",
+			id: pending.id,
+			command: "kind" in pending ? pending.kind : pending.type,
+			state: "finished",
+		});
+	}
+
+	private async advance(
+		id: string,
+		decision: SchedulerDecision | undefined,
+	): Promise<void> {
+		const session = this.session(id);
 		const steer = session.pendingSteer;
 		delete session.pendingSteer;
-		if (steer) {
-			await this.run(id, steer);
+		if (steer) return await this.run(id, steer);
+		if (!decision) return;
+		if (decision.state === "blocked") {
+			this.emit(id, {
+				type: "task-state",
+				taskId: decision.queued.id,
+				state: "blocked",
+			});
 			return;
 		}
-		const followUp = session.followUps.shift();
-		if (followUp) await this.run(id, followUp);
+		await this.run(id, decision.queued, decision.predecessor);
 	}
 
 	private modelConfig(id: string) {
 		return this.store.modelConfig(id) ?? this.settingsFor(id).modelConfig();
+	}
+
+	private contextSequence(id: string): number {
+		return this.store.contextItems(id).at(-1)?.sequence ?? 0;
 	}
 
 	private settingsFor(id: string): SettingsStore {
@@ -595,21 +992,14 @@ export class HarnessServer {
 				);
 	}
 
-	private pending(
-		command: Extract<ClientCommand, { type: "steer" | "follow-up" }>,
-	): PendingCommand {
-		return {
-			id: command.id ?? crypto.randomUUID(),
-			type: command.type,
-			text: command.text,
-		};
-	}
-
 	private session(id: string): Session {
 		if (!this.store.exists(id)) throw new Error("session not found");
 		let session = this.sessions.get(id);
 		if (!session) {
-			session = { events: new EventEmitter(), followUps: [] };
+			session = {
+				events: new EventEmitter(),
+				scheduler: new TaskScheduler(),
+			};
 			this.sessions.set(id, session);
 		}
 		return session;

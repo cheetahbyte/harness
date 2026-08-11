@@ -1,6 +1,7 @@
 import { relative, resolve } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { TSchema } from "@earendil-works/pi-ai";
+import type { EffectClass } from "../capability-control";
 
 const writeLocks = new Map<string, Promise<void>>();
 
@@ -14,6 +15,7 @@ export abstract class WorkspaceTool {
 	abstract readonly description: string;
 	abstract readonly schema: TSchema;
 	readonly evictionPriority: ToolContextMetadata["evictionPriority"] = "normal";
+	readonly effect: EffectClass = "mutating";
 
 	constructor(protected readonly workspace: string) {}
 

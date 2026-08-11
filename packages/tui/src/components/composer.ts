@@ -152,7 +152,7 @@ export class ComposerView {
 		this.queue.content = followUps
 			.map(
 				(followUp, index) =>
-					`${followUp.sending ? "sending" : `${index + 1} queued`} · ${followUp.text}`,
+					`${followUp.blocked ? `blocked (${followUp.id})` : followUp.sending ? "sending" : `${index + 1} queued`} · ${followUp.text}`,
 			)
 			.join("\n");
 		this.syncQueueVisibility();
