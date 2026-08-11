@@ -42,16 +42,17 @@ function Home() {
 			</div>
 
 			<footer class="border-t border-border">
-				<div class="mx-auto flex max-w-5xl items-center justify-between px-6 py-5 text-[12px] text-fg-faint">
-					<span>harnez</span>
-					<a
+				<div class="flex items-center justify-between px-6 py-5 text-[12px] text-fg-faint">
+					<span>By Leonhard Breuer</span>
+					<span>MIT License</span>
+					{/*<a
 						href="https://github.com/cheetahbyte/harnez"
 						target="_blank"
 						rel="noreferrer"
 						class="hover:text-fg-dim"
 					>
 						github.com/cheetahbyte/harnez
-					</a>
+					</a>*/}
 				</div>
 			</footer>
 		</main>

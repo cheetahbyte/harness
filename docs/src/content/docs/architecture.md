@@ -1,5 +1,6 @@
 ---
 title: Architecture
+slug: architecture
 ---
 
 # Architecture

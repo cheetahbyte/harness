@@ -1,5 +1,6 @@
 ---
 title: CLI reference
+slug: cli-reference
 ---
 
 # CLI reference

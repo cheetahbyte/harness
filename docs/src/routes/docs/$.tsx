@@ -3,9 +3,9 @@ import { createFileRoute, Link, notFound } from "@tanstack/solid-router";
 import { DocsArticle } from "../../content/docs/DocsArticle";
 import { getDocPage } from "../../content/docs/manifest";
 
-export const Route = createFileRoute("/docs/$slug")({
+export const Route = createFileRoute("/docs/$")({
 	loader: ({ params }) => {
-		const page = getDocPage(params.slug);
+		const page = getDocPage(params._splat);
 		if (!page) throw notFound();
 		return page;
 	},

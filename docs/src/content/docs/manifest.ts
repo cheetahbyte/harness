@@ -8,6 +8,9 @@ import installation from "./installation.md?raw";
 import architecture from "./architecture.md?raw";
 import cliReference from "./cli-reference.md?raw";
 import configuration from "./configuration.md?raw";
+import contextCompaction from "./context-compaction.md?raw";
+import toolDiscovery from "./tool-discovery.md?raw";
+import { getFrontmatterSlug } from "./frontmatter";
 
 export interface DocPage {
 	slug: string;
@@ -20,34 +23,46 @@ export const docSections = ["Guide", "Architecture"] as const;
 
 export const docPages: DocPage[] = [
 	{
-		slug: "introduction",
+		slug: getFrontmatterSlug(introduction),
 		title: "introduction",
 		section: "Guide",
 		source: introduction,
 	},
 	{
-		slug: "installation",
+		slug: getFrontmatterSlug(installation),
 		title: "installation",
 		section: "Guide",
 		source: installation,
 	},
 	{
-		slug: "architecture",
+		slug: getFrontmatterSlug(architecture),
 		title: "architecture",
-		section: "Guide",
+		section: "Architecture",
 		source: architecture,
 	},
 	{
-		slug: "cli-reference",
+		slug: getFrontmatterSlug(cliReference),
 		title: "cli reference",
-		section: "Architecture",
+		section: "Guide",
 		source: cliReference,
 	},
 	{
-		slug: "configuration",
+		slug: getFrontmatterSlug(configuration),
 		title: "configuration",
-		section: "Architecture",
+		section: "Guide",
 		source: configuration,
+	},
+	{
+		slug: getFrontmatterSlug(contextCompaction),
+		title: "context compaction",
+		section: "Architecture",
+		source: contextCompaction,
+	},
+	{
+		slug: getFrontmatterSlug(toolDiscovery),
+		title: "tool discovery",
+		section: "Architecture",
+		source: toolDiscovery,
 	},
 ];
 

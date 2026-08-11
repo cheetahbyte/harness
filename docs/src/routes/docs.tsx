@@ -35,8 +35,8 @@ function DocsLayout() {
 											}
 										>
 											<Link
-												to="/docs/$slug"
-												params={{ slug: page.slug }}
+											to="/docs/$"
+											params={{ _splat: page.slug }}
 												class="border-l-2 border-transparent pl-3 text-[13px] lowercase tracking-widest text-fg-faint transition-colors hover:text-fg"
 												activeProps={{
 													class:
