@@ -16,9 +16,9 @@ config directory.
 
 ## `auth.json`
 
-A JSON map of provider ID to credential — an OAuth token set or an API key,
-written with `0o600` permissions. Populated by `/login`. Never commit this
-file.
+A JSON map of provider ID to credential, either an OAuth token set or an API
+key, written with `0o600` permissions. `/login` populates it. Never commit
+this file.
 
 ## `settings.json`
 
@@ -38,8 +38,8 @@ file.
 
 ## Project overrides
 
-A project-local `.harnez/settings.json` takes precedence over the global
-one for that project — it isn't merged, it's substituted:
+A project-local `.harnez/settings.json` takes precedence over the global one
+for that project. It replaces the global file instead of being merged:
 
 ```text
 <repo>/

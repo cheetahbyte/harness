@@ -8,9 +8,9 @@ Harnez is a minimal harness for coding agents. It ships a server process that
 runs the agent loop, and a terminal UI to drive it. That's the whole surface
 area.
 
-It is model-agnostic — plug in any provider through the underlying agent core
-— and stays out of your way otherwise: no dashboard, no plugin marketplace, no
-config you didn't ask for.
+It is model-agnostic. Plug in any provider through the underlying agent core.
+Otherwise, it stays out of your way: no dashboard, no plugin marketplace, and
+no config you didn't ask for.
 
 ```text
 bun packages/server/src/index.ts
@@ -18,7 +18,7 @@ bun packages/server/src/index.ts
 
 ## Why a harness, not a framework
 
-Harnez is opinionated about one workflow — terminal-first coding agents — and
+Harnez is opinionated about one workflow: terminal-first coding agents. It
 doesn't try to be a general extension platform. There's no plugin
 marketplace and no public SDK. Good internal modularity is a goal; public
 extensibility isn't.
@@ -31,7 +31,7 @@ extensibility isn't.
 ## Design principles
 
 - **Coding-first, not coding-bound.** Software development gets the strongest
-  UX and tooling, but the runtime doesn't assume it — research, document
+  UX and tooling, but the runtime doesn't assume it. Research, document
   analysis, and other agentic workflows work too.
 - **Model-agnostic.** Models are runtime dependencies, not architectural
   foundations. Different agents in the same session can use different

@@ -4,7 +4,7 @@ import { DocsArticle } from '../../content/docs/DocsArticle'
 import { getDocPage } from '../../content/docs/manifest'
 
 export const Route = createFileRoute('/docs/')({
-  head: () => ({ meta: [{ title: 'Introduction — harnez docs' }] }),
+  head: () => ({ meta: [{ title: 'Introduction - harnez docs' }] }),
   component: DocsIndex,
 })
 

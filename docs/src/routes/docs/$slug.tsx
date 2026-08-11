@@ -10,7 +10,7 @@ export const Route = createFileRoute('/docs/$slug')({
     return page
   },
   head: ({ loaderData }) => ({
-    meta: loaderData ? [{ title: `${loaderData.title} — harnez docs` }] : [],
+    meta: loaderData ? [{ title: `${loaderData.title} - harnez docs` }] : [],
   }),
   component: DocsPage,
   notFoundComponent: DocsNotFound,

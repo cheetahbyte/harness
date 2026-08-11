@@ -7,7 +7,7 @@ title: Installation
 ## From npm
 
 ```text
-npm install -g @cheetahbyte/harnez
+npm install -g harnez
 ```
 
 This installs the `harnez` binary, which starts (or attaches to) the local
@@ -43,5 +43,5 @@ harnez --version
 ```
 
 If this prints a version number, the binary is on your `PATH` and you're
-ready to log in — see [Configuration](/docs/configuration) for setting up a
+ready to log in. See [Configuration](/docs/configuration) to set up a
 provider.

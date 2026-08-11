@@ -20,8 +20,7 @@ function Home() {
           Harnez
         </h1>
         <p class="mt-6 max-w-xl text-[15px] leading-relaxed text-fg-dim">
-          A minimal harness for building and running coding agents. No dashboard, no
-          ceremony — a server, a TUI, and an agent loop.
+          A minimal harness for building and running coding agents.
         </p>
 
         <div class="mt-8">

@@ -1,4 +1,4 @@
-# Harness Architecture
+# Harness architecture
 
 **Status:** Draft
 **Version:** 0.1
@@ -13,7 +13,7 @@ The product direction is intentionally opinionated:
 
 Harness is not intended to become a general-purpose framework or plugin ecosystem. If its opinions happen to work well for other users, they can use it as-is.
 
-## 2. Design Principles
+## 2. Design principles
 
 ### 2.1 Coding-first, not coding-bound
 
@@ -91,7 +91,7 @@ These formats feed Harness's own internal registries and runtime abstractions.
 
 ---
 
-## 3. High-Level Architecture
+## 3. High-level architecture
 
 Harness uses a local client/server architecture.
 
@@ -159,7 +159,7 @@ Large or historical state should preferentially live on disk rather than remain 
 
 ---
 
-## 5. Model and Agent Runtime
+## 5. Model and agent runtime
 
 Harness should initially build on:
 
@@ -191,7 +191,7 @@ This allows replacing or diverging from Pi later without redesigning Harness.
 
 ---
 
-## 6. Core Agent Tools
+## 6. Core agent tools
 
 The permanent tool surface should remain deliberately small.
 
@@ -223,7 +223,7 @@ The model should not receive a large catalog of MCP or specialized tools on ever
 
 ---
 
-## 7. Progressive Tool Discovery
+## 7. Progressive tool discovery
 
 `search_tools` searches a unified capability registry containing:
 
@@ -252,7 +252,7 @@ This keeps the permanent prompt/tool surface approximately independent of the to
 
 ---
 
-## 8. Batch Execution
+## 8. Batch execution
 
 `batch_tools` executes multiple independent tool calls in one agent step.
 
@@ -269,7 +269,7 @@ If more sophisticated tool composition becomes necessary, Harness should investi
 
 ---
 
-## 9. Agent Loop and Interaction
+## 9. Agent loop and interaction
 
 A normal turn follows:
 
@@ -301,7 +301,7 @@ A task completes when the model produces a final response without requesting add
 
 Harness distinguishes three user operations.
 
-#### Enter — steer
+#### Enter: steer
 
 A normal submitted message modifies the active task.
 
@@ -309,13 +309,13 @@ If the model is generating, generation may be aborted and restarted with the ste
 
 If a tool is currently executing, the tool normally completes before the steering message is injected at the next safe boundary.
 
-#### Option + Enter — follow-up
+#### Option + Enter: follow-up
 
 Queues a new task after the current task finishes.
 
 Follow-ups do not alter current-task reasoning.
 
-#### Esc — abort
+#### Esc: abort
 
 Cancels the current foreground execution.
 
@@ -402,7 +402,7 @@ Different subagents may use different models.
 
 ---
 
-## 11. Context Management
+## 11. Context management
 
 Harness separates the lossless session history from the bounded working set sent
 to a model. `SessionStore` persists immutable context payloads and append-only
@@ -498,7 +498,7 @@ Completed subagent transcripts persist independently and are referenced by handl
 
 ---
 
-## 14. Artifact Storage
+## 14. Artifact storage
 
 Artifacts are divided by durability.
 
@@ -532,7 +532,7 @@ Retention should be bounded through:
 
 ---
 
-## 15. Repository Instructions
+## 15. Repository instructions
 
 Harness follows the AGENTS.md convention rather than inventing a Harness-specific instruction file.
 
@@ -589,7 +589,7 @@ Skills normally remain active for the current task rather than accumulating perm
 
 ---
 
-## 17. Agent Plugins
+## 17. Agent plugins
 
 Harness supports Agent Plugins Specification packages as an interoperability format.
 
@@ -675,7 +675,7 @@ A `/memory` or equivalent diagnostic command should be considered early rather t
 
 ---
 
-## 21. Non-Goals
+## 21. Non-goals
 
 At least initially, Harness is not intended to provide:
 
@@ -690,7 +690,7 @@ At least initially, Harness is not intended to provide:
 
 ---
 
-## 22. Open Questions
+## 22. Open questions
 
 The following still require concrete design work:
 

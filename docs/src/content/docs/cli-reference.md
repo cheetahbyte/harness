@@ -11,8 +11,8 @@ harnez
 ```
 
 Starts the server if one isn't already running and opens the TUI against it.
-The two pieces are just a client and a server underneath — during
-development it's common to run them separately:
+The TUI and server are separate, so during development you can run them
+independently:
 
 ```text
 bun run server   # HARNEZ_PORT, default 7432
@@ -34,7 +34,7 @@ Typed directly into the TUI composer.
 
 | Shortcut | Effect |
 | --- | --- |
-| `Enter` | Submit — steers the active task if one is running. |
+| `Enter` | Submit. This steers the active task if one is running. |
 | `Option/Alt + Enter` | Submit as a queued follow-up, run after the active task finishes. |
 | `Esc` | Abort the current step: generation, running tools, and anything pending in it. |
 | `Ctrl+T` | Toggle visibility of the model's thinking blocks. |
