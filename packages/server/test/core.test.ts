@@ -1371,6 +1371,9 @@ function episodeId(
 		process.env["HARNESS_OPENAI_API_KEY"] = "test";
 		const bodies: {
 			messages: { role: string; content?: string; tool_call_id?: string }[];
+			tools?: {
+				function: { name: string; parameters: Record<string, unknown> };
+			}[];
 		}[] = [];
 		let calls = 0;
 		const provider = Bun.serve({
@@ -1432,6 +1435,16 @@ function episodeId(
 			});
 
 			expect(calls).toBe(8);
+			const episodeParameters = bodies[0]?.tools?.find(
+				(tool) => tool.function.name === "episode",
+			)?.function.parameters;
+			expect(episodeParameters).toMatchObject({
+				type: "object",
+				required: ["action"],
+				additionalProperties: false,
+			});
+			expect(episodeParameters).not.toHaveProperty("anyOf");
+			expect(episodeParameters).not.toHaveProperty("oneOf");
 			expect(JSON.stringify(bodies.at(-1))).not.toContain(
 				"JWT validation happens before routing.",
 			);
