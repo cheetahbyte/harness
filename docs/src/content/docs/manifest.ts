@@ -9,6 +9,7 @@ import contextCompaction from "./context-compaction.md?raw";
 import { getFrontmatterSlug } from "./frontmatter";
 import installation from "./installation.md?raw";
 import introduction from "./introduction.md?raw";
+import taskRuntime from "./task-runtime.md?raw";
 import toolDiscovery from "./tool-discovery.md?raw";
 
 export interface DocPage {
@@ -72,13 +73,20 @@ export const docPages: DocPage[] = [
 		source: contextCompaction,
 	},
 	{
+		slug: getFrontmatterSlug(taskRuntime),
+		title: "Task runtime",
+		description:
+			"Understand task boundaries, capability snapshots, authority, cancellation, execution evidence, and successor handoff.",
+		section: "Architecture",
+		source: taskRuntime,
+	},
+	{
 		slug: getFrontmatterSlug(toolDiscovery),
 		title: "Tool discovery",
 		description:
-			"Learn how Harnez exposes a small permanent toolset and discovers additional tools only when an agent needs them.",
+			"Learn how each task lists, searches, inspects, and loads trusted capabilities from an immutable catalog snapshot.",
 		section: "Architecture",
 		source: toolDiscovery,
-		indexable: false,
 	},
 ];
 

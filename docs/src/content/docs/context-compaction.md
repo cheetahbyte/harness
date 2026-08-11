@@ -1,17 +1,17 @@
 ---
-title: Context Compaction
+title: Context compaction
 slug: architecture/context-compaction
 ---
 
-# Context Compaction
+# Context compaction
 
 An agent can fill its context window quickly. File reads and test logs may be
 useful for one turn, while user instructions may need to stay available for the
 entire session. Sending all of that history back to the model on every turn
 wastes tokens and eventually stops fitting.
 
-Harnez keeps the full session history separate from the smaller context it
-sends to the model:
+Harnez keeps the full session history separate from the smaller conversation
+context it sends to the model:
 
 ```text
 event log       = complete source of truth
@@ -21,12 +21,13 @@ repository      = durable result of completed actions
 ```
 
 Only the model-facing working set is compacted. The event log, exact tool
-output, and workspace files remain intact. The implementation is tracked in
-[issue #1](https://github.com/cheetahbyte/harnez/issues/1).
+output, and workspace files remain intact. Loaded tool schemas and activated
+skill bodies use a separate, task-owned context described in
+[Task runtime](/docs/architecture/task-runtime).
 
 ## Context lifecycle
 
-Each item moves through one of four states:
+Each stored conversation item moves through one of four states:
 
 | State | What it contains | Can it leave the working set? |
 | --- | --- | --- |
@@ -58,8 +59,12 @@ Full output: observation://obs-7c2f...
 ```
 
 The model can use `recall_observation` to read an exact slice of the archived
-output. Its `offset` and `limit` parameters allow a targeted read instead of
-pulling the whole result back into context.
+output. The observation URI accepts `offset` and `limit` query parameters, so a
+targeted read looks like this:
+
+```text
+observation://obs-7c2f...?offset=12000&limit=4000
+```
 
 ## Episodes and dependencies
 
@@ -88,12 +93,13 @@ investigation around until the action that used it has also been archived.
 
 ## Eviction order
 
-Before each model request, Harnez recalculates the working set size and includes
-the fixed cost of the tool definitions. The default budget is whichever is
-smaller: 80,000 tokens or the model's usable input window. Once the working set
-crosses that limit, Harnez reduces it toward 80 percent of the budget.
+Before each model request, Harnez recalculates the conversation working set and
+includes the fixed cost of the permanent tool definitions. The default
+conversation budget is whichever is smaller: 80,000 tokens or the model's
+usable input window. Once the working set crosses that limit, Harnez reduces it
+toward 80 percent of the budget.
 
-It removes context in two passes:
+For session history, it removes context in two passes:
 
 1. Completed tool exchanges are compacted first. Writes and edits have early
    priority because their effects already exist in the repository. Reads use
@@ -106,9 +112,21 @@ Archiving an exploration removes its detailed trace from the working set. Its
 conclusion and observation addresses stay. Harnez never considers an active
 episode or pinned item for eviction.
 
-For each item, the context manager records its state, projection, token cost,
-and the reason it was evicted. This information is available from
-`GET /sessions/:id/context`.
+For each stored conversation item, the context manager records its state,
+projection, token cost, and the reason it was evicted. This information is
+available from `GET /sessions/:id/context`.
+
+## Task capability context
+
+Tool schemas and activated skill bodies do not follow the conversation
+lifecycle above. They belong to one task and have either `step` or `task`
+scope. Harnez admits them against a separate 8,000-token ceiling with a
+512-token safety margin.
+
+If an item does not fit, admission fails and reports the current items that
+could be removed. Harnez does not evict capability context automatically. It
+clears all remaining capability items when the task ends, so a later task gets
+a fresh capability snapshot and context.
 
 ## Subagent handoffs
 

@@ -40,6 +40,9 @@ one application.
 The server is a long-lived process implemented in TypeScript on Bun. The TUI
 stays thin. Expensive session and agent state lives on the server, not the
 client, so the interface can be killed and reattached without losing work.
+Each top-level request runs inside a fresh
+[task runtime](/docs/architecture/task-runtime) with its own capability
+snapshot and execution ledger.
 
 ## Agent loop
 
@@ -86,10 +89,11 @@ fixed order, oldest first. Nothing is silently rewritten or deleted; the full
 event history persists independently of what's currently in the model's
 context.
 
-## Progressive tool discovery
+## Tool discovery
 
-The permanent tool surface is small: file reads/writes/edits, shell,
-subagent controls, and user interaction. Everything else (MCP tools, Agent
-Plugin tools) lives in a searchable capability registry: `search_tools`
-returns compact metadata, `call_tool` executes a specific one by ID. The
-model never sees a full catalog of every configured tool on every turn.
+Each task gets a capability catalog for workspace tools and model-invocable
+skills. `capabilities_list` and `capabilities_search` return compact metadata;
+`capabilities_inspect` returns one validated contract. A discovered tool can be
+admitted with `tools_load`, while skills use `skills_activate`. Core workspace
+tools are loaded when the task starts. See
+[Tool discovery](/docs/architecture/tool-discovery) for the full flow.
