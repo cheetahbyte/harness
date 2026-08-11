@@ -4,6 +4,10 @@
 	"workspaces": [
 		"packages/*"
 	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/cheetahbyte/harnez.git"
+	},
 	"files": [
 		"packages",
 		"README.md"
