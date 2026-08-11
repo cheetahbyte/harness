@@ -1,5 +1,14 @@
 import { createStore } from "zustand/vanilla";
-import type { ClientCommand, ServerEvent } from "../../shared/src/protocol";
+import type {
+	AuthNotifyEvent,
+	AuthPromptEvent,
+	ClientCommand,
+	ModelConfig,
+	ModelOption,
+	ProviderOption,
+	ServerEvent,
+	SkillOption,
+} from "../../shared/src/protocol";
 
 type TranscriptKind =
 	| "user"
@@ -15,15 +24,25 @@ type TranscriptKind =
 export type TranscriptEntry = {
 	kind: TranscriptKind;
 	text: string;
+	detail?: string;
 	id?: string;
 	error?: boolean;
 	active?: boolean;
 	pending?: boolean;
 };
 export type FollowUp = { id: string; text: string; sending: boolean };
+export type WizardState =
+	| { kind: "idle" }
+	| { kind: "providers"; providers: ProviderOption[] }
+	| { kind: "models"; models: ModelOption[] }
+	| { kind: "prompt"; prompt: AuthPromptEvent }
+	| { kind: "notice"; notification: AuthNotifyEvent }
+	| { kind: "completed"; provider: string }
+	| { kind: "cancelled"; provider?: string };
 
 /** Projects protocol events for display; it does not own runtime or session behavior. */
-export function createTuiStore(sessionId: string) {
+export function createTuiStore(sessionId: string, pwd = process.cwd()) {
+	const showStatus = process.env["HARNESS_SHOW_STATUS"] === "1";
 	return createStore<TuiState>((set) => {
 		const append = (entry: TranscriptEntry) =>
 			set((state) => ({ entries: [...finishActive(state.entries), entry] }));
@@ -46,13 +65,40 @@ export function createTuiStore(sessionId: string) {
 			});
 		return {
 			sessionId,
+			pwd,
 			entries: [],
 			followUps: [],
+			skills: [],
 			running: false,
 			status: "ready",
-			configuredStatus: "",
+			disableThinkingBlocks: false,
+			wizard: { kind: "idle" },
 			apply(event) {
 				if (event.type === "session") return;
+				if (event.type === "skills") return set({ skills: event.skills });
+				if (event.type === "providers")
+					return set({
+						wizard: { kind: "providers", providers: event.providers },
+					});
+				if (event.type === "models")
+					return set({ wizard: { kind: "models", models: event.models } });
+				if (event.type === "auth-prompt")
+					return set({ wizard: { kind: "prompt", prompt: event.prompt } });
+				if (event.type === "auth-notify")
+					return set({
+						wizard: { kind: "notice", notification: event.notification },
+					});
+				if (event.type === "auth-completed")
+					return set({
+						wizard: { kind: "completed", provider: event.provider },
+					});
+				if (event.type === "auth-cancelled")
+					return set({
+						wizard: {
+							kind: "cancelled",
+							...(event.provider ? { provider: event.provider } : {}),
+						},
+					});
 				if (event.type === "command") {
 					if (event.command === "steer") {
 						if (event.state === "started")
@@ -91,36 +137,81 @@ export function createTuiStore(sessionId: string) {
 				if (event.type === "tool-call")
 					return append({
 						kind: "tool-call",
-						text: `${event.name} ${JSON.stringify(event.input)}`,
+						id: event.id,
+						text: event.name,
 					});
-				if (event.type === "tool-result")
+				if (event.type === "tool-result") {
+					let merged = false;
+					set((state) => {
+						const index = state.entries.findLastIndex(
+							(entry) => entry.kind === "tool-call" && entry.id === event.id,
+						);
+						if (index < 0) return state;
+						merged = true;
+						const entry = state.entries[index];
+						if (!entry) return state;
+						return {
+							entries: state.entries.map((current, currentIndex) =>
+								currentIndex === index
+									? {
+											...current,
+											detail: event.output,
+											...(event.isError === undefined
+												? {}
+												: { error: event.isError }),
+										}
+									: current,
+							),
+						};
+					});
+					if (merged) return;
 					return append({
 						kind: "tool-result",
 						text: `${event.name}: ${event.output}`,
-						error: event.isError,
+						...(event.isError === undefined ? {} : { error: event.isError }),
 					});
+				}
 				if (event.type === "error") {
-					set({ running: false });
+					set((state) => ({
+						running: false,
+						wizard:
+							state.wizard.kind === "idle"
+								? state.wizard
+								: { kind: "cancelled" },
+					}));
 					return append({ kind: "error", text: event.message, error: true });
 				}
-				if (event.type === "usage")
+				if (event.type === "usage" && showStatus)
 					return append({
 						kind: "usage",
 						text: `in ${event.input} · out ${event.output} · total ${event.totalTokens}`,
 					});
-				if (event.type === "completed" || event.type === "aborted") {
+				if (event.type === "completed") {
 					set({ running: false });
-					return append({ kind: event.type, text: event.type });
+					if (event.durationMs !== undefined)
+						return append({
+							kind: event.type,
+							text: `✶ Noodled for ${formatDuration(event.durationMs)}`,
+						});
+					return;
 				}
+				if (event.type === "aborted") {
+					set({ running: false });
+					if (showStatus) return append({ kind: event.type, text: event.type });
+					return;
+				}
+				if (event.type === "model-config")
+					return set({ modelConfig: event.config });
+				if (event.type === "ui-settings")
+					return set({
+						disableThinkingBlocks: event.disableThinkingBlocks,
+					});
 				if (event.type !== "status") return;
 				set((state) => ({
 					status: event.text,
-					configuredStatus: event.text.startsWith("configured ")
-						? event.text
-						: state.configuredStatus,
 					running: event.text === "running" ? true : state.running,
 				}));
-				append({ kind: "status", text: event.text });
+				if (showStatus) append({ kind: "status", text: event.text });
 			},
 			addUser(text) {
 				append({ kind: "user", text });
@@ -139,22 +230,30 @@ export function createTuiStore(sessionId: string) {
 					followUps: state.followUps.filter((followUp) => followUp.id !== id),
 				}));
 			},
+			clearWizard() {
+				set({ wizard: { kind: "idle" } });
+			},
 		};
 	});
 }
 
 export type TuiState = {
 	sessionId: string;
+	pwd: string;
 	entries: TranscriptEntry[];
 	followUps: FollowUp[];
+	skills: SkillOption[];
 	running: boolean;
 	status: string;
-	configuredStatus: string;
+	modelConfig?: ModelConfig;
+	disableThinkingBlocks: boolean;
+	wizard: WizardState;
 	apply: (event: ServerEvent) => void;
 	addUser: (text: string) => void;
 	addSteering: (id: string, text: string) => void;
 	addFollowUp: (id: string, text: string) => void;
 	removeCommand: (id: string) => void;
+	clearWizard: () => void;
 };
 
 function finishActive(entries: TranscriptEntry[]): TranscriptEntry[] {
@@ -163,21 +262,21 @@ function finishActive(entries: TranscriptEntry[]): TranscriptEntry[] {
 	return [...entries.slice(0, -1), { ...last, active: false }];
 }
 
-export function parseModelStatus(status: string): string | undefined {
-	// Temporary protocol compatibility adapter; replace when configuration is structured.
-	return status.match(/^configured\s+(.+)$/)?.[1];
+function formatDuration(durationMs: number): string {
+	const seconds = Math.round(durationMs / 1000);
+	const minutes = Math.floor(seconds / 60);
+	return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
 }
 
 export function commandForInput(text: string): ClientCommand {
-	const match = text.match(
-		/^\/model\s+(openai-codex|openai-compatible)\s+(\S+)(?:\s+(\S+))?$/,
-	);
-	return match
-		? {
-				type: "configure",
-				provider: match[1] as "openai-codex" | "openai-compatible",
-				model: match[2],
-				baseUrl: match[3],
-			}
-		: { type: "steer", text };
+	const match = text.match(/^\/model\s+(\S+)\s+(\S+)(?:\s+(\S+))?$/);
+	if (!match) return { type: "steer", text };
+	const [, provider, model, baseUrl] = match;
+	if (!provider || !model) return { type: "steer", text };
+	return {
+		type: "configure",
+		provider,
+		model,
+		...(baseUrl ? { baseUrl } : {}),
+	};
 }

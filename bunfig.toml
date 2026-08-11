@@ -5,6 +5,3 @@ minimumReleaseAgeExcludes = []   # keep empty unless you have a real reason
 
 frozenLockfile = false           # true in CI via `bun ci` instead
 linker = "isolated"              # no phantom deps
-
-[install.security]
-scanner = "@socketsecurity/bun-security-scanner"

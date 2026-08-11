@@ -1,62 +1,554 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AuthType, ServerEvent } from "../../shared/src/protocol";
+import type { AuthInteraction } from "@earendil-works/pi-ai";
+import { JsonCredentialStore } from "../src/provider";
 import { HarnessServer } from "../src/server";
 import { SessionStore } from "../src/session-store";
+import { SettingsStore } from "../src/settings-store";
 
 const paths: string[] = [];
 afterEach(() => {
 	for (const path of paths.splice(0))
 		rmSync(path, { recursive: true, force: true });
 });
-function harness() {
+function harness(contextBudget?: number) {
 	const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
 	paths.push(dir);
 	return {
 		dir,
-		server: new HarnessServer(new SessionStore(join(dir, "state.sqlite")), dir),
+		server: new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			undefined,
+			settings(dir),
+			contextBudget === undefined ? {} : { contextBudget },
+		),
 	};
 }
 
+function settings(dir: string) {
+	return new SettingsStore(
+		join(dir, "config/settings.json"),
+		join(dir, ".harness/settings.json"),
+	);
+}
+
+function fakeModels() {
+	const fakeProvider = {
+		id: "fake",
+		name: "Fake",
+		auth: { apiKey: { name: "Fake API key", login: async () => ({}) } },
+	};
+	const fakeModel = {
+		id: "model-1",
+		name: "Model 1",
+		provider: "fake",
+	};
+	return {
+		getProviders: () => [fakeProvider],
+		getProvider: (provider: string) =>
+			provider === "fake" ? fakeProvider : undefined,
+		getModels: (provider?: string) =>
+			provider && provider !== "fake" ? [] : [fakeModel],
+		getModel: (provider: string, model: string) =>
+			provider === "fake" && model === "model-1" ? fakeModel : undefined,
+		checkAuth: async (provider: string) =>
+			provider === "fake" ? { type: "api_key" as const, source: "stored" } : undefined,
+		getAvailable: async () => [fakeModel],
+		login: async (
+			_provider: string,
+			_type: AuthType,
+			interaction: AuthInteraction,
+		) => ({
+			type: "api_key" as const,
+			key: await interaction.prompt({ type: "secret", message: "API key" }),
+		}),
+		refresh: async () => ({ aborted: false, errors: new Map() }),
+	};
+}
+
+async function until(assertion: () => void): Promise<void> {
+	for (let attempts = 0; attempts < 20; attempts++) {
+		try {
+			assertion();
+			return;
+		} catch {
+			await Bun.sleep(1);
+		}
+	}
+	assertion();
+}
+
 describe("first milestone", () => {
-	test("executes and persists a core read tool", async () => {
-		const { dir, server } = harness();
-		writeFileSync(join(dir, "note.txt"), "hello");
-		const id = server.createSession();
-		await server.command(id, { type: "prompt", text: "/read note.txt" });
-		const events = server.store.events(id);
-		expect(
-			events.some(
-				(event) => event.type === "tool-result" && event.output === "hello",
-			),
-		).toBe(true);
-		expect(
-			new HarnessServer(
-				new SessionStore(join(dir, "state.sqlite")),
-				dir,
-			).store.events(id),
-		).toEqual(events);
+	test("keeps each session's workspace", () => {
+		const first = mkdtempSync(join(tmpdir(), "harness-workspace-test-"));
+		const second = mkdtempSync(join(tmpdir(), "harness-workspace-test-"));
+		paths.push(first, second);
+		const server = new HarnessServer(
+			new SessionStore(join(first, "state.sqlite")),
+			first,
+			fakeModels(),
+			settings(first),
+		);
+
+		const firstId = server.createSession(first);
+		const secondId = server.createSession(second);
+
+		expect(server.workspace(firstId)).toBe(first);
+		expect(server.workspace(secondId)).toBe(second);
+		const restarted = new HarnessServer(
+			new SessionStore(join(first, "state.sqlite")),
+			first,
+			fakeModels(),
+			settings(first),
+		);
+		expect(restarted.workspace(secondId)).toBe(second);
 	});
 
-	test("rejects tool paths outside the workspace", async () => {
+	test("uses project settings from each session workspace", () => {
+		const first = mkdtempSync(join(tmpdir(), "harness-workspace-test-"));
+		const second = mkdtempSync(join(tmpdir(), "harness-workspace-test-"));
+		paths.push(first, second);
+		for (const [dir, model] of [
+			[first, "first-model"],
+			[second, "second-model"],
+		] as const) {
+			mkdirSync(join(dir, ".harness"));
+			writeFileSync(
+				join(dir, ".harness/settings.json"),
+				JSON.stringify({ model: { provider: "fake", model } }),
+			);
+		}
+		const server = new HarnessServer(
+			new SessionStore(join(first, "state.sqlite")),
+			first,
+			fakeModels(),
+			settings(first),
+		);
+		const events: ServerEvent[] = [];
+		const firstId = server.createSession(first);
+		const secondId = server.createSession(second);
+		server.subscribe(firstId, (event) => events.push(event));
+		server.subscribe(secondId, (event) => events.push(event));
+
+		expect(events).toContainEqual({
+			type: "model-config",
+			config: { provider: "fake", model: "first-model" },
+		});
+		expect(events).toContainEqual({
+			type: "model-config",
+			config: { provider: "fake", model: "second-model" },
+		});
+	});
+
+function toolCallChunks(
+	id: string,
+	name: string,
+	arguments_: Record<string, unknown>,
+): string[] {
+	return [
+		`data: ${JSON.stringify({ id, choices: [{ delta: { tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(arguments_) } }] }, finish_reason: null }] })}\n\n`,
+		`data: ${JSON.stringify({ id, choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 } })}\n\n`,
+		"data: [DONE]\n\n",
+	];
+}
+
+function doneChunks(): string[] {
+	return [
+		'data: {"id":"done","choices":[{"delta":{"content":"done"},"finish_reason":null}]}\n\n',
+		'data: {"id":"done","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}\n\n',
+		"data: [DONE]\n\n",
+	];
+}
+
+function textChunks(text: string): string[] {
+	return [
+		`data: ${JSON.stringify({ id: "text", choices: [{ delta: { content: text }, finish_reason: null }] })}\n\n`,
+		'data: {"id":"text","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}\n\n',
+		"data: [DONE]\n\n",
+	];
+}
+
+function sseResponse(chunks: string[]): Response {
+	return new Response(
+		new ReadableStream({
+			start(controller) {
+				for (const chunk of chunks)
+					controller.enqueue(new TextEncoder().encode(chunk));
+				controller.close();
+			},
+		}),
+		{ headers: { "content-type": "text/event-stream" } },
+	);
+}
+
+function observationReference(
+	body: { messages: { content?: string; tool_call_id?: string }[] },
+	toolCallId: string,
+): string {
+	const reference = body.messages
+		.find((message) => message.tool_call_id === toolCallId)
+		?.content?.match(/observation:\/\/obs-[\w-]+/)?.[0];
+	if (!reference) throw new Error("provider did not receive an observation URI");
+	return reference;
+}
+
+function episodeId(
+	body: { messages: { content?: string; tool_call_id?: string }[] },
+	toolCallId: string,
+): string {
+	const id = body.messages
+		.find((message) => message.tool_call_id === toolCallId)
+		?.content?.match(/\(([0-9a-f-]{36})\)/)?.[1];
+	if (!id) throw new Error("provider did not receive an episode ID");
+	return id;
+}
+
+
+	test("does not persist a credential after its queued write is cancelled", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const credentials = new JsonCredentialStore(join(dir, "auth.json"));
+		let release!: () => void;
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const first = credentials.modify("first", async () => {
+			await blocked;
+			return { type: "api_key", key: "first" };
+		});
+		const controller = new AbortController();
+		const cancelled = credentials.modify(
+			"cancelled",
+			async () => ({ type: "api_key", key: "must-not-land" }),
+			{ signal: controller.signal },
+		);
+		controller.abort();
+		release();
+		await first;
+		await expect(cancelled).rejects.toThrow();
+		expect(await credentials.read("cancelled")).toBeUndefined();
+		await credentials.modify("after", async () => ({
+			type: "api_key",
+			key: "still-works",
+		}));
+		expect(await credentials.read("after")).toEqual({
+			type: "api_key",
+			key: "still-works",
+		});
+		expect(await credentials.modify("after", async () => undefined)).toEqual({
+			type: "api_key",
+			key: "still-works",
+		});
+	});
+
+	test("lists transient configured provider and model catalogs", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			fakeModels(),
+			settings(dir),
+		);
+		const id = server.createSession();
+		const events: ServerEvent[] = [];
+		server.subscribe(id, (event) => events.push(event));
+
+		await server.command(id, { type: "list-providers" });
+		await server.command(id, { type: "list-models" });
+
+		expect(events).toContainEqual({
+			type: "providers",
+			providers: [
+				{
+					id: "fake",
+					name: "Fake",
+					authTypes: ["api_key"],
+					configured: true,
+				},
+			],
+		});
+		expect(events).toContainEqual({
+			type: "models",
+			models: [
+				{
+					provider: "fake",
+					providerName: "Fake",
+					id: "model-1",
+					name: "Model 1",
+				},
+			],
+		});
+		expect(server.store.events(id)).toEqual([]);
+	});
+
+	test("lists skills for composer suggestions", async () => {
+		const { dir, server } = harness();
+		mkdirSync(join(dir, ".harness/skills/review"), { recursive: true });
+		writeFileSync(
+			join(dir, ".harness/skills/review/SKILL.md"),
+			"---\nname: review\ndescription: Review changes\n---\nReview carefully.",
+		);
+		const id = server.createSession();
+		const events: ServerEvent[] = [];
+		server.subscribe(id, (event) => events.push(event));
+
+		await server.command(id, { type: "list-skills" });
+
+		expect(events).toContainEqual({
+			type: "skills",
+			skills: expect.arrayContaining([
+				{ name: "review", description: "Review changes" },
+			]),
+		});
+	});
+
+	test("persists a selected non-OpenAI model", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			fakeModels(),
+			settings(dir),
+		);
+		const id = server.createSession();
+		const events: ServerEvent[] = [];
+		server.subscribe(id, (event) => events.push(event));
+
+		await server.command(id, {
+			type: "configure",
+			provider: "fake",
+			model: "model-1",
+		});
+
+		expect(server.store.modelConfig(id)).toEqual({
+			provider: "fake",
+			model: "model-1",
+		});
+		expect(events).toContainEqual({
+			type: "model-config",
+			config: { provider: "fake", model: "model-1" },
+		});
+		expect(
+			JSON.parse(
+				readFileSync(join(dir, "config/settings.json"), "utf8"),
+			),
+		).toEqual({ model: { provider: "fake", model: "model-1" } });
+
+		const restarted = new HarnessServer(
+			new SessionStore(join(dir, "fresh.sqlite")),
+			dir,
+			fakeModels(),
+			settings(dir),
+		);
+		const restartedEvents: ServerEvent[] = [];
+		restarted.subscribe(restarted.createSession(), (event) =>
+			restartedEvents.push(event),
+		);
+		expect(restartedEvents).toContainEqual({
+			type: "model-config",
+			config: { provider: "fake", model: "model-1" },
+		});
+
+		mkdirSync(join(dir, ".harness"));
+		writeFileSync(
+			join(dir, ".harness/settings.json"),
+			'{"model":{"provider":"project","model":"model-2"}}',
+		);
+		const project = new HarnessServer(
+			new SessionStore(join(dir, "project.sqlite")),
+			dir,
+			fakeModels(),
+			settings(dir),
+		);
+		const projectEvents: ServerEvent[] = [];
+		project.subscribe(project.createSession(), (event) => projectEvents.push(event));
+		expect(projectEvents).toContainEqual({
+			type: "model-config",
+			config: { provider: "project", model: "model-2" },
+		});
+		const projectId = project.createSession();
+		await project.command(projectId, {
+			type: "configure",
+			provider: "fake",
+			model: "model-1",
+		});
+		expect(
+			JSON.parse(readFileSync(join(dir, ".harness/settings.json"), "utf8")),
+		).toEqual({ model: { provider: "fake", model: "model-1" } });
+	});
+
+	test("persists the thinking block preference", async () => {
+		const { dir, server } = harness();
+		const id = server.createSession();
+
+		await server.command(id, {
+			type: "set-disable-thinking-blocks",
+			disabled: true,
+		});
+
+		expect(
+			JSON.parse(readFileSync(join(dir, "config/settings.json"), "utf8")),
+		).toEqual({ disableThinkingBlocks: true });
+
+		const restarted = new HarnessServer(
+			new SessionStore(join(dir, "fresh.sqlite")),
+			dir,
+			fakeModels(),
+			settings(dir),
+		);
+		const events: ServerEvent[] = [];
+		restarted.subscribe(restarted.createSession(), (event) => events.push(event));
+		expect(events).toContainEqual({
+			type: "ui-settings",
+			disableThinkingBlocks: true,
+		});
+	});
+
+	test("rejects an unknown model before persisting it", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			fakeModels(),
+			settings(dir),
+		);
+		const id = server.createSession();
+		await expect(
+			server.command(id, {
+				type: "configure",
+				provider: "fake",
+				model: "missing",
+			}),
+		).rejects.toThrow("unknown model fake/missing");
+		expect(server.store.modelConfig(id)).toBeUndefined();
+	});
+
+	test("relays a login prompt without persisting its answer", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			fakeModels(),
+			settings(dir),
+		);
+		const id = server.createSession();
+		const events: ServerEvent[] = [];
+		server.subscribe(id, (event) => events.push(event));
+
+		await server.command(id, {
+			type: "login",
+			provider: "fake",
+			authType: "api_key",
+		});
+		const prompt = events.find((event) => event.type === "auth-prompt");
+		expect(prompt).toBeDefined();
+		if (!prompt || prompt.type !== "auth-prompt") throw new Error("missing prompt");
+		await server.command(id, {
+			type: "auth-answer",
+			promptId: prompt.prompt.id,
+			value: "never persist this",
+		});
+		await until(() =>
+			expect(events).toContainEqual({ type: "auth-completed", provider: "fake" }),
+		);
+		expect(server.store.events(id)).toEqual([]);
+	});
+
+	test("closes a failed login transiently", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const models = fakeModels();
+		models.login = async () => {
+			throw new Error("login failed");
+		};
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			models,
+			settings(dir),
+		);
+		const id = server.createSession();
+		const events: ServerEvent[] = [];
+		server.subscribe(id, (event) => events.push(event));
+
+		await server.command(id, {
+			type: "login",
+			provider: "fake",
+			authType: "api_key",
+		});
+		await until(() =>
+			expect(events).toContainEqual({
+				type: "auth-cancelled",
+				provider: "fake",
+			}),
+		);
+		expect(events).toContainEqual({ type: "error", message: "login failed" });
+		expect(server.store.events(id)).toEqual([]);
+	});
+
+	test("cancels one login and rejects a concurrent login", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			fakeModels(),
+			settings(dir),
+		);
+		const id = server.createSession();
+		const events: ServerEvent[] = [];
+		server.subscribe(id, (event) => events.push(event));
+
+		await server.command(id, {
+			type: "login",
+			provider: "fake",
+			authType: "api_key",
+		});
+		await server.command(id, {
+			type: "login",
+			provider: "fake",
+			authType: "api_key",
+		});
+		expect(events).toContainEqual({
+			type: "error",
+			message: "a login is already in progress",
+		});
+		await server.command(id, { type: "auth-cancel" });
+		await until(() =>
+			expect(events).toContainEqual({ type: "auth-cancelled", provider: "fake" }),
+		);
+		expect(server.store.events(id)).toEqual([]);
+	});
+
+	test("does not run slash tool shortcuts without a configured model", async () => {
 		const { server } = harness();
 		const id = server.createSession();
-		await server.command(id, { type: "prompt", text: "/read ../secret" });
-		expect(
-			server.store
-				.events(id)
-				.some(
-					(event) =>
-						event.type === "tool-result" &&
-						event.isError &&
-						event.output.includes("escapes workspace"),
-				),
-		).toBe(true);
+		await server.command(id, { type: "prompt", text: "/read note.txt" });
+		expect(server.store.events(id)).toContainEqual({
+			type: "error",
+			message:
+				"no model configured; use /model",
+		});
 	});
 
 	test("queues a follow-up after completion", async () => {
 		const { server } = harness();
+		(server as unknown as { runtime: { run: () => Promise<void> } }).runtime.run =
+			async () => {};
 		const id = server.createSession();
 		await server.command(id, {
 			type: "follow-up",
@@ -67,6 +559,11 @@ describe("first milestone", () => {
 		expect(
 			server.store.events(id).filter((event) => event.type === "completed"),
 		).toHaveLength(2);
+		expect(
+			server.store.events(id).every(
+				(event) => event.type !== "completed" || event.durationMs !== undefined,
+			),
+		).toBe(true);
 		expect(
 			server.store.events(id).filter((event) => event.type === "command"),
 		).toEqual([
@@ -91,39 +588,6 @@ describe("first milestone", () => {
 		]);
 	});
 
-	test("restarts with steering after aborting foreground work", async () => {
-		const { server } = harness();
-		const id = server.createSession();
-		const running = server.command(id, {
-			type: "prompt",
-			text: "/bash\nsleep 1",
-		});
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		await server.command(id, {
-			type: "steer",
-			id: "steer-1",
-			text: "superseded direction",
-		});
-		await server.command(id, {
-			type: "steer",
-			id: "steer-2",
-			text: "new direction",
-		});
-		await running;
-		expect(
-			server.store.events(id).filter((event) => event.type === "aborted"),
-		).toHaveLength(1);
-		expect(
-			server.store.events(id).filter((event) => event.type === "completed"),
-		).toHaveLength(1);
-		expect(
-			server.store.events(id).filter((event) => event.type === "command"),
-		).toEqual([
-			{ type: "command", id: "steer-1", command: "steer", state: "replaced" },
-			{ type: "command", id: "steer-2", command: "steer", state: "started" },
-		]);
-	});
-
 	test("persists an explicit provider/model selection for resume", async () => {
 		const { dir, server } = harness();
 		const id = server.createSession();
@@ -137,6 +601,8 @@ describe("first milestone", () => {
 			new HarnessServer(
 				new SessionStore(join(dir, "state.sqlite")),
 				dir,
+				undefined,
+				settings(dir),
 			).store.modelConfig(id),
 		).toEqual({
 			provider: "openai-compatible",
@@ -146,12 +612,14 @@ describe("first milestone", () => {
 	});
 
 	test("streams an OpenAI-compatible model through the Pi agent loop and core tools", async () => {
-		process.env.HARNESS_OPENAI_API_KEY = "test";
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
 		let calls = 0;
+		const requests: string[] = [];
 		const provider = Bun.serve({
 			port: 0,
 			fetch: async (request) => {
 				expect(request.headers.get("authorization")).toBe("Bearer test");
+				requests.push(await request.text());
 				calls++;
 				const body =
 					calls === 1
@@ -180,6 +648,11 @@ describe("first milestone", () => {
 		try {
 			const { dir, server } = harness();
 			writeFileSync(join(dir, "note.txt"), "hello");
+			mkdirSync(join(dir, ".harness/skills/review"), { recursive: true });
+			writeFileSync(
+				join(dir, ".harness/skills/review/SKILL.md"),
+				"---\nname: review\ndescription: review instructions\n---\nReview carefully.",
+			);
 			const id = server.createSession();
 			await server.command(id, {
 				type: "configure",
@@ -187,9 +660,13 @@ describe("first milestone", () => {
 				model: "test-model",
 				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
 			});
-			await server.command(id, { type: "prompt", text: "read note.txt" });
+			await server.command(id, {
+				type: "prompt",
+				text: "Please /review read note.txt",
+			});
 			const events = server.store.events(id);
 			expect(calls).toBe(2);
+			expect(requests[0]).toContain("Review carefully.");
 			expect(
 				events.some(
 					(event) => event.type === "assistant-delta" && event.text === "done",
@@ -212,12 +689,167 @@ describe("first milestone", () => {
 			).toBe(true);
 		} finally {
 			provider.stop(true);
-			delete process.env.HARNESS_OPENAI_API_KEY;
+			delete process.env["HARNESS_OPENAI_API_KEY"];
 		}
 	});
 
+	test("drains steering between turns before follow-ups", async () => {
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
+		let calls = 0;
+		let firstRequestStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			firstRequestStarted = resolve;
+		});
+		const provider = Bun.serve({
+			port: 0,
+			fetch: () => {
+				calls++;
+				const response = (id: string, text: string) =>
+					`data: {"id":"${id}","choices":[{"delta":{"content":"${text}"},"finish_reason":null}]}\n\n` +
+					`data: {"id":"${id}","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n` +
+					"data: [DONE]\n\n";
+				if (calls === 1)
+					return new Response(
+						new ReadableStream({
+							start(controller) {
+								firstRequestStarted();
+								setTimeout(() => {
+									controller.enqueue(
+										new TextEncoder().encode(response("first", "first")),
+									);
+									controller.close();
+								}, 30);
+							},
+						}),
+						{ headers: { "content-type": "text/event-stream" } },
+					);
+				return new Response(response(`turn-${calls}`, `turn ${calls}`), {
+					headers: { "content-type": "text/event-stream" },
+				});
+			},
+		});
+		try {
+			const { server } = harness();
+			const id = server.createSession();
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			const running = server.command(id, { type: "prompt", text: "first" });
+			await started;
+			await server.command(id, {
+				type: "follow-up",
+				id: "follow-1",
+				text: "afterwards",
+			});
+			await server.command(id, {
+				type: "steer",
+				id: "steer-1",
+				text: "new direction",
+			});
+			await running;
+			const events = server.store.events(id);
+			expect(calls).toBe(3);
+			expect(events.filter((event) => event.type === "completed")).toHaveLength(
+				1,
+			);
+			expect(
+				events
+					.filter(
+						(event): event is Extract<ServerEvent, { type: "command" }> =>
+							event.type === "command" && event.state === "started",
+					)
+					.map((event) => event.id),
+			).toEqual(["steer-1", "follow-1"]);
+		} finally {
+			provider.stop(true);
+			delete process.env["HARNESS_OPENAI_API_KEY"];
+		}
+	});
+
+	test("steering aborts a running tool turn", async () => {
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
+		let calls = 0;
+		const provider = Bun.serve({
+			port: 0,
+			fetch: () => {
+				calls++;
+				return sseResponse(
+					calls === 1
+						? toolCallChunks("call-wait", "bash", { command: "sleep 5" })
+						: textChunks("redirected"),
+				);
+			},
+		});
+		try {
+			const { server } = harness();
+			const id = server.createSession();
+			let toolStarted!: () => void;
+			const toolCall = new Promise<void>((resolve) => {
+				toolStarted = resolve;
+			});
+			server.subscribe(id, (event) => {
+				if (event.type === "tool-call" && event.name === "bash") toolStarted();
+			});
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			const running = server.command(id, { type: "prompt", text: "wait" });
+			await Promise.race([
+				toolCall,
+				new Promise((_, reject) =>
+					setTimeout(() => reject(new Error("tool did not start")), 1_000),
+				),
+			]);
+			await server.command(id, {
+				type: "steer",
+				id: "steer-1",
+				text: "new direction",
+			});
+			await Promise.race([
+				running,
+				new Promise((_, reject) =>
+					setTimeout(() => reject(new Error("tool steering timed out")), 1_000),
+				),
+			]);
+			expect(calls).toBe(2);
+			expect(
+				server.store.events(id).filter((event) => event.type === "aborted"),
+			).toHaveLength(1);
+		} finally {
+			provider.stop(true);
+			delete process.env["HARNESS_OPENAI_API_KEY"];
+		}
+	});
+
+	test("does not complete or drain follow-ups after a runtime error", async () => {
+		const { server } = harness();
+		let calls = 0;
+		(server as unknown as { runtime: { run: () => Promise<void> } }).runtime.run =
+			async () => {
+				calls++;
+				throw new Error("runtime failed");
+			};
+		const id = server.createSession();
+		await server.command(id, {
+			type: "follow-up",
+			id: "follow-1",
+			text: "after failure",
+		});
+		await server.command(id, { type: "prompt", text: "fail" });
+		expect(calls).toBe(1);
+		expect(
+			server.store.events(id).some((event) => event.type === "completed"),
+		).toBe(false);
+	});
+
 	test("aborts an in-flight OpenAI-compatible Pi request", async () => {
-		process.env.HARNESS_OPENAI_API_KEY = "test";
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
 		let started!: () => void;
 		const requestStarted = new Promise<void>((resolve) => {
 			started = resolve;
@@ -260,7 +892,332 @@ describe("first milestone", () => {
 			).toHaveLength(1);
 		} finally {
 			provider.stop(true);
-			delete process.env.HARNESS_OPENAI_API_KEY;
+			delete process.env["HARNESS_OPENAI_API_KEY"];
 		}
 	});
+	test("rebuilds managed context after restart without losing raw tool history", async () => {
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
+		const bodies: { messages: { role: string; tool_calls?: { id: string }[] }[] }[] =
+			[];
+		let calls = 0;
+		const provider = Bun.serve({
+			port: 0,
+			fetch: async (request) => {
+				bodies.push(
+					(await request.json()) as {
+						messages: { role: string; tool_calls?: { id: string }[] }[];
+					},
+				);
+				calls++;
+				const body =
+					calls === 1
+						? [
+								'data: {"id":"one","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read","type":"function","function":{"name":"read","arguments":"{\\"path\\":\\"note.txt\\"}"}}]},"finish_reason":null}]}\n\n',
+								'data: {"id":"one","choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}\n\n',
+								"data: [DONE]\n\n",
+							]
+						: [
+								'data: {"id":"done","choices":[{"delta":{"content":"done"},"finish_reason":null}]}\n\n',
+								'data: {"id":"done","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}\n\n',
+								"data: [DONE]\n\n",
+							];
+				return new Response(
+					new ReadableStream({
+						start(controller) {
+							for (const chunk of body)
+								controller.enqueue(new TextEncoder().encode(chunk));
+							controller.close();
+						},
+					}),
+					{ headers: { "content-type": "text/event-stream" } },
+				);
+			},
+		});
+		try {
+			const output = "x".repeat(10_000);
+			const { dir, server } = harness(1_500);
+			writeFileSync(join(dir, "note.txt"), output);
+			const id = server.createSession();
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			await server.command(id, { type: "prompt", text: "read note.txt" });
+			const rawTool = server.store
+				.contextItems(id)
+				.find((item) => item.kind === "tool-result");
+			expect(rawTool?.payload).toMatchObject({ role: "toolResult" });
+			expect(JSON.stringify(rawTool?.payload)).toContain("observation://obs-");
+			expect(JSON.stringify(rawTool?.payload).length).toBeLessThan(output.length);
+			expect(
+				server.store.contextItems(id).some(
+					(item) => item.kind === "observation" && item.payload === output,
+				),
+			).toBe(true);
+
+			const restarted = new HarnessServer(
+				new SessionStore(join(dir, "state.sqlite")),
+				dir,
+				undefined,
+				undefined,
+				{ contextBudget: 1_500 },
+			);
+			await restarted.command(id, {
+				type: "prompt",
+				text: "continue ".repeat(250),
+			});
+
+			expect(calls).toBe(3);
+			expect(JSON.stringify(bodies[2])).not.toContain(output);
+			expect(JSON.stringify(bodies[2])).toContain("Earlier read output was compacted");
+			expect(JSON.stringify(bodies[2])).toContain("observation://obs-");
+			for (const body of bodies)
+				for (const call of body.messages.flatMap(
+					(message) => message.tool_calls ?? [],
+				))
+					expect(
+						body.messages.some(
+							(message) =>
+								message.role === "tool" &&
+								(message as { tool_call_id?: string }).tool_call_id === call.id,
+						),
+					).toBe(true);
+		} finally {
+			provider.stop(true);
+			delete process.env["HARNESS_OPENAI_API_KEY"];
+		}
+	});
+
+	test("pins context and recalls an exact archived observation slice", async () => {
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
+		const bodies: { messages: { role: string; content?: string; tool_call_id?: string }[] }[] =
+			[];
+		let calls = 0;
+		const provider = Bun.serve({
+			port: 0,
+			fetch: async (request) => {
+				const body = (await request.json()) as {
+					messages: { role: string; content?: string; tool_call_id?: string }[];
+				};
+				bodies.push(body);
+				calls++;
+				const chunks =
+					calls === 1
+						? toolCallChunks("call-pin", "pin_context", {
+								kind: "constraint",
+								text: "keep this needle",
+							})
+						: calls === 2
+							? toolCallChunks("call-read", "read", { path: "note.txt" })
+							: calls === 3
+								? toolCallChunks("call-recall", "recall_observation", {
+										reference: `${observationReference(body, "call-read")}?offset=10&limit=5`,
+									})
+								: doneChunks();
+				return sseResponse(chunks);
+			},
+		});
+		try {
+			const { dir, server } = harness();
+			writeFileSync(join(dir, "note.txt"), `0123456789ABCDE${"x".repeat(20_000)}`);
+			const id = server.createSession();
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			await server.command(id, { type: "prompt", text: "pin, read, then recall" });
+
+			expect(calls).toBe(4);
+			expect(JSON.stringify(bodies[1])).toContain("keep this needle");
+			expect(
+			bodies[2]!.messages.find(
+				(message) => message.tool_call_id === "call-read",
+			)?.content?.length,
+		).toBeLessThanOrEqual(16_000);
+			expect(
+			bodies[3]!.messages.find(
+				(message) => message.tool_call_id === "call-recall",
+			)?.content,
+		).toBe("ABCDE");
+			expect(
+			server.store.contextItems(id).some(
+				(item) =>
+					item.kind === "pinned-note" &&
+					JSON.stringify(item.payload).includes("keep this needle"),
+			),
+		).toBe(true);
+		} finally {
+			provider.stop(true);
+			delete process.env["HARNESS_OPENAI_API_KEY"];
+		}
+	});
+
+	test("uses episode boundaries and preserves exploration conclusions after eviction", async () => {
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
+		const bodies: {
+			messages: { role: string; content?: string; tool_call_id?: string }[];
+		}[] = [];
+		let calls = 0;
+		const provider = Bun.serve({
+			port: 0,
+			fetch: async (request) => {
+				const body = (await request.json()) as (typeof bodies)[number];
+				bodies.push(body);
+				calls++;
+				const chunks =
+					calls === 1
+						? toolCallChunks("episode-explore", "episode", {
+								action: "start",
+								name: "inspect-auth",
+								kind: "exploration",
+							})
+						: calls === 2
+							? toolCallChunks("read-auth", "read", { path: "note.txt" })
+							: calls === 3
+								? toolCallChunks("episode-end-explore", "episode", {
+										action: "end",
+										conclusion: "JWT validation happens before routing.",
+									})
+								: calls === 4
+									? toolCallChunks("episode-action", "episode", {
+											action: "start",
+											name: "apply-auth-fix",
+											kind: "action",
+											dependencies: [
+												episodeId(body, "episode-explore"),
+											],
+										})
+									: calls === 5
+										? toolCallChunks("write-fix", "write", {
+												path: "changed.txt",
+												content: "done",
+											})
+										: calls === 6
+											? toolCallChunks("episode-end-action", "episode", {
+													action: "end",
+												})
+											: doneChunks();
+				return sseResponse(chunks);
+			},
+		});
+		try {
+			const { dir, server } = harness(1_600);
+			writeFileSync(join(dir, "note.txt"), "auth uses JWT");
+			const id = server.createSession();
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			await server.command(id, { type: "prompt", text: "inspect then fix auth" });
+			await server.command(id, {
+				type: "prompt",
+				text: "follow-up ".repeat(200),
+			});
+
+			expect(calls).toBe(8);
+			expect(JSON.stringify(bodies.at(-1))).toContain(
+				"JWT validation happens before routing.",
+			);
+			expect(server.contextStatus(id).episodes).toMatchObject([
+				{ name: "inspect-auth", state: "archived" },
+				{ name: "apply-auth-fix", state: "archived" },
+			]);
+			expect(JSON.stringify(server.store.contextItems(id))).toContain(
+				"auth uses JWT",
+			);
+		} finally {
+			provider.stop(true);
+			delete process.env["HARNESS_OPENAI_API_KEY"];
+		}
+	});
+
+	test("rejects an over-budget prompt before calling the provider", async () => {
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
+		let calls = 0;
+		const provider = Bun.serve({
+			port: 0,
+			fetch: () => {
+				calls++;
+				return new Response("unexpected provider request", { status: 500 });
+			},
+		});
+		try {
+			const { server } = harness(500);
+			const id = server.createSession();
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			await server.command(id, {
+				type: "prompt",
+				text: "too much context ".repeat(500),
+			});
+			expect(calls).toBe(0);
+			expect(
+				server.store.contextItems(id).filter((item) => item.kind === "user"),
+			).toHaveLength(0);
+			expect(
+				server.store.events(id).some(
+					(event) =>
+						event.type === "error" &&
+						event.message.includes("Context budget cannot be satisfied"),
+				),
+			).toBe(true);
+		} finally {
+			provider.stop(true);
+			delete process.env["HARNESS_OPENAI_API_KEY"];
+		}
+	});
+
+	test("compacts assistant turns without removing user-authored messages", async () => {
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
+		const bodies: unknown[] = [];
+		let calls = 0;
+		const provider = Bun.serve({
+			port: 0,
+			fetch: async (request) => {
+				bodies.push(await request.json());
+				calls++;
+				return sseResponse(textChunks(`reply-${calls}-${"x".repeat(2_000)}`));
+			},
+		});
+		try {
+			const { server } = harness(1_200);
+			const id = server.createSession();
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			for (let index = 0; index < 5; index++)
+				await server.command(id, {
+					type: "prompt",
+					text: index === 0 ? "durable objective" : `follow-up ${index}`,
+				});
+
+			expect(calls).toBe(5);
+			expect(JSON.stringify(bodies.at(-1))).toContain("durable objective");
+			expect(JSON.stringify(bodies.at(-1))).toContain("follow-up 4");
+			expect(JSON.stringify(bodies.at(-1))).not.toContain("reply-1-");
+			expect(JSON.stringify(server.store.contextItems(id))).toContain("reply-1-");
+			expect(
+				server.store
+					.contextItems(id)
+					.filter((item) => item.kind === "user" && item.lifecycle === "pinned"),
+			).toHaveLength(5);
+		} finally {
+			provider.stop(true);
+			delete process.env["HARNESS_OPENAI_API_KEY"];
+		}
+	});
+
 });
