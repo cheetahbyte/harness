@@ -1,6 +1,7 @@
 {
 	"name": "harnez",
 	"version": "0.1.4",
+	"license": "MIT",
 	"workspaces": [
 		"packages/*"
 	],
