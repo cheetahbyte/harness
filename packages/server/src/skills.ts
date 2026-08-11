@@ -7,7 +7,7 @@ import {
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 
-export function skillRoots(workspace: string, home = homedir()): string[] {
+function skillRoots(workspace: string, home = homedir()): string[] {
 	return [
 		join(workspace, ".harness/skills"),
 		join(workspace, ".agents/skills"),
