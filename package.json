@@ -1,9 +1,16 @@
 {
-	"name": "harness",
-	"private": true,
+	"name": "harnez",
+	"version": "0.1.0",
 	"workspaces": [
 		"packages/*"
 	],
+	"files": [
+		"packages",
+		"README.md"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
 	"scripts": {
 		"dev": "bun --watch packages/server/src/index.ts",
 		"server": "bun packages/server/src/index.ts",
