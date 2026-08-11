@@ -931,8 +931,6 @@ describe("ContextManager", () => {
 		store.db.close();
 	});
 
-	// ~200 individual fsync'd SQLite transactions can take multi-second time
-	// on slower CI disks, so this test gets more headroom than the 5s default.
 	test(
 		"keeps a long tool run below budget without deleting raw history",
 		() => {
@@ -948,33 +946,35 @@ describe("ContextManager", () => {
 				lifecycle: "pinned",
 				reason: "user objective",
 			});
-			for (let index = 0; index < 100; index++) {
-				const groupId = `group-${index}`;
-				manager.record({
-					sessionId,
-					kind: "assistant",
-					payload: { role: "assistant", content: `call ${index}` },
-					tokenCost: 20,
-					groupId,
-					lifecycle: "retained",
-					reason: "completed tool call",
-				});
-				manager.record({
-					sessionId,
-					kind: "tool-result",
-					payload: { role: "toolResult", content: raw },
-					compactPayload: {
-						role: "user",
-						content: `observation://obs-${index}`,
-					},
-					tokenCost: 4_000,
-					compactTokenCost: 5,
-					groupId,
-					lifecycle: "retained",
-					reason: "completed tool result",
-					source: { toolCallId: `call-${index}`, toolName: "read" },
-				});
-			}
+			store.db.transaction(() => {
+				for (let index = 0; index < 100; index++) {
+					const groupId = `group-${index}`;
+					manager.record({
+						sessionId,
+						kind: "assistant",
+						payload: { role: "assistant", content: `call ${index}` },
+						tokenCost: 20,
+						groupId,
+						lifecycle: "retained",
+						reason: "completed tool call",
+					});
+					manager.record({
+						sessionId,
+						kind: "tool-result",
+						payload: { role: "toolResult", content: raw },
+						compactPayload: {
+							role: "user",
+							content: `observation://obs-${index}`,
+						},
+						tokenCost: 4_000,
+						compactTokenCost: 5,
+						groupId,
+						lifecycle: "retained",
+						reason: "completed tool result",
+						source: { toolCallId: `call-${index}`, toolName: "read" },
+					});
+				}
+			})();
 
 			const assembly = manager.assemble(sessionId, {
 				budget: 2_000,

@@ -13,6 +13,12 @@
 		"packages",
 		"README.md"
 	],
+	"knip": {
+		"project": [
+			"**/*.{js,mjs,cjs,jsx,ts,tsx,mts,cts}!",
+			"!docs/**"
+		]
+	},
 	"publishConfig": {
 		"access": "public"
 	},
@@ -23,6 +29,7 @@
 		"tui": "bun packages/tui/src/index.ts",
 		"test": "bun test",
 		"check": "biome check .",
+		"prepare": "git config core.hooksPath .githooks",
 		"knip": "knip-bun",
 		"typecheck": "bunx tsc --noEmit"
 	},
