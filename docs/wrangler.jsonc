@@ -1,7 +1,7 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "harnez-docs",
-  "main": "@tanstack/solid-start/server-entry",
-  "compatibility_date": "2026-08-11",
-  "compatibility_flags": ["nodejs_compat"]
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "harnez-docs",
+	"main": "@tanstack/solid-start/server-entry",
+	"compatibility_date": "2026-08-11",
+	"compatibility_flags": ["nodejs_compat"]
 }

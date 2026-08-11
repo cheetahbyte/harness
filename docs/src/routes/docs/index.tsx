@@ -1,15 +1,16 @@
-import { createFileRoute } from '@tanstack/solid-router'
+import { createFileRoute } from "@tanstack/solid-router";
 
-import { DocsArticle } from '../../content/docs/DocsArticle'
-import { getDocPage } from '../../content/docs/manifest'
+import { DocsArticle } from "../../content/docs/DocsArticle";
+import { getDocPage } from "../../content/docs/manifest";
 
-export const Route = createFileRoute('/docs/')({
-  head: () => ({ meta: [{ title: 'Introduction - harnez docs' }] }),
-  component: DocsIndex,
-})
+export const Route = createFileRoute("/docs/")({
+	head: () => ({ meta: [{ title: "Introduction - harnez docs" }] }),
+	component: DocsIndex,
+});
 
-const page = getDocPage('introduction')!
+const page = getDocPage("introduction");
 
 function DocsIndex() {
-  return <DocsArticle page={page} />
+	if (!page) throw new Error("Introduction page is missing");
+	return <DocsArticle page={page} />;
 }
