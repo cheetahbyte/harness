@@ -19,7 +19,9 @@ export type StreamOptions = {
 
 export class HarnessClient {
 	constructor(
-		readonly base = process.env["HARNESS_URL"] ?? "http://localhost:7432",
+		readonly base = process.env["HARNEZ_URL"] ??
+			process.env["HARNESS_URL"] ??
+			"http://127.0.0.1:7432",
 	) {}
 
 	async createSession(workspace = process.cwd()): Promise<string> {

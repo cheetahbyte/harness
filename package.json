@@ -1,6 +1,9 @@
 {
 	"name": "harnez",
 	"version": "0.1.4",
+	"bin": {
+		"harnez": "bin/harnez.js"
+	},
 	"license": "MIT",
 	"workspaces": [
 		"packages/*"
@@ -10,7 +13,7 @@
 		"url": "https://github.com/cheetahbyte/harnez.git"
 	},
 	"files": [
-		"packages",
+		"bin",
 		"README.md"
 	],
 	"knip": {
@@ -27,6 +30,8 @@
 		"server": "bun packages/server/src/index.ts",
 		"auth": "bun packages/server/src/auth.ts",
 		"tui": "bun packages/tui/src/index.ts",
+		"cli": "bun packages/cli/src/index.ts",
+		"build:binary": "bun build packages/cli/src/index.ts --compile --outfile dist/harnez",
 		"test": "bun test",
 		"check": "biome check .",
 		"prepare": "git config core.hooksPath .githooks",

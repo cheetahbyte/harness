@@ -33,6 +33,24 @@ async function readLines(
 }
 
 describe("HTTP event stream", () => {
+	test("reports its Harnez health", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
+		paths.push(dir);
+		const server = serveHarness({
+			port: 0,
+			workspace: dir,
+			databasePath: join(dir, "state.sqlite"),
+		});
+		try {
+			const base = server.url.toString().replace(/\/$/, "");
+			const health = await fetch(`${base}/health`);
+			expect(health.status).toBe(200);
+			expect(await health.json()).toEqual({ name: "harnez", pid: process.pid });
+		} finally {
+			server.stop(true);
+		}
+	});
+
 	test("creates a session in its requested workspace", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
 		paths.push(dir);

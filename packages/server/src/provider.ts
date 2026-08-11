@@ -153,6 +153,7 @@ export function providerModels(
 						resolve: async ({ ctx, credential }) => {
 							const apiKey =
 								credential?.key ??
+								(await ctx.env("HARNEZ_OPENAI_API_KEY")) ??
 								(await ctx.env("HARNESS_OPENAI_API_KEY")) ??
 								(await ctx.env("OPENAI_API_KEY"));
 							return apiKey ? { auth: { apiKey } } : undefined;

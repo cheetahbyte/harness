@@ -12,13 +12,30 @@ harnez
 ```
 
 Starts the server if one isn't already running and opens the TUI against it.
-The TUI and server are separate, so during development you can run them
-independently:
+
+## Resuming a session
 
 ```text
-bun run server   # HARNEZ_PORT, default 7432
-bun run tui      # HARNEZ_URL, default http://localhost:7432
+harnez --resume <session-id>
 ```
+
+Resumes the specified session.
+
+## Server commands
+
+```text
+harnez server start
+harnez server status
+harnez server stop
+harnez server run
+```
+
+| Command | Description |
+| --- | --- |
+| `harnez server start` | Starts the local server if it is not already running. |
+| `harnez server status` | Shows whether the local server is running. |
+| `harnez server stop` | Stops the local server. |
+| `harnez server run` | Runs the local server in the foreground. |
 
 ## Slash commands
 

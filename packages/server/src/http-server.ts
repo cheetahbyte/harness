@@ -28,6 +28,7 @@ export function serveHarness(
 			: { contextBudget: options.contextBudget },
 	);
 	return Bun.serve({
+		hostname: "127.0.0.1",
 		port: options.port ?? 7432,
 		idleTimeout: 0,
 		fetch: (request) => fetchHarness(harness, request),
@@ -44,6 +45,8 @@ async function fetchHarness(
 		{ requestId, method: request.method, path: url.pathname },
 		"http request",
 	);
+	if (request.method === "GET" && url.pathname === "/health")
+		return Response.json({ name: "harnez", pid: process.pid });
 	if (request.method === "POST" && url.pathname === "/sessions")
 		return createSession(harness, request);
 	const match = url.pathname.match(

@@ -15,8 +15,83 @@ jobs:
   lint:
     uses: ./.github/workflows/lint.yml
 
-  publish:
+  build:
     needs: [ci, lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-14
+            machine: arm64
+            compile_target: bun-darwin-arm64
+          - target: darwin-x64
+            runner: macos-15-intel
+            machine: x86_64
+            compile_target: bun-darwin-x64-baseline
+          - target: linux-x64
+            runner: ubuntu-22.04
+            machine: x86_64
+            compile_target: bun-linux-x64-baseline
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - run: bun install --frozen-lockfile
+
+      - name: Verify native runner
+        run: test "$(uname -m)" = "${{ matrix.machine }}"
+
+      - run: >-
+          bun build packages/cli/src/index.ts
+          --compile
+          --target=${{ matrix.compile_target }}
+          --outfile dist/harnez
+
+      - name: Smoke test server and TUI
+        run: |
+          ./dist/harnez server run >server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 50); do
+            if curl --fail --silent http://127.0.0.1:7432/health; then
+              break
+            fi
+            sleep 0.1
+          done
+          curl --fail --silent http://127.0.0.1:7432/health | grep '"name":"harnez"'
+          if [ "$RUNNER_OS" = Linux ]; then
+            script -q -c ./dist/harnez /dev/null >tui.log 2>&1 &
+          else
+            script -q /dev/null ./dist/harnez >tui.log 2>&1 &
+          fi
+          tui_pid=$!
+          sleep 2
+          if ! kill -0 "$tui_pid" 2>/dev/null; then
+            cat tui.log
+            exit 1
+          fi
+          kill "$tui_pid" || true
+          wait "$tui_pid" || true
+
+      - run: >-
+          bun scripts/stage-npm-package.ts
+          --target ${{ matrix.target }}
+          --binary dist/harnez
+          --output npm-stage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-${{ matrix.target }}
+          path: npm-stage/vendor/${{ matrix.target }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -24,21 +99,40 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Verify tag matches package.json version
-        run: |
-          PKG_VERSION="v$(node -p "require('./package.json').version")"
-          TAG="${GITHUB_REF#refs/tags/}"
-          if [ "$PKG_VERSION" != "$TAG" ]; then
-            echo "Tag $TAG does not match package.json version ($PKG_VERSION)"
-            exit 1
-          fi
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
+          node-version: 22
           registry-url: https://registry.npmjs.org
 
-      # Trusted Publishing needs npm >=11.5.1; the Node 26 bundle ships older.
-      - run: npm install -g npm@latest
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: npm-*
+          path: npm-platform
 
-      - run: npm publish
+      - run: find npm-platform -path '*/bin/harnez' -exec chmod +x {} +
+
+      - name: Verify tag matches package.json version
+        run: |
+          package_version="v$(node -p "require('./package.json').version")"
+          tag="${GITHUB_REF#refs/tags/}"
+          test "$package_version" = "$tag"
+
+      # Trusted publishing needs npm >=11.5.1.
+      - run: npm install --global npm@latest
+
+      - run: npm publish npm-platform/npm-darwin-arm64 --tag darwin-arm64
+      - run: npm publish npm-platform/npm-darwin-x64 --tag darwin-x64
+      - run: npm publish npm-platform/npm-linux-x64 --tag linux-x64
+
+      - run: >-
+          bun scripts/stage-npm-package.ts
+          --target darwin-arm64
+          --target darwin-x64
+          --target linux-x64
+          --output npm-root
+
+      - run: npm publish npm-root --tag latest

@@ -47,7 +47,9 @@ export type WizardState =
 
 /** Projects protocol events for display; it does not own runtime or session behavior. */
 export function createTuiStore(sessionId: string, pwd = process.cwd()) {
-	const showStatus = process.env["HARNESS_SHOW_STATUS"] === "1";
+	const showStatus =
+		(process.env["HARNEZ_SHOW_STATUS"] ??
+			process.env["HARNESS_SHOW_STATUS"]) === "1";
 	return createStore<TuiState>((set) => {
 		const append = (entry: TranscriptEntry) =>
 			set((state) => ({ entries: [...finishActive(state.entries), entry] }));

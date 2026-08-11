@@ -14,6 +14,9 @@ npm install -g harnez
 This installs the `harnez` binary, which starts (or attaches to) the local
 server and opens the TUI.
 
+Bun is not required for an npm installation. Initial supported platforms are
+macOS (Apple Silicon and Intel) and Linux x64.
+
 ## From source
 
 Harnez runs on [Bun](https://bun.sh). Clone the repository and install
@@ -25,24 +28,11 @@ cd harnez
 bun install
 ```
 
-Run the pieces directly during development:
+Use the CLI during development:
 
 ```text
-bun run dev     # server, restarts on change
-bun run server  # server only
-bun run tui     # terminal UI only
+bun run cli
 ```
 
-> [!TIP] Link the binary locally
-> Run `bun link` from the repository root to make the `harnez` command
-> available globally while you work on it.
-
-## Verifying the install
-
-```text
-harnez --version
-```
-
-If this prints a version number, the binary is on your `PATH` and you're
-ready to log in. See [Configuration](/docs/configuration) to set up a
-provider.
+See [CLI reference](/docs/cli-reference) for starting, stopping, and resuming
+sessions. See [Configuration](/docs/configuration) to set up a provider.
