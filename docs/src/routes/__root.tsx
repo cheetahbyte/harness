@@ -22,7 +22,7 @@ export const Route = createRootRouteWithContext()({
       {
         name: 'description',
         content:
-          'A minimal harness for building and running coding agents. No dashboard, no ceremony — a server, a TUI, and an agent loop.',
+          'A minimal harness for building and running coding agents.',
       },
     ],
     links: [{ rel: 'stylesheet', href: styleCss }],
