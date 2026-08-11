@@ -14,10 +14,10 @@ export class FooterView {
 			flexDirection: "row",
 			gap: 2,
 		});
-    this.modelLabel = new ModelView(renderer);
-    this.pwdLabel = new TextRenderable(renderer, {
-        content: "",
-			fg: "#cdd6f4"
+		this.modelLabel = new ModelView(renderer);
+		this.pwdLabel = new TextRenderable(renderer, {
+			content: "",
+			fg: "#cdd6f4",
 		});
 		this.root.add(this.pwdLabel);
 		this.root.add(this.modelLabel.box);

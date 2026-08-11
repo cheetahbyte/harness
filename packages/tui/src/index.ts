@@ -1,4 +1,5 @@
 import { createCliRenderer } from "@opentui/core";
+import { abortableSleep } from "../../shared/src/abortable-sleep";
 import { TuiApp } from "./app";
 import { HarnessClient } from "./client";
 import { createTuiStore } from "./store";
@@ -14,22 +15,6 @@ const renderer = await createCliRenderer({ exitOnCtrlC: true, targetFps: 30 });
 const app = new TuiApp(renderer, store, (command) =>
 	client.send(sessionId, command),
 );
-
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-	return new Promise((resolve) => {
-		if (signal.aborted) return resolve();
-		const timer = setTimeout(resolve, ms);
-		signal.addEventListener(
-			"abort",
-			() => {
-				clearTimeout(timer);
-				resolve();
-			},
-			{ once: true },
-		);
-	});
-}
-
 /**
  * The event stream carries every bit of agent output, so a drop must not be
  * terminal. Reconnect with backoff, resuming after the last cursor applied so
@@ -49,7 +34,9 @@ async function streamWithReconnect(): Promise<void> {
 				},
 				onConnected: () => {
 					attempt = 0;
-					void client.send(sessionId, { type: "list-skills" });
+					void client
+						.send(sessionId, { type: "list-skills" })
+						.catch(() => undefined);
 				},
 				from: cursor,
 			});
@@ -64,7 +51,7 @@ async function streamWithReconnect(): Promise<void> {
 				});
 		}
 		if (controller.signal.aborted) return;
-		await sleep(
+		await abortableSleep(
 			Math.min(RECONNECT_BASE_DELAY_MS * 2 ** attempt, RECONNECT_MAX_DELAY_MS),
 			controller.signal,
 		);

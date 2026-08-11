@@ -177,6 +177,39 @@ describe("ContextManager", () => {
 		store.db.close();
 	});
 
+	test("uses the cached active episode while recording", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.startEpisode(sessionId, { name: "inspect", kind: "exploration" });
+		const episodeEvents = store.episodeEvents.bind(store);
+		let reads = 0;
+		store.episodeEvents = (id) => {
+			reads++;
+			return episodeEvents(id);
+		};
+
+		manager.record({
+			sessionId,
+			kind: "assistant",
+			payload: { role: "assistant", content: "first" },
+			tokenCost: 1,
+			lifecycle: "active",
+			reason: "work",
+		});
+		manager.record({
+			sessionId,
+			kind: "assistant",
+			payload: { role: "assistant", content: "second" },
+			tokenCost: 1,
+			lifecycle: "active",
+			reason: "work",
+		});
+
+		expect(reads).toBe(0);
+		store.db.close();
+	});
+
 	test("retains only tool results from an older turn", () => {
 		const store = new SessionStore(storePath());
 		const sessionId = store.create();
@@ -439,7 +472,7 @@ describe("ContextManager", () => {
 		store.db.close();
 	});
 
-	test("evicts successful tool results in deterministic priority order", () => {
+	test("evicts successful tool results by persisted priority metadata", () => {
 		const store = new SessionStore(storePath());
 		const sessionId = store.create();
 		const manager = new ContextManager(store);
@@ -460,7 +493,7 @@ describe("ContextManager", () => {
 			compactTokenCost: 10,
 			lifecycle: "retained",
 			reason: "consumed",
-			source: { toolName: "bash" },
+			source: { toolName: "bash", evictionPriority: "late" },
 		});
 		const read = manager.record({
 			sessionId,
@@ -471,7 +504,7 @@ describe("ContextManager", () => {
 			compactTokenCost: 10,
 			lifecycle: "retained",
 			reason: "consumed",
-			source: { toolName: "read" },
+			source: { toolName: "read", evictionPriority: "normal" },
 		});
 		const write = manager.record({
 			sessionId,
@@ -482,7 +515,7 @@ describe("ContextManager", () => {
 			compactTokenCost: 10,
 			lifecycle: "retained",
 			reason: "consumed",
-			source: { toolName: "write" },
+			source: { toolName: "write", evictionPriority: "early" },
 		});
 
 		const assembly = manager.assemble(sessionId, {
@@ -828,6 +861,20 @@ describe("ContextManager", () => {
 				target: 2,
 				overheadTokens: 0,
 			}),
+		).toThrow(ContextBudgetError);
+		expect(store.contextItems(sessionId)).toEqual(before);
+		expect(() =>
+			manager.record(
+				{
+					sessionId,
+					kind: "user",
+					payload: { role: "user", content: "too much" },
+					tokenCost: 2,
+					lifecycle: "pinned",
+					reason: "user input",
+				},
+				{ budget: 2, target: 2, overheadTokens: 0 },
+			),
 		).toThrow(ContextBudgetError);
 		expect(store.contextItems(sessionId)).toEqual(before);
 		expect(() =>

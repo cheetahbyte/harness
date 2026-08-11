@@ -2,10 +2,18 @@ import { relative, resolve } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { TSchema } from "@earendil-works/pi-ai";
 
+const writeLocks = new Map<string, Promise<void>>();
+
+export type ToolContextMetadata = {
+	toolName: string;
+	evictionPriority: "early" | "normal" | "late";
+};
+
 export abstract class WorkspaceTool {
 	abstract readonly name: string;
 	abstract readonly description: string;
 	abstract readonly schema: TSchema;
+	readonly evictionPriority: ToolContextMetadata["evictionPriority"] = "normal";
 
 	constructor(protected readonly workspace: string) {}
 
@@ -16,6 +24,25 @@ export abstract class WorkspaceTool {
 		if (relative(this.workspace, absolute).startsWith(".."))
 			throw new Error("path escapes workspace");
 		return absolute;
+	}
+
+	protected async withWriteLock<T>(
+		path: string,
+		operation: () => Promise<T>,
+	): Promise<T> {
+		const previous = writeLocks.get(path) ?? Promise.resolve();
+		let release!: () => void;
+		const current = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		writeLocks.set(path, current);
+		await previous;
+		try {
+			return await operation();
+		} finally {
+			release();
+			if (writeLocks.get(path) === current) writeLocks.delete(path);
+		}
 	}
 
 	abstract execute(

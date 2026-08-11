@@ -3,6 +3,7 @@ import { WorkspaceTool } from "./tool";
 
 export class BashTool extends WorkspaceTool {
 	readonly name = "bash";
+	override readonly evictionPriority = "late" as const;
 	readonly description = "Run a shell command in the workspace.";
 	readonly schema = Type.Object({ command: Type.String({ minLength: 1 }) });
 

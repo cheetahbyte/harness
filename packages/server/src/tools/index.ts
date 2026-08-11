@@ -2,7 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { BashTool } from "./bash";
 import { EditTool } from "./edit";
 import { ReadTool } from "./read";
-import type { WorkspaceTool } from "./tool";
+import type { ToolContextMetadata, WorkspaceTool } from "./tool";
 import { WriteTool } from "./write";
 
 export class CoreTools {
@@ -19,6 +19,14 @@ export class CoreTools {
 
 	agentTools(): AgentTool[] {
 		return this.tools.map((tool) => tool.agentTool());
+	}
+
+	contextMetadata(name: string): ToolContextMetadata {
+		const tool = this.tools.find((candidate) => candidate.name === name);
+		return {
+			toolName: name,
+			evictionPriority: tool?.evictionPriority ?? "normal",
+		};
 	}
 
 	async execute(

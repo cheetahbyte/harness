@@ -297,6 +297,7 @@ export class HarnessServer {
 					type: "status",
 					text: "steering after current turn",
 				});
+				session.running.abort();
 				return;
 			}
 			await this.run(id, pending);
@@ -536,6 +537,8 @@ export class HarnessServer {
 				type: "error",
 				message: error instanceof Error ? error.message : String(error),
 			});
+			delete session.running;
+			return;
 		}
 		delete session.running;
 		if (controller.signal.aborted) {

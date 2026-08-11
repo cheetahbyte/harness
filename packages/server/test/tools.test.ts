@@ -21,6 +21,10 @@ test("registers class-backed tools and runs their file operations", async () => 
 		"edit",
 		"bash",
 	]);
+	expect(tools.contextMetadata("write")).toEqual({
+		toolName: "write",
+		evictionPriority: "early",
+	});
 	await tools.execute("write", { path: "note.txt", content: "before" }, signal);
 	await tools.execute(
 		"edit",
@@ -37,4 +41,26 @@ test("registers class-backed tools and runs their file operations", async () => 
 		),
 	).rejects.toThrow("oldText must occur exactly once");
 	expect(readFileSync(join(workspace, "note.txt"), "utf8")).toBe("after");
+});
+
+test("serializes concurrent edits to the same file", async () => {
+	const workspace = mkdtempSync(join(tmpdir(), "harness-tools-"));
+	paths.push(workspace);
+	const signal = new AbortController().signal;
+	const source = Array.from({ length: 20 }, (_, index) => `item-${index};`).join("");
+	writeFileSync(join(workspace, "note.txt"), source);
+
+	await Promise.all(
+		Array.from({ length: 20 }, (_, index) =>
+			new CoreTools(workspace).execute(
+				"edit",
+				{ path: "note.txt", oldText: `item-${index};`, newText: `done-${index};` },
+				signal,
+			),
+		),
+	);
+
+	expect(readFileSync(join(workspace, "note.txt"), "utf8")).toBe(
+		Array.from({ length: 20 }, (_, index) => `done-${index};`).join(""),
+	);
 });

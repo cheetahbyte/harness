@@ -15,11 +15,13 @@ import {
 	type Models,
 	Type,
 } from "@earendil-works/pi-ai";
+import { abortableSleep } from "../../shared/src/abortable-sleep";
 import type { ModelConfig, ServerEvent } from "../../shared/src/protocol";
 import type { ContextManager } from "./context-manager";
 import { log } from "./logger";
 import { HarnessProviderError, providerModels } from "./provider";
 import type { SessionStore } from "./session-store";
+import { tokenCost } from "./token-cost";
 import type { CoreTools } from "./tools";
 
 interface AgentRuntime {
@@ -44,6 +46,7 @@ type QueuedMessage = QueueCallbacks & { message: object };
 type AgentEntry = {
 	key: string;
 	agent: Agent;
+	tools: CoreTools;
 	contextError: Error | undefined;
 	promptGroupId: string | undefined;
 	preRecorded: Set<string>;
@@ -61,7 +64,7 @@ const RECALL_DESCRIPTION =
 const PIN_DESCRIPTION = "Keep a short instruction in all future model context.";
 const EPISODE_DESCRIPTION =
 	"Start or end one semantic work episode. Actions depend on completed exploration IDs.";
-const TOOL_OVERHEAD_TOKENS = estimateTokens({
+const TOOL_OVERHEAD_TOKENS = tokenCost({
 	tools: [
 		...(["read", "write", "edit", "bash"] as const).map((name) => ({
 			name,
@@ -161,7 +164,11 @@ export class HarnessAgentRuntime implements AgentRuntime {
 
 	steer(sessionId: string, text: string, callbacks: QueueCallbacks): boolean {
 		const entry = this.agents.get(sessionId);
-		if (!entry?.agent.state.isStreaming) return false;
+		if (
+			!entry?.agent.state.isStreaming ||
+			entry.agent.state.pendingToolCalls.size
+		)
+			return false;
 		if (entry.steering) entry.steering.onReplaced?.();
 		entry.agent.clearSteeringQueue();
 		const queued = this.queue(text, callbacks);
@@ -212,6 +219,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 		const entry: AgentEntry = {
 			key,
 			agent: undefined as unknown as Agent,
+			tools,
 			contextError: undefined,
 			promptGroupId: undefined,
 			preRecorded: new Set(),
@@ -282,7 +290,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 						output,
 						{
 							toolCallId: id,
-							toolName: tool.name,
+							...tools.contextMetadata(tool.name),
 						},
 					);
 					return {
@@ -450,7 +458,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 		entry: AgentEntry,
 		message: AgentMessage,
 	): void {
-		const tokenCost = estimateTokens(message);
+		const messageTokenCost = tokenCost(message, 1);
 		if (message.role === "assistant") {
 			const calls = message.content.filter(
 				(content) => content.type === "toolCall",
@@ -462,7 +470,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 				sessionId,
 				kind: "assistant",
 				payload: message,
-				tokenCost,
+				tokenCost: messageTokenCost,
 				lifecycle: "active",
 				reason: "Pi assistant message",
 				...(groupId ? { groupId } : {}),
@@ -472,7 +480,11 @@ export class HarnessAgentRuntime implements AgentRuntime {
 		if (message.role === "toolResult") {
 			const groupId = entry.toolGroups.get(message.toolCallId);
 			entry.toolGroups.delete(message.toolCallId);
-			const payload = this.externalizeToolResult(sessionId, message);
+			const payload = this.externalizeToolResult(
+				sessionId,
+				message,
+				entry.tools,
+			);
 			const archivedObservationId = observationId(payload);
 			const compactPayload = compactToolResult(payload);
 			this.context.record({
@@ -480,13 +492,13 @@ export class HarnessAgentRuntime implements AgentRuntime {
 				kind: "tool-result",
 				payload,
 				compactPayload,
-				tokenCost,
-				compactTokenCost: estimateTokens(compactPayload),
+				tokenCost: messageTokenCost,
+				compactTokenCost: tokenCost(compactPayload, 1),
 				lifecycle: "active",
 				reason: "Pi tool result",
 				source: {
 					toolCallId: message.toolCallId,
-					toolName: message.toolName,
+					...entry.tools.contextMetadata(message.toolName),
 					...(archivedObservationId
 						? { observationId: archivedObservationId }
 						: {}),
@@ -496,20 +508,24 @@ export class HarnessAgentRuntime implements AgentRuntime {
 			});
 			return;
 		}
-		this.context.record({
-			sessionId,
-			kind: "user",
-			payload: message,
-			tokenCost,
-			lifecycle: "pinned",
-			reason: "user-authored message",
-			...(entry.promptGroupId ? { groupId: entry.promptGroupId } : {}),
-		});
+		this.context.record(
+			{
+				sessionId,
+				kind: "user",
+				payload: message,
+				tokenCost: messageTokenCost,
+				lifecycle: "pinned",
+				reason: "user-authored message",
+				...(entry.promptGroupId ? { groupId: entry.promptGroupId } : {}),
+			},
+			this.contextOptions(entry.agent.state.model),
+		);
 	}
 
 	private externalizeToolResult(
 		sessionId: string,
 		message: Extract<AgentMessage, { role: "toolResult" }>,
+		tools: CoreTools,
 	): Extract<AgentMessage, { role: "toolResult" }> {
 		if (observationId(message)) return message;
 		const observation = this.context.recordObservation(
@@ -517,7 +533,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 			messageText(message),
 			{
 				toolCallId: message.toolCallId,
-				toolName: message.toolName,
+				...tools.contextMetadata(message.toolName),
 				isError: message.isError,
 			},
 		);
@@ -549,7 +565,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 			sessionId,
 			kind: "system",
 			payload: SYSTEM_PROMPT,
-			tokenCost: estimateTokens(SYSTEM_PROMPT),
+			tokenCost: tokenCost(SYSTEM_PROMPT, 1),
 			lifecycle: "pinned",
 			reason: "Harness system prompt",
 		});
@@ -615,21 +631,6 @@ function normalizeProviderError(error: unknown): HarnessProviderError {
 const MAX_STREAM_RETRIES = 3;
 const STREAM_RETRY_BASE_DELAY_MS = 500;
 
-function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
-	return new Promise((resolve) => {
-		if (signal?.aborted) return resolve();
-		const timeout = setTimeout(resolve, ms);
-		signal?.addEventListener(
-			"abort",
-			() => {
-				clearTimeout(timeout);
-				resolve();
-			},
-			{ once: true },
-		);
-	});
-}
-
 function streamWithRetry(
 	produce: () => AssistantMessageEventStream,
 	signal: AbortSignal | undefined,
@@ -693,7 +694,7 @@ function streamWithRetry(
 				},
 				"provider stream failed; retrying",
 			);
-			await sleep(delayMs, signal);
+			await abortableSleep(delayMs, signal);
 			if (signal?.aborted) return out.push(terminal);
 		}
 	})();
@@ -751,10 +752,6 @@ function episodeSchema() {
 		}),
 	]);
 }
-function estimateTokens(value: unknown): number {
-	return Math.max(1, Math.ceil(JSON.stringify(value).length / 4));
-}
-
 function messageKey(message: AgentMessage): string {
 	return JSON.stringify(message);
 }

@@ -547,6 +547,8 @@ function episodeId(
 
 	test("queues a follow-up after completion", async () => {
 		const { server } = harness();
+		(server as unknown as { runtime: { run: () => Promise<void> } }).runtime.run =
+			async () => {};
 		const id = server.createSession();
 		await server.command(id, {
 			type: "follow-up",
@@ -765,6 +767,85 @@ function episodeId(
 			provider.stop(true);
 			delete process.env["HARNESS_OPENAI_API_KEY"];
 		}
+	});
+
+	test("steering aborts a running tool turn", async () => {
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
+		let calls = 0;
+		const provider = Bun.serve({
+			port: 0,
+			fetch: () => {
+				calls++;
+				return sseResponse(
+					calls === 1
+						? toolCallChunks("call-wait", "bash", { command: "sleep 5" })
+						: textChunks("redirected"),
+				);
+			},
+		});
+		try {
+			const { server } = harness();
+			const id = server.createSession();
+			let toolStarted!: () => void;
+			const toolCall = new Promise<void>((resolve) => {
+				toolStarted = resolve;
+			});
+			server.subscribe(id, (event) => {
+				if (event.type === "tool-call" && event.name === "bash") toolStarted();
+			});
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			const running = server.command(id, { type: "prompt", text: "wait" });
+			await Promise.race([
+				toolCall,
+				new Promise((_, reject) =>
+					setTimeout(() => reject(new Error("tool did not start")), 1_000),
+				),
+			]);
+			await server.command(id, {
+				type: "steer",
+				id: "steer-1",
+				text: "new direction",
+			});
+			await Promise.race([
+				running,
+				new Promise((_, reject) =>
+					setTimeout(() => reject(new Error("tool steering timed out")), 1_000),
+				),
+			]);
+			expect(calls).toBe(2);
+			expect(
+				server.store.events(id).filter((event) => event.type === "aborted"),
+			).toHaveLength(1);
+		} finally {
+			provider.stop(true);
+			delete process.env["HARNESS_OPENAI_API_KEY"];
+		}
+	});
+
+	test("does not complete or drain follow-ups after a runtime error", async () => {
+		const { server } = harness();
+		let calls = 0;
+		(server as unknown as { runtime: { run: () => Promise<void> } }).runtime.run =
+			async () => {
+				calls++;
+				throw new Error("runtime failed");
+			};
+		const id = server.createSession();
+		await server.command(id, {
+			type: "follow-up",
+			id: "follow-1",
+			text: "after failure",
+		});
+		await server.command(id, { type: "prompt", text: "fail" });
+		expect(calls).toBe(1);
+		expect(
+			server.store.events(id).some((event) => event.type === "completed"),
+		).toBe(false);
 	});
 
 	test("aborts an in-flight OpenAI-compatible Pi request", async () => {
@@ -1080,6 +1161,9 @@ function episodeId(
 				text: "too much context ".repeat(500),
 			});
 			expect(calls).toBe(0);
+			expect(
+				server.store.contextItems(id).filter((item) => item.kind === "user"),
+			).toHaveLength(0);
 			expect(
 				server.store.events(id).some(
 					(event) =>
