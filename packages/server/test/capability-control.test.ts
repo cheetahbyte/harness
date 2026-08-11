@@ -51,6 +51,21 @@ function catalog() {
 				bodyHash: "body",
 			},
 			{
+				kind: "skill",
+				id: "skill:manual",
+				name: "manual",
+				description: "Manual only",
+				providerDisplayName: "Project skills",
+				metadataTrust: "operator_approved",
+				modelDiscoverable: false,
+				providerBinding: {
+					providerId: "skill-files",
+					bindingGeneration: "binding-1",
+				},
+				manifestHash: "manual-manifest",
+				bodyHash: "manual-body",
+			},
+			{
 				kind: "tool",
 				id: "tool:hidden",
 				name: "hidden",
@@ -76,6 +91,15 @@ describe("CapabilityCatalog", () => {
 		expect(first.nextCursor).toBe("1");
 		expect(snapshot.list().items.map((item) => item.ref.id)).not.toContain(
 			"tool:hidden",
+		);
+		expect(snapshot.list().items.map((item) => item.ref.id)).not.toContain(
+			"skill:manual",
+		);
+		expect(() => snapshot.reference("skill:manual")).toThrow(
+			"CAPABILITY_NOT_FOUND",
+		);
+		expect(snapshot.reference("skill:manual", "operator").id).toBe(
+			"skill:manual",
 		);
 		expect(snapshot.search("missing").items).toEqual([]);
 	});

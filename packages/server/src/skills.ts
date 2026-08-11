@@ -104,7 +104,7 @@ export async function scanSkills(
 						tags: parsed.manifest.tags,
 						providerDisplayName: "Skill files",
 						metadataTrust: "operator_approved",
-						modelDiscoverable: parsed.manifest.modelInvocable,
+						modelDiscoverable: !parsed.manifest.disableModelInvocation,
 						providerBinding: {
 							providerId: "skill-files",
 							bindingGeneration: catalogGeneration,
@@ -113,13 +113,13 @@ export async function scanSkills(
 						bodyHash,
 					},
 					path,
-					discoveryState: parsed.manifest.modelInvocable
-						? "discoverable"
-						: "operator_only",
+					discoveryState: parsed.manifest.disableModelInvocation
+						? "operator_only"
+						: "discoverable",
 				};
-				(parsed.manifest.modelInvocable
-					? result.discoverable
-					: result.operatorOnly
+				(parsed.manifest.disableModelInvocation
+					? result.operatorOnly
+					: result.discoverable
 				).push(entry);
 			} catch (error) {
 				result.diagnostics.push({
@@ -203,7 +203,7 @@ export async function invokeSkills(
 type StrictSkillManifest = {
 	id: string;
 	description: string;
-	modelInvocable: boolean;
+	disableModelInvocation: boolean;
 	tags: string[];
 };
 
@@ -214,44 +214,52 @@ function parseSkillBuffer(buffer: Uint8Array): {
 	const text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
 	const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
 	if (!match?.[1]) throw new Error("missing skill frontmatter");
-	const fields = new Map<string, string>();
-	for (const line of match[1].split(/\r?\n/)) {
-		if (!line.trim()) continue;
-		const separator = line.indexOf(":");
-		if (separator < 1) throw new Error("invalid skill frontmatter");
-		const key = line.slice(0, separator).trim();
-		if (fields.has(key)) throw new Error(`duplicate skill field: ${key}`);
-		fields.set(key, line.slice(separator + 1).trim());
-	}
-	const id = fields.get("id");
-	const description = fields.get("description");
-	const modelInvocable = fields.get("modelInvocable");
-	if (!id || !/^[a-z0-9][a-z0-9-]*$/.test(id))
+	const parsed = Bun.YAML.parse(match[1]);
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+		throw new Error("invalid skill frontmatter");
+	const fields = parsed as Record<string, unknown>;
+	const explicitId = fields["id"];
+	const name = fields["name"];
+	if (explicitId !== undefined && name !== undefined && explicitId !== name)
+		throw new Error("skill id and name must match");
+	const id = explicitId ?? name;
+	const description = fields["description"];
+	const disableModelInvocation = fields["disable-model-invocation"];
+	if (typeof id !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(id))
 		throw new Error("skill id must use lowercase letters, digits, and hyphens");
-	if (!description || description.length > 2_000)
+	if (
+		typeof description !== "string" ||
+		!description.trim() ||
+		description.length > 2_000
+	)
 		throw new Error(
 			"skill description is required and limited to 2000 characters",
 		);
-	if (modelInvocable !== "true" && modelInvocable !== "false")
-		throw new Error("skill modelInvocable must be true or false");
-	const tagsValue = fields.get("tags");
-	const tags = tagsValue
-		? tagsValue
-				.replace(/^\[/, "")
-				.replace(/\]$/, "")
-				.split(",")
-				.map((tag) => tag.trim())
-				.filter(Boolean)
-		: [];
+	if (
+		disableModelInvocation !== undefined &&
+		typeof disableModelInvocation !== "boolean"
+	)
+		throw new Error("skill disable-model-invocation must be true or false");
+	const tags = skillTags(fields["tags"]);
 	if (tags.some((tag) => tag.length > 100))
 		throw new Error("skill tags are limited to 100 characters");
 	return {
 		manifest: {
 			id,
-			description,
-			modelInvocable: modelInvocable === "true",
+			description: description.trim(),
+			disableModelInvocation: disableModelInvocation === true,
 			tags,
 		},
 		body: text.slice(match[0].length),
 	};
+}
+
+function skillTags(value: unknown): string[] {
+	if (value === undefined) return [];
+	if (!Array.isArray(value) && typeof value !== "string")
+		throw new Error("skill tags must be text");
+	const tags = Array.isArray(value) ? value : value.split(",");
+	if (tags.some((tag) => typeof tag !== "string"))
+		throw new Error("skill tags must be text");
+	return (tags as string[]).map((tag) => tag.trim()).filter(Boolean);
 }

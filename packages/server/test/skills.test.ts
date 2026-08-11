@@ -50,36 +50,38 @@ test("invokes skills anywhere in a prompt and prefers narrower scopes", async ()
 	expect(prompt).toContain("keep /unknown.");
 });
 
-test("discovers only explicit model-invocable manifests", async () => {
+test("accepts name or id and honors disable-model-invocation", async () => {
 	const project = mkdtempSync(join(tmpdir(), "harness-project-"));
 	const home = mkdtempSync(join(tmpdir(), "harness-home-"));
 	paths.push(project, home);
 	const root = join(project, ".harness/skills");
-	skill(
-		root,
-		"review",
-		"--- marker in body is harmless",
-	);
+	skill(root, "review", "--- marker in body is harmless");
+	mkdirSync(join(root, "id-only"), { recursive: true });
 	writeFileSync(
-		join(root, "review/SKILL.md"),
-		"---\nid: review\ndescription: Review changes\nmodelInvocable: true\ntags: [git, review]\n---\nReview carefully.",
+		join(root, "id-only/SKILL.md"),
+		"---\nid: id-only\ndescription: Uses the id field\n---\nID instructions.",
 	);
-	skill(root, "legacy", "legacy body");
 	mkdirSync(join(root, "operator"), { recursive: true });
 	writeFileSync(
 		join(root, "operator/SKILL.md"),
-		"---\nid: operator\ndescription: Operator only\nmodelInvocable: false\n---\nOperator instructions.",
+		"---\nname: operator\ndescription: >\n  Operator only\n  instructions\ndisable-model-invocation: true\n---\nOperator instructions.",
+	);
+	mkdirSync(join(root, "invalid"), { recursive: true });
+	writeFileSync(
+		join(root, "invalid/SKILL.md"),
+		"---\nid: one\nname: two\ndescription: Conflicting names\n---\nInvalid.",
 	);
 
 	const scanned = await scanSkills(project, home, "catalog-1");
 
 	expect(scanned.discoverable.map((entry) => entry.ref.id)).toEqual([
+		"skill:id-only",
 		"skill:review",
 	]);
 	expect(scanned.operatorOnly.map((entry) => entry.ref.id)).toEqual([
 		"skill:operator",
 	]);
-	expect(scanned.diagnostics.some(({ path }) => path.includes("legacy"))).toBe(
+	expect(scanned.diagnostics.some(({ path }) => path.includes("invalid"))).toBe(
 		true,
 	);
 });
@@ -93,7 +95,7 @@ test("activates from one verified buffer and rejects edited skills", async () =>
 	const path = join(root, "SKILL.md");
 	writeFileSync(
 		path,
-		"---\nid: review\ndescription: Review changes\nmodelInvocable: true\n---\nReview carefully.",
+		"---\nname: review\ndescription: Review changes\n---\nReview carefully.",
 	);
 	const scanned = await scanSkills(project, home, "catalog-1");
 	const entry = scanned.discoverable[0];

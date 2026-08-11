@@ -704,7 +704,12 @@ function episodeId(
 			mkdirSync(join(dir, ".harness/skills/review"), { recursive: true });
 			writeFileSync(
 				join(dir, ".harness/skills/review/SKILL.md"),
-				"---\nid: review\ndescription: review instructions\nmodelInvocable: true\n---\nReview carefully.",
+				"---\nname: review\ndescription: review instructions\n---\nReview carefully.",
+			);
+			mkdirSync(join(dir, ".harness/skills/manual"), { recursive: true });
+			writeFileSync(
+				join(dir, ".harness/skills/manual/SKILL.md"),
+				"---\nname: manual\ndescription: manual instructions\ndisable-model-invocation: true\n---\nManual only.",
 			);
 			const id = server.createSession();
 			await server.command(id, {
@@ -715,11 +720,12 @@ function episodeId(
 			});
 			await server.command(id, {
 				type: "prompt",
-				text: "Please /review read note.txt",
+				text: "Please /review /manual read note.txt",
 			});
 			const events = server.store.events(id);
 			expect(calls).toBe(2);
 			expect(requests[0]).toContain("Review carefully.");
+			expect(requests[0]).toContain("Manual only.");
 			expect(
 				events.some(
 					(event) => event.type === "assistant-delta" && event.text === "done",

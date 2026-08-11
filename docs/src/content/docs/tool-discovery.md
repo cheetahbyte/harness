@@ -65,13 +65,17 @@ reference.
 
 ## Skill discovery
 
-A model-discoverable skill needs valid frontmatter with an `id`, a
-`description`, and `modelInvocable: true`. Harnez hashes the same bytes it uses
-to parse the manifest. Activation reads the file again and verifies both the
-manifest and body hashes before adding the body to task context.
+A skill needs valid frontmatter with a `name` or `id` and a `description`.
+Skills are model-discoverable by default. Set `disable-model-invocation: true`
+to keep a skill available for manual use without exposing it to model
+discovery. Harnez hashes the same bytes it uses to parse the manifest.
+Activation reads the file again and verifies both the manifest and body hashes
+before adding the body to task context.
 
-Skills with `modelInvocable: false` remain operator only. Invalid manifests are
-reported as diagnostics and left out of model discovery.
+Invalid manifests are reported as diagnostics and left out of model discovery.
+
+See [Skills](/docs/advanced/skills) for locations, frontmatter, and manual
+activation.
 
 See [Task runtime](/docs/architecture/task-runtime) for task snapshots,
 cancellation, and capability-context lifetime.

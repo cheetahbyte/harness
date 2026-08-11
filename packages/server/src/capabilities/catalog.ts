@@ -182,9 +182,12 @@ export class CapabilitySnapshot {
 		return cloneInspection(record);
 	}
 
-	reference(id: string): CapabilityRef {
+	reference(
+		id: string,
+		visibility: "model" | "operator" = "model",
+	): CapabilityRef {
 		const record = this.records.get(id);
-		if (!record || !this.discoverable(record))
+		if (!record || (visibility === "model" && !this.discoverable(record)))
 			throw new Error("CAPABILITY_NOT_FOUND");
 		return structuredClone(record.ref);
 	}

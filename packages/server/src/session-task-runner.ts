@@ -308,10 +308,11 @@ export class SessionTaskRunner {
 			undefined,
 			bindingGeneration,
 		);
+		const skills = [...scanned.discoverable, ...scanned.operatorOnly];
 		const catalog = new CapabilityCatalog(
 			[
 				...tools.capabilities(bindingGeneration),
-				...scanned.discoverable.map(({ capability }) => capability),
+				...skills.map(({ capability }) => capability),
 			],
 			bindingGeneration,
 		);
@@ -328,13 +329,13 @@ export class SessionTaskRunner {
 			...(submissionWatermark === undefined ? {} : { submissionWatermark }),
 		});
 		this.loadTools(task, snapshot, context, accountant);
-		const { prompt, selected } = selectedSkills(text, scanned.discoverable);
+		const { prompt, selected } = selectedSkills(text, skills);
 		await this.activateSkills(selected, snapshot, context, accountant);
 		return {
 			controller,
 			task,
 			tools,
-			skills: scanned.discoverable,
+			skills,
 			prompt,
 			contextWatermark,
 		};
@@ -424,7 +425,7 @@ export class SessionTaskRunner {
 		accountant: TokenAccountant,
 	): Promise<void> {
 		for (const entry of selected) {
-			const ref = snapshot.reference(entry.capability.id);
+			const ref = snapshot.reference(entry.capability.id, "operator");
 			const admission = await activateSkill(entry, ref, context, accountant);
 			if (admission.status === "rejected")
 				throw new Error(JSON.stringify(admission));

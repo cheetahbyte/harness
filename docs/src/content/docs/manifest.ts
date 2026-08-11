@@ -9,6 +9,7 @@ import contextCompaction from "./context-compaction.md?raw";
 import { getFrontmatterSlug } from "./frontmatter";
 import installation from "./installation.md?raw";
 import introduction from "./introduction.md?raw";
+import skills from "./skills.md?raw";
 import taskRuntime from "./task-runtime.md?raw";
 import toolDiscovery from "./tool-discovery.md?raw";
 
@@ -21,7 +22,7 @@ export interface DocPage {
 	indexable?: boolean;
 }
 
-export const docSections = ["Guide", "Architecture"] as const;
+export const docSections = ["Guide", "Architecture", "Advanced"] as const;
 
 export const docPages: DocPage[] = [
 	{
@@ -87,6 +88,14 @@ export const docPages: DocPage[] = [
 			"Learn how each task lists, searches, inspects, and loads trusted capabilities from an immutable catalog snapshot.",
 		section: "Architecture",
 		source: toolDiscovery,
+	},
+	{
+		slug: getFrontmatterSlug(skills),
+		title: "Skills",
+		description:
+			"Create reusable skill instructions, control model discovery, activate skills manually, and troubleshoot loading.",
+		section: "Advanced",
+		source: skills,
 	},
 ];
 
