@@ -124,9 +124,9 @@ jobs:
       # Trusted publishing needs npm >=11.5.1.
       - run: npm install --global npm@latest
 
-      - run: npm publish npm-platform/npm-darwin-arm64 --tag darwin-arm64
-      - run: npm publish npm-platform/npm-darwin-x64 --tag darwin-x64
-      - run: npm publish npm-platform/npm-linux-x64 --tag linux-x64
+      - run: npm publish ./npm-platform/npm-darwin-arm64 --tag darwin-arm64
+      - run: npm publish ./npm-platform/npm-darwin-x64 --tag darwin-x64
+      - run: npm publish ./npm-platform/npm-linux-x64 --tag linux-x64
 
       - run: >-
           bun scripts/stage-npm-package.ts
@@ -135,4 +135,4 @@ jobs:
           --target linux-x64
           --output npm-root
 
-      - run: npm publish npm-root --tag latest
+      - run: npm publish ./npm-root --tag latest
