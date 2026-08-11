@@ -2,6 +2,7 @@ import { createFileRoute, Link, notFound } from "@tanstack/solid-router";
 
 import { DocsArticle } from "../../content/docs/DocsArticle";
 import { getDocPage } from "../../content/docs/manifest";
+import { seoMeta } from "../../seo";
 
 export const Route = createFileRoute("/docs/$")({
 	loader: ({ params }) => {
@@ -10,7 +11,13 @@ export const Route = createFileRoute("/docs/$")({
 		return page;
 	},
 	head: ({ loaderData }) => ({
-		meta: loaderData ? [{ title: `${loaderData.title} - harnez docs` }] : [],
+		meta: loaderData
+			? seoMeta({
+					title: `${loaderData.title} | Harnez Docs`,
+					description: loaderData.description,
+					indexable: loaderData.indexable,
+				})
+			: [],
 	}),
 	component: DocsPage,
 	notFoundComponent: DocsNotFound,

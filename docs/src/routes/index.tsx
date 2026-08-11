@@ -1,7 +1,18 @@
 import { createFileRoute } from "@tanstack/solid-router";
 import { createSignal } from "solid-js";
 
-export const Route = createFileRoute("/")({ component: Home });
+import { seoMeta } from "../seo";
+
+export const Route = createFileRoute("/")({
+	head: () => ({
+		meta: seoMeta({
+			title: "Harnez | Minimal coding agent harness",
+			description:
+				"A minimal, model-agnostic harness for building and running terminal-first coding agents.",
+		}),
+	}),
+	component: Home,
+});
 
 const INSTALL_COMMAND = "npm install -g harnez";
 

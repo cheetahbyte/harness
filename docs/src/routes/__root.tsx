@@ -17,11 +17,9 @@ export const Route = createRootRouteWithContext()({
 		meta: [
 			{ charSet: "utf-8" },
 			{ name: "viewport", content: "width=device-width, initial-scale=1" },
-			{ title: "harnez - a minimal harness" },
-			{
-				name: "description",
-				content: "A minimal harness for building and running coding agents.",
-			},
+			{ property: "og:site_name", content: "Harnez" },
+			{ property: "og:type", content: "website" },
+			{ name: "twitter:card", content: "summary" },
 		],
 		links: [{ rel: "stylesheet", href: styleCss }],
 	}),
