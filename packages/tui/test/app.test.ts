@@ -575,7 +575,13 @@ describe("OpenTUI app", () => {
 			expect(view.captureCharFrame()).toContain("https://example.com/authorize");
 			view.mockInput.pressKey("o", { ctrl: true });
 			await Promise.resolve();
-			expect(opened).toEqual([["open", "https://example.com/authorize"]]);
+			const expectedCommand =
+				process.platform === "darwin"
+					? ["open", "https://example.com/authorize"]
+					: process.platform === "win32"
+						? ["cmd", "/c", "start", "", "https://example.com/authorize"]
+						: ["xdg-open", "https://example.com/authorize"];
+			expect(opened).toEqual([expectedCommand]);
 		} finally {
 			(Bun as unknown as { spawn: typeof Bun.spawn }).spawn = spawn;
 			app.destroy();
