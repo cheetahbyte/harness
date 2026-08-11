@@ -20,7 +20,7 @@ export class ModelView {
 		const { modelConfig } = state;
 		if (modelConfig) {
 			this.modelNameLabel.content = modelConfig.model;
-			this.modelProviderLabel.content = ` (${modelConfig.provider})`;
+			this.modelProviderLabel.content = ` (${modelConfig.provider})${modelConfig.thinkingLevel ? ` · ${modelConfig.thinkingLevel}` : ""}`;
 		} else {
 			this.modelNameLabel.content = "";
 			this.modelProviderLabel.content = "";

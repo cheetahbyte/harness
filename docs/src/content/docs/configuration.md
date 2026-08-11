@@ -28,14 +28,16 @@ this file.
   "model": {
     "provider": "openai-codex",
     "model": "gpt-5.1-codex",
-    "baseUrl": null
+    "baseUrl": null,
+    "thinkingLevel": "medium"
   },
   "disableThinkingBlocks": false
 }
 ```
 
-`model` is whatever `/model` last set. `baseUrl` only applies to the
-`openai-compatible` provider.
+`model` is whatever `/model` last set. `thinkingLevel` is the last level
+selected with `Shift+Tab`; supported levels depend on the model. `baseUrl`
+only applies to the `openai-compatible` provider.
 
 ## Project overrides
 

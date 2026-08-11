@@ -56,9 +56,13 @@ Typed directly into the TUI composer.
 | `Option/Alt + Enter` | Submit as a queued follow-up, run after the active task finishes. |
 | `Esc` | Abort the current step: generation, running tools, and anything pending in it. |
 | `Ctrl+T` | Toggle visibility of the model's thinking blocks. |
+| `Shift+Tab` | Cycle through the selected model's supported thinking levels. |
 | `Cmd+C` | Copy the current terminal selection. |
 | `Ctrl+C` | Quit. |
 | `↑` / `↓` / `Tab` | Navigate and accept command or skill autocomplete suggestions. |
+
+Changing the thinking level while a task is running applies it to the next
+prompt without interrupting the active task.
 
 > [!TIP] Steering vs. aborting
 > These map directly onto the three ways to interrupt the [agent

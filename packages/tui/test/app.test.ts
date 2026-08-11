@@ -176,6 +176,50 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("cycles and displays the model thinking level with Shift-Tab", async () => {
+		const store = createTuiStore("session-1");
+		const sent: unknown[] = [];
+		store.getState().apply({
+			type: "model-config",
+			config: {
+				provider: "openai-codex",
+				model: "gpt-5.6-sol",
+				thinkingLevel: "medium",
+			},
+		});
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async (command) => {
+			sent.push(command);
+		});
+		try {
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("medium");
+			await view.mockInput.typeText("/");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("/model");
+			view.mockInput.pressTab({ shift: true });
+			await view.flush();
+			expect(sent).toEqual([{ type: "cycle-thinking-level" }]);
+			store.getState().apply({
+				type: "model-config",
+				config: {
+					provider: "openai-codex",
+					model: "gpt-5.6-sol",
+					thinkingLevel: "high",
+				},
+			});
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("high");
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("keeps the composer usable in a short terminal", async () => {
 		const store = createTuiStore("session-1");
 		store.getState().apply({

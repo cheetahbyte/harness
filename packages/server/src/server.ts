@@ -1,7 +1,12 @@
 import { EventEmitter } from "node:events";
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
-import type { CredentialStore, Models } from "@earendil-works/pi-ai";
+import {
+	type CredentialStore,
+	clampThinkingLevel,
+	getSupportedThinkingLevels,
+	type Models,
+} from "@earendil-works/pi-ai";
 import type {
 	AuthType,
 	ClientCommand,
@@ -165,6 +170,10 @@ export class HarnessServer {
 			await this.handleQueueControl(id, session, command);
 			return;
 		}
+		if (command.type === "cycle-thinking-level") {
+			this.cycleThinkingLevel(id, session);
+			return;
+		}
 		if (this.handleConfigure(id, session, command)) return;
 		if (this.handleQueuedSubmission(id, session, command)) return;
 		if (command.type === "supersede") {
@@ -291,20 +300,56 @@ export class HarnessServer {
 		id: string,
 		session: Session,
 		command: ClientCommand,
+		allowRunning = false,
 	): boolean {
 		if (command.type !== "configure") return false;
-		if (session.running) throw new Error("cannot change model while running");
-		const config = {
+		if (session.running && !allowRunning)
+			throw new Error("cannot change model while running");
+		const selected = {
 			provider: command.provider,
 			model: command.model,
 			...(command.baseUrl ? { baseUrl: command.baseUrl } : {}),
 		};
-		providerModels(config, this.credentials, this.models as Models);
+		const { model } = providerModels(
+			selected,
+			this.credentials,
+			this.models as Models,
+		);
+		const config = {
+			...selected,
+			...(command.thinkingLevel
+				? { thinkingLevel: clampThinkingLevel(model, command.thinkingLevel) }
+				: {}),
+		};
 		this.store.setModelConfig(id, config);
 		this.settingsFor(id).setModelConfig(config);
-		this.runtime.forget(id);
+		if (!session.running) this.runtime.forget(id);
 		this.emit(id, { type: "model-config", config });
 		return true;
+	}
+
+	private cycleThinkingLevel(id: string, session: Session): void {
+		const config = this.modelConfig(id);
+		if (!config) throw new Error("select a model with /model");
+		const { model } = providerModels(
+			config,
+			this.credentials,
+			this.models as Models,
+		);
+		const levels = getSupportedThinkingLevels(model);
+		const current = clampThinkingLevel(model, config.thinkingLevel ?? "medium");
+		const next = levels[(levels.indexOf(current) + 1) % levels.length];
+		if (!next) throw new Error("model has no supported thinking levels");
+		this.handleConfigure(
+			id,
+			session,
+			{
+				type: "configure",
+				...config,
+				thinkingLevel: next,
+			},
+			true,
+		);
 	}
 
 	private handleQueuedSubmission(

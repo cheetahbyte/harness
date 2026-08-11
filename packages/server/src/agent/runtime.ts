@@ -4,6 +4,7 @@ import {
 	type AssistantMessageEvent,
 	type AssistantMessageEventStream,
 	type CredentialStore,
+	clampThinkingLevel,
 	createAssistantMessageEventStream,
 	isRetryableAssistantError,
 	type Model,
@@ -227,7 +228,10 @@ export class HarnessAgentRuntime implements AgentRuntime {
 		const agent = new Agent({
 			initialState: {
 				model,
-				thinkingLevel: "medium",
+				thinkingLevel: clampThinkingLevel(
+					model,
+					config.thinkingLevel ?? "medium",
+				),
 				systemPrompt: SYSTEM_PROMPT,
 				tools: agentTools({
 					sessionId,

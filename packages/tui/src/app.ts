@@ -126,6 +126,7 @@ export class TuiApp {
 			submit: (text, followUp) => void this.submit(text, followUp),
 			abort: () => this.escape(),
 			toggleThinking: () => this.toggleThinking(),
+			cycleThinkingLevel: () => this.cycleThinkingLevel(),
 		});
 		this.wizard = new WizardView(renderer);
 		this.footer = new FooterView(renderer);
@@ -246,6 +247,15 @@ export class TuiApp {
 				type: "ui-settings",
 				disableThinkingBlocks: !disabled,
 			});
+			this.store.getState().apply({
+				type: "error",
+				message: error instanceof Error ? error.message : String(error),
+			});
+		});
+	}
+
+	private cycleThinkingLevel() {
+		void this.send({ type: "cycle-thinking-level" }).catch((error) => {
 			this.store.getState().apply({
 				type: "error",
 				message: error instanceof Error ? error.message : String(error),

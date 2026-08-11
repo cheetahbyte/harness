@@ -47,6 +47,7 @@ export class ComposerView {
 			submit: (text: string, followUp: boolean) => void;
 			abort: () => void;
 			toggleThinking: () => void;
+			cycleThinkingLevel: () => void;
 		},
 	) {
 		this.commands = commands;
@@ -181,6 +182,11 @@ export class ComposerView {
 		if (key.defaultPrevented) return;
 		if (key.ctrl && key.name === "t") {
 			this.actions.toggleThinking();
+			key.preventDefault();
+			return;
+		}
+		if (key.shift && key.name === "tab") {
+			this.actions.cycleThinkingLevel();
 			key.preventDefault();
 			return;
 		}
