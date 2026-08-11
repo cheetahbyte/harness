@@ -20,6 +20,7 @@ import type {
 	StreamLine,
 } from "../../shared/src/protocol";
 import { HarnessAgentRuntime } from "./agent-runtime";
+import { ContextManager, type SubagentResult } from "./context-manager";
 import { log } from "./logger";
 import {
 	createHarnessModels,
@@ -85,6 +86,7 @@ export class HarnessServer {
 	private readonly credentials: CredentialStore;
 	private readonly models: ModelRegistry;
 	private readonly defaultWorkspace: string;
+	private readonly context: ContextManager;
 
 	constructor(
 		readonly store = new SessionStore(),
@@ -94,13 +96,24 @@ export class HarnessServer {
 			globalHarnessPath("settings.json"),
 			resolve(workspace, ".harness/settings.json"),
 		),
+		options: { contextBudget?: number } = {},
 	) {
+		if (
+			options.contextBudget !== undefined &&
+			(!Number.isSafeInteger(options.contextBudget) ||
+				options.contextBudget <= 0)
+		)
+			throw new Error("context budget must be a positive number");
 		this.defaultWorkspace = workspacePath(workspace);
 		this.credentials = new JsonCredentialStore(globalHarnessPath("auth.json"));
 		this.models = models ?? createHarnessModels(this.credentials);
+		this.context = new ContextManager(this.store);
 		this.runtime = new HarnessAgentRuntime(
 			this.credentials,
 			this.models as Models,
+			this.store,
+			this.context,
+			options.contextBudget,
 		);
 	}
 
@@ -114,6 +127,16 @@ export class HarnessServer {
 	workspace(id: string): string {
 		if (!this.store.exists(id)) throw new Error("session not found");
 		return this.store.workspace(id) ?? this.defaultWorkspace;
+	}
+
+	contextStatus(id: string) {
+		this.session(id);
+		return this.runtime.inspect(id);
+	}
+
+	acceptSubagentResult(id: string, result: SubagentResult, subagentId: string) {
+		this.session(id);
+		return this.context.recordSubagentResult(id, result, { subagentId });
 	}
 
 	/** Replays persisted events after `from`, then streams live ones. */
@@ -653,11 +676,21 @@ function workspacePath(path: string): string {
 }
 
 export function serveHarness(
-	options: { port?: number; workspace?: string; databasePath?: string } = {},
+	options: {
+		port?: number;
+		workspace?: string;
+		databasePath?: string;
+		contextBudget?: number;
+	} = {},
 ): ReturnType<typeof Bun.serve> {
 	const harness = new HarnessServer(
 		new SessionStore(options.databasePath),
 		options.workspace,
+		undefined,
+		undefined,
+		options.contextBudget === undefined
+			? {}
+			: { contextBudget: options.contextBudget },
 	);
 	return Bun.serve({
 		port: options.port ?? 7432,
@@ -682,12 +715,25 @@ export function serveHarness(
 				}
 			}
 			const match = url.pathname.match(
-				/^\/sessions\/([^/]+)(?:\/(events|commands))?$/,
+				/^\/sessions\/([^/]+)(?:\/(events|commands|context|subagent-results))?$/,
 			);
 			if (!match) return new Response("not found", { status: 404 });
 			const [, id, action] = match;
 			if (!id) return new Response("not found", { status: 404 });
 			try {
+				if (request.method === "POST" && action === "subagent-results") {
+					const handoff = parseSubagentHandoff(await request.json());
+					return Response.json(
+						harness.acceptSubagentResult(
+							id,
+							handoff.result,
+							handoff.subagentId,
+						),
+						{ status: 201 },
+					);
+				}
+				if (request.method === "GET" && action === "context")
+					return Response.json(harness.contextStatus(id));
 				if (request.method === "GET" && action === "events") {
 					// A reconnecting client resumes after the last cursor it applied.
 					const from = Math.max(0, Number(url.searchParams.get("from")) || 0);
@@ -797,4 +843,50 @@ async function sessionWorkspace(request: Request): Promise<string | undefined> {
 	if (cwd !== undefined && (typeof cwd !== "string" || !cwd))
 		throw new Error("cwd must be a non-empty string");
 	return cwd;
+}
+
+function parseSubagentHandoff(value: unknown): {
+	subagentId: string;
+	result: SubagentResult;
+} {
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		throw new Error("invalid subagent result");
+	const input = value as Record<string, unknown>;
+	const subagentId = input["subagentId"];
+	if (typeof subagentId !== "string" || !subagentId.trim())
+		throw new Error("invalid subagent id");
+	const resultValue = input["result"];
+	if (
+		!resultValue ||
+		typeof resultValue !== "object" ||
+		Array.isArray(resultValue)
+	)
+		throw new Error("invalid subagent result");
+	if (input["trace"] !== undefined)
+		throw new Error("subagent traces must remain external");
+	const result = resultValue as Record<string, unknown>;
+	const status = result["status"];
+	if (status !== "completed" && status !== "blocked" && status !== "failed")
+		throw new Error("invalid subagent status");
+	return {
+		subagentId,
+		result: {
+			status,
+			findings: stringArray(result["findings"], "findings"),
+			decisions: stringArray(result["decisions"], "decisions"),
+			changedFiles: stringArray(result["changedFiles"], "changed files"),
+			verification: stringArray(result["verification"], "verification"),
+			unresolvedIssues: stringArray(
+				result["unresolvedIssues"],
+				"unresolved issues",
+			),
+			artifactRefs: stringArray(result["artifactRefs"], "artifact refs"),
+		},
+	};
+}
+
+function stringArray(value: unknown, name: string): string[] {
+	if (!Array.isArray(value) || value.some((item) => typeof item !== "string"))
+		throw new Error(`invalid subagent ${name}`);
+	return value as string[];
 }

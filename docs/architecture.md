@@ -404,108 +404,62 @@ Different subagents may use different models.
 
 ## 11. Context Management
 
-Harness uses a hybrid context model.
+Harness separates the lossless session history from the bounded working set sent
+to a model. `SessionStore` persists immutable context payloads and append-only
+episode events in SQLite. A separate lifecycle row records whether each item is
+`pinned`, `active`, `retained`, or `archived`, along with its current projection
+and the reason for that decision.
 
-### Always resident
+`ContextManager` is the Harness-owned policy boundary. `HarnessAgentRuntime`
+remains the only Pi adapter: it persists finalized Pi messages, asks the manager
+to assemble every provider request through Pi's context hooks, and replaces the
+live Pi transcript with the same managed projection after a turn. Restarting a
+server reconstructs context from SQLite rather than from UI event deltas.
 
-Typically:
+System instructions, user-authored messages, and explicit decisions or
+constraints created by `pin_context` are mechanically protected. Unknown work
+also fails toward retention. If protected content alone cannot fit, Harness
+returns a context-budget error before calling the provider.
 
-* Harness/system instructions
-* current task
-* critical task constraints
-* applicable project instructions
-* active skills
-* active working state
-* recent conversational context
+Tool output is externalized at creation. SQLite retains the exact observation;
+the active model receives a bounded head/tail preview and an
+`observation://...` reference. `recall_observation` retrieves an exact,
+session-scoped slice without permanently expanding the working set.
 
-### Dynamically retrieved
-
-Examples:
-
-* relevant file content
-* discovered tool schemas
-* old artifacts
-* earlier session information
-* research material
-
-### Externalized
-
-Examples:
-
-* large command output
-* full API responses
-* completed subagent transcripts
-* old file snapshots
-* historical tool results
-
-Large results become addressable artifacts rather than automatically becoming conversation messages.
+Non-trivial work can be labeled as one active `exploration` or `action` episode.
+Explorations close with a durable conclusion. Actions declare dependencies on
+earlier completed explorations. These append-only boundaries let structural
+compaction protect open work and live dependencies without inferring semantics
+from raw chat text.
 
 ---
 
 ## 12. Compaction
 
-Compaction uses four stages.
+Context accounting runs continuously, while physical prompt rewrites are
+batched. The high-water budget defaults to the smaller of 80,000 tokens and the
+model input window after reserving maximum output. Crossing it triggers one
+deterministic cleanup down to an 80% target, reducing prompt-cache churn.
 
-### Extract
+Cleanup first retires completed tool exchanges in a fixed reconstructability
+order. If that is insufficient, it archives the oldest completed action
+episode. A completed exploration becomes eligible only after every dependent
+action is archived; its detailed trace leaves the prompt while its conclusion
+remains. Assistant tool calls and results move as one group, and raw payloads
+are never rewritten or deleted.
 
-Harness deterministically catalogs relevant ground truth, including:
+Compact subagent results cross the parent boundary as validated structured
+handoffs with external `subagent://...` transcript references. The parent never
+imports a child transcript. Until the subagent scheduler exists, tests use a
+fake producer against this same boundary.
 
-* files
-* errors
-* commands
-* decisions
-* constraints
-* topics
-* artifact references
-* subagent state
-* open loops
-* unresolved questions
-* relevant metadata
+`GET /sessions/:id/context` exposes projected token cost, lifecycle counts,
+episode state, and item-level reasons without returning archived payloads.
 
-### Explore
-
-Optional.
-
-Used in `thorough` mode or when `auto` determines that additional reconstruction is needed.
-
-Cheaper modes rely primarily on deterministic boundaries.
-
-### Synthesize
-
-A predefined `compactor` subagent produces the compact continuation state.
-
-The compactor profile may be overridden.
-
-Synthesis may use adaptive single-pass or bounded hierarchical processing with explicit token/call/output budgets.
-
-### Verify
-
-Harness compares synthesis against deterministic extracted state.
-
-It performs deterministic repairs to a bounded fixed point and enforces a minimum verified quality floor.
-
-Only thorough compaction may spend an additional LLM repair call before falling back to deterministic repair.
-
-### 12.1 Structured output
-
-Compaction should not produce only prose.
-
-Its persistent representation should contain structured fields such as:
-
-```text
-goal
-summary
-decisions
-constraints
-working_set
-completed
-open_loops
-errors
-subagents
-continuation
-```
-
-The synthesized narrative augments verified structured state rather than replacing it.
+LLM-generated historical summaries, arbitrary item-level dependency graphs,
+nested episodes, learned policies, and artifact garbage collection remain
+future work. They should extend this lifecycle model rather than replace the
+immutable event history.
 
 ---
 
@@ -519,6 +473,8 @@ SQLite should store:
 
 * sessions
 * events
+* immutable context items and mutable lifecycle projections
+* append-only episode events
 * agent relationships
 * checkpoints
 * artifact metadata
@@ -528,12 +484,14 @@ The session timeline should conceptually be append-only.
 
 ### Resume
 
-A session can be reconstructed from:
+A model working set is reconstructed from:
 
 ```text
-latest compaction checkpoint
+immutable context items
 +
-events after checkpoint
+current lifecycle projections
++
+replayed episode events
 ```
 
 Completed subagent transcripts persist independently and are referenced by handle.
