@@ -21,7 +21,9 @@ describe("stageNpmPackage", () => {
 	test("stages platform packages and a root launcher package without mutating the repo", () => {
 		const root = tempDir();
 		const output = join(root, "dist");
-		writeFileSync(join(root, "package.json"), '{"name":"harnez","version":"1.2.3","license":"MIT"}\n');
+		const sourceManifest =
+			'{"name":"harnez","version":"1.2.3","license":"MIT","repository":{"type":"git","url":"https://github.com/cheetahbyte/harnez.git"}}\n';
+		writeFileSync(join(root, "package.json"), sourceManifest);
 		writeFileSync(join(root, "README.md"), "readme\n");
 		mkdirSync(join(root, "bin"));
 		writeFileSync(join(root, "bin", "harnez.js"), "launcher\n");
@@ -51,10 +53,11 @@ describe("stageNpmPackage", () => {
 			version: "1.2.3-darwin-arm64",
 			os: ["darwin"],
 			cpu: ["arm64"],
+			repository: { type: "git", url: "https://github.com/cheetahbyte/harnez.git" },
 		});
 		expect(readFileSync(join(output, "vendor/linux-x64/bin/harnez"), "utf8")).toBe("linux binary");
 		expect(readFileSync(join(output, "bin/harnez.js"), "utf8")).toBe("launcher\n");
-		expect(readFileSync(join(root, "package.json"), "utf8")).toBe('{"name":"harnez","version":"1.2.3","license":"MIT"}\n');
+		expect(readFileSync(join(root, "package.json"), "utf8")).toBe(sourceManifest);
 	});
 
 	test("accepts matched target and binary arguments", () => {

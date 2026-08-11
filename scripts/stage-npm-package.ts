@@ -55,6 +55,7 @@ export function stageNpmPackage({
 			writeJson(join(platformDir, "package.json"), {
 				name: root.name,
 				version: platformVersion,
+				...(root.repository ? { repository: root.repository } : {}),
 				os: [os],
 				cpu: [cpu],
 				files: ["bin"],
