@@ -325,10 +325,18 @@ function episodeTool(sessionId: string, context: ContextManager): AgentTool {
 		parameters: episodeSchema(),
 		execute: async (_id, input) => {
 			const request = input as EpisodeInput;
-			const episode =
-				request.action === "start"
-					? context.startEpisode(sessionId, request)
-					: context.endEpisode(sessionId, request.conclusion);
+			let episode: ReturnType<ContextManager["startEpisode"]>;
+			if (request.action === "start") {
+				if (request.name === undefined || request.kind === undefined)
+					throw new Error("Starting an episode requires name and kind");
+				episode = context.startEpisode(sessionId, {
+					name: request.name,
+					kind: request.kind,
+					...(request.dependencies === undefined
+						? {}
+						: { dependencies: request.dependencies }),
+				});
+			} else episode = context.endEpisode(sessionId, request.conclusion);
 			return {
 				content: [
 					{
@@ -391,27 +399,24 @@ function pinSchema() {
 		text: Type.String({ minLength: 1 }),
 	});
 }
-type EpisodeInput =
-	| {
-			action: "start";
-			name: string;
-			kind: "exploration" | "action";
-			dependencies?: string[];
-	  }
-	| { action: "end"; conclusion?: string };
+type EpisodeInput = {
+	action: "start" | "end";
+	name?: string;
+	kind?: "exploration" | "action";
+	dependencies?: string[];
+	conclusion?: string;
+};
 function episodeSchema() {
-	return Type.Union([
-		Type.Object({
-			action: Type.Literal("start"),
-			name: Type.String({ minLength: 1 }),
-			kind: Type.Union([Type.Literal("exploration"), Type.Literal("action")]),
+	return Type.Object(
+		{
+			action: Type.String({ enum: ["start", "end"] }),
+			name: Type.Optional(Type.String({ minLength: 1 })),
+			kind: Type.Optional(Type.String({ enum: ["exploration", "action"] })),
 			dependencies: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-		}),
-		Type.Object({
-			action: Type.Literal("end"),
 			conclusion: Type.Optional(Type.String({ minLength: 1 })),
-		}),
-	]);
+		},
+		{ additionalProperties: false },
+	);
 }
 function previewOutput(output: string, id: string, limit: number): string {
 	if (output.length <= limit) return output;
