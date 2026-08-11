@@ -931,59 +931,65 @@ describe("ContextManager", () => {
 		store.db.close();
 	});
 
-	test("keeps a long tool run below budget without deleting raw history", () => {
-		const store = new SessionStore(storePath());
-		const sessionId = store.create();
-		const manager = new ContextManager(store);
-		const raw = "x".repeat(16_000);
-		manager.record({
-			sessionId,
-			kind: "user",
-			payload: { role: "user", content: "keep the objective" },
-			tokenCost: 10,
-			lifecycle: "pinned",
-			reason: "user objective",
-		});
-		for (let index = 0; index < 100; index++) {
-			const groupId = `group-${index}`;
+	// ~200 individual fsync'd SQLite transactions can take multi-second time
+	// on slower CI disks, so this test gets more headroom than the 5s default.
+	test(
+		"keeps a long tool run below budget without deleting raw history",
+		() => {
+			const store = new SessionStore(storePath());
+			const sessionId = store.create();
+			const manager = new ContextManager(store);
+			const raw = "x".repeat(16_000);
 			manager.record({
 				sessionId,
-				kind: "assistant",
-				payload: { role: "assistant", content: `call ${index}` },
-				tokenCost: 20,
-				groupId,
-				lifecycle: "retained",
-				reason: "completed tool call",
+				kind: "user",
+				payload: { role: "user", content: "keep the objective" },
+				tokenCost: 10,
+				lifecycle: "pinned",
+				reason: "user objective",
 			});
-			manager.record({
-				sessionId,
-				kind: "tool-result",
-				payload: { role: "toolResult", content: raw },
-				compactPayload: {
-					role: "user",
-					content: `observation://obs-${index}`,
-				},
-				tokenCost: 4_000,
-				compactTokenCost: 5,
-				groupId,
-				lifecycle: "retained",
-				reason: "completed tool result",
-				source: { toolCallId: `call-${index}`, toolName: "read" },
-			});
-		}
+			for (let index = 0; index < 100; index++) {
+				const groupId = `group-${index}`;
+				manager.record({
+					sessionId,
+					kind: "assistant",
+					payload: { role: "assistant", content: `call ${index}` },
+					tokenCost: 20,
+					groupId,
+					lifecycle: "retained",
+					reason: "completed tool call",
+				});
+				manager.record({
+					sessionId,
+					kind: "tool-result",
+					payload: { role: "toolResult", content: raw },
+					compactPayload: {
+						role: "user",
+						content: `observation://obs-${index}`,
+					},
+					tokenCost: 4_000,
+					compactTokenCost: 5,
+					groupId,
+					lifecycle: "retained",
+					reason: "completed tool result",
+					source: { toolCallId: `call-${index}`, toolName: "read" },
+				});
+			}
 
-		const assembly = manager.assemble(sessionId, {
-			budget: 2_000,
-			target: 1_600,
-			overheadTokens: 100,
-		});
-		expect(assembly.estimatedTokens).toBeLessThanOrEqual(1_600);
-		expect(JSON.stringify(assembly.payloads)).not.toContain(raw);
-		expect(store.contextItems(sessionId)).toHaveLength(201);
-		expect(store.contextItems(sessionId)[0]).toMatchObject({
-			lifecycle: "pinned",
-			projection: "full",
-		});
-		store.db.close();
-	});
+			const assembly = manager.assemble(sessionId, {
+				budget: 2_000,
+				target: 1_600,
+				overheadTokens: 100,
+			});
+			expect(assembly.estimatedTokens).toBeLessThanOrEqual(1_600);
+			expect(JSON.stringify(assembly.payloads)).not.toContain(raw);
+			expect(store.contextItems(sessionId)).toHaveLength(201);
+			expect(store.contextItems(sessionId)[0]).toMatchObject({
+				lifecycle: "pinned",
+				projection: "full",
+			});
+			store.db.close();
+		},
+		20_000,
+	);
 });
