@@ -9,8 +9,9 @@ import type {
 	ContextProjection,
 	NewContextItem,
 	NewEpisodeEvent,
-} from "./context-manager";
-import type { ExecutionLedgerEntry, TaskTerminalStatus } from "./task-runtime";
+} from "./context/types";
+import type { ExecutionLedgerEntry } from "./task-ledger";
+import type { TaskTerminalStatus } from "./task-runtime";
 
 export class SessionStore {
 	readonly db: Database;

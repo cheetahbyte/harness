@@ -1,91 +1,18 @@
-import { createHash } from "node:crypto";
-
-export type EffectClass = "read_only" | "mutating";
-export type MetadataTrust =
-	| "harness"
-	| "operator_approved"
-	| "provider_untrusted";
-export type HashScheme =
-	| "raw-sha256-v1"
-	| "jcs-sha256-v1"
-	| "jcs-hmac-sha256-v1";
-export type ProviderBindingRef = {
-	providerId: string;
-	bindingGeneration: string;
-};
-export type CapabilityRef = {
-	id: string;
-	catalogGeneration: string;
-	contractHash: string;
-	contractHashScheme: "jcs-sha256-v1";
-	providerBinding: ProviderBindingRef;
-};
-export type ToolAuthorityLevel =
-	| "none"
-	| "discover"
-	| "inspect"
-	| "load"
-	| "execute";
-export type SkillAuthorityLevel = "none" | "discover" | "inspect" | "activate";
-export type ConfirmationPolicy = "none" | "confirm_each" | "confirm_once";
-export type ToolGrant = {
-	maxLevel: ToolAuthorityLevel;
-	confirmation: ConfirmationPolicy;
-};
-export type SkillGrant = { maxLevel: SkillAuthorityLevel };
-export type CapabilityGrant =
-	| ({ kind: "tool" } & ToolGrant)
-	| ({ kind: "skill" } & SkillGrant);
-
-type DiscoveryMetadata = {
-	id: string;
-	name: string;
-	description: string;
-	tags?: readonly string[];
-	providerDisplayName: string;
-	metadataTrust: MetadataTrust;
-	modelDiscoverable?: boolean;
-	providerBinding: ProviderBindingRef;
-};
-export type ToolCapabilityInput = DiscoveryMetadata & {
-	kind: "tool";
-	schema: unknown;
-	effect?: EffectClass;
-};
-export type SkillCapabilityInput = DiscoveryMetadata & {
-	kind: "skill";
-	manifestHash: string;
-	bodyHash: string;
-};
-export type CapabilityInput = ToolCapabilityInput | SkillCapabilityInput;
-
-export type InspectedCapability = {
-	ref: CapabilityRef;
-	kind: CapabilityInput["kind"];
-	name: string;
-	description: string;
-	tags: readonly string[];
-	providerDisplayName: string;
-	metadataTrust: Exclude<MetadataTrust, "provider_untrusted">;
-	contract:
-		| { schema: unknown; effect: EffectClass }
-		| { manifestHash: string; bodyHash: string };
-};
-export type DiscoveryItem = Omit<InspectedCapability, "contract">;
-export type DiscoveryOptions = {
-	kind?: CapabilityInput["kind"];
-	limit?: number;
-	cursor?: string;
-};
-export type DiscoveryPage = {
-	items: DiscoveryItem[];
-	nextCursor?: string;
-	analyzerVersion: "lexical-v1";
-};
-export type InitialGrants = {
-	tool: ToolGrant | Readonly<Record<string, ToolGrant>>;
-	skill: SkillGrant | Readonly<Record<string, SkillGrant>>;
-};
+import { structuredHash } from "./hash";
+import type {
+	CapabilityGrant,
+	CapabilityInput,
+	CapabilityRef,
+	ConfirmationPolicy,
+	DiscoveryItem,
+	DiscoveryOptions,
+	DiscoveryPage,
+	InitialGrants,
+	InspectedCapability,
+	ProviderBindingRef,
+	SkillAuthorityLevel,
+	ToolAuthorityLevel,
+} from "./types";
 
 type CapabilityRecord = InspectedCapability & { modelDiscoverable: boolean };
 const toolLevels: readonly ToolAuthorityLevel[] = [
@@ -200,8 +127,8 @@ export class CapabilityCatalog {
 			.get(ref.providerBinding.providerId)
 			?.get(ref.providerBinding.bindingGeneration)
 			?.get(ref.id);
-		if (!current) throw new Error("STALE_CAPABILITY");
-		if (current !== ref.contractHash) throw new Error("STALE_CAPABILITY");
+		if (!current || current !== ref.contractHash)
+			throw new Error("STALE_CAPABILITY");
 	}
 }
 
@@ -344,191 +271,6 @@ export class CapabilitySnapshot {
 	}
 }
 
-export type ModelContextContent = unknown;
-export type CapabilityContextItem = {
-	id: string;
-	owner: "capability";
-	capability: CapabilityRef;
-	scope: "step" | "task";
-	contentHash: string;
-	content: ModelContextContent;
-};
-export type TokenAccounting = {
-	modelId: string;
-	serializerVersion: string;
-	method: "local_exact" | "provider_count" | "conservative_estimate";
-	estimatedInputTokens: number;
-	safetyMarginTokens: number;
-	admittedInputCeiling: number;
-};
-export interface TokenAccountant {
-	modelId: string;
-	serializerVersion: string;
-	method: TokenAccounting["method"];
-	count(request: unknown): number;
-}
-export type AdmissionResult =
-	| {
-			status: "admitted";
-			item?: CapabilityContextItem;
-			accounting: TokenAccounting;
-	  }
-	| {
-			status: "rejected";
-			estimatedRequiredTokens: number;
-			availableTokens: number;
-			safetyMarginTokens: number;
-			evictionCandidates: string[];
-			accounting: TokenAccounting;
-	  };
-export type ContextAdmission = {
-	capability: CapabilityRef;
-	scope: CapabilityContextItem["scope"];
-	contentHash: string;
-	content: ModelContextContent;
-	accountant: TokenAccountant;
-};
-
-export class CapabilityContext {
-	private active: CapabilityContextItem[] = [];
-	private destroyed = false;
-	private accounting: TokenAccounting | undefined;
-
-	constructor(
-		private readonly baseRequest: unknown,
-		private readonly assemble: (
-			baseRequest: unknown,
-			items: readonly CapabilityContextItem[],
-		) => unknown,
-		private readonly budget = 8_000,
-		private readonly safetyMarginTokens = 512,
-	) {
-		if (!Number.isSafeInteger(budget) || budget <= 0)
-			throw new Error("context budget must be a positive integer");
-		if (!Number.isSafeInteger(safetyMarginTokens) || safetyMarginTokens < 0)
-			throw new Error("safety margin must be a non-negative integer");
-	}
-
-	items(): CapabilityContextItem[] {
-		return this.active.map(cloneContextItem);
-	}
-
-	admit(input: ContextAdmission): AdmissionResult {
-		if (this.destroyed) throw new Error("task context is terminated");
-		const item: CapabilityContextItem = {
-			id: crypto.randomUUID(),
-			owner: "capability",
-			capability: cloneRef(input.capability),
-			scope: input.scope,
-			contentHash: input.contentHash,
-			content: structuredClone(input.content),
-		};
-		const proposed = [...this.active, item];
-		const result = this.account(proposed, input.accountant, item);
-		if (result.status === "admitted") {
-			this.active = proposed;
-			this.accounting = result.accounting;
-		}
-		return result;
-	}
-
-	remove(id: string): boolean {
-		const before = this.active.length;
-		this.active = this.active.filter((item) => item.id !== id);
-		return this.active.length !== before;
-	}
-
-	removeStepItems(): void {
-		this.active = this.active.filter((item) => item.scope !== "step");
-	}
-
-	reaccount(accountant: TokenAccountant): AdmissionResult {
-		if (this.destroyed) throw new Error("task context is terminated");
-		const result = this.account(this.active, accountant);
-		if (result.status === "admitted") this.accounting = result.accounting;
-		return result;
-	}
-
-	lastAccounting(): TokenAccounting | undefined {
-		return this.accounting ? { ...this.accounting } : undefined;
-	}
-
-	destroy(): void {
-		this.active = [];
-		this.accounting = undefined;
-		this.destroyed = true;
-	}
-
-	private account(
-		items: readonly CapabilityContextItem[],
-		accountant: TokenAccountant,
-		item?: CapabilityContextItem,
-	): AdmissionResult {
-		const estimatedInputTokens = accountant.count(
-			this.assemble(this.baseRequest, items),
-		);
-		if (!Number.isSafeInteger(estimatedInputTokens) || estimatedInputTokens < 0)
-			throw new Error("token accountant returned an invalid count");
-		const estimatedRequiredTokens =
-			estimatedInputTokens + this.safetyMarginTokens;
-		const accounting: TokenAccounting = {
-			modelId: accountant.modelId,
-			serializerVersion: accountant.serializerVersion,
-			method: accountant.method,
-			estimatedInputTokens,
-			safetyMarginTokens: this.safetyMarginTokens,
-			admittedInputCeiling: this.budget,
-		};
-		if (estimatedRequiredTokens <= this.budget)
-			return {
-				status: "admitted",
-				...(item ? { item: cloneContextItem(item) } : {}),
-				accounting,
-			};
-		return {
-			status: "rejected",
-			estimatedRequiredTokens,
-			availableTokens: Math.max(0, this.budget - this.safetyMarginTokens),
-			safetyMarginTokens: this.safetyMarginTokens,
-			evictionCandidates: this.active.map((candidate) => candidate.id),
-			accounting,
-		};
-	}
-}
-
-export function rawHash(bytes: Uint8Array): string {
-	return createHash("sha256").update(bytes).digest("hex");
-}
-
-export function structuredHash(value: unknown): string {
-	return createHash("sha256").update(canonicalJson(value)).digest("hex");
-}
-
-export function canonicalJson(value: unknown): string {
-	if (value === null || typeof value === "boolean" || typeof value === "string")
-		return JSON.stringify(value);
-	if (typeof value === "number") {
-		if (!Number.isFinite(value))
-			throw new Error("canonical JSON requires finite numbers");
-		return JSON.stringify(value);
-	}
-	if (Array.isArray(value))
-		return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
-	if (typeof value === "object") {
-		const record = value as Record<string, unknown>;
-		const entries = Object.keys(record)
-			.sort()
-			.map((key) => {
-				const item = record[key];
-				if (item === undefined)
-					throw new Error("canonical JSON does not support undefined");
-				return `${JSON.stringify(key)}:${canonicalJson(item)}`;
-			});
-		return `{${entries.join(",")}}`;
-	}
-	throw new Error(`canonical JSON does not support ${typeof value}`);
-}
-
 function bounded(value: string, max: number): string {
 	if (typeof value !== "string" || !value.trim())
 		throw new Error("capability metadata must be non-empty text");
@@ -552,8 +294,7 @@ function atLeast(
 		grant.kind === "tool"
 			? toolLevels.indexOf(grant.maxLevel)
 			: skillLevels.indexOf(grant.maxLevel);
-	const needed = required === "discover" ? 1 : 2;
-	return current >= needed;
+	return current >= (required === "discover" ? 1 : 2);
 }
 
 function grantIsReduction(
@@ -561,15 +302,14 @@ function grantIsReduction(
 	after: CapabilityGrant,
 ): boolean {
 	if (before.kind === "tool" && after.kind === "tool") {
-		const levelReduced =
-			toolLevels.indexOf(after.maxLevel) <= toolLevels.indexOf(before.maxLevel);
 		const confirmations: readonly ConfirmationPolicy[] = [
 			"none",
 			"confirm_once",
 			"confirm_each",
 		];
 		return (
-			levelReduced &&
+			toolLevels.indexOf(after.maxLevel) <=
+				toolLevels.indexOf(before.maxLevel) &&
 			confirmations.indexOf(after.confirmation) >=
 				confirmations.indexOf(before.confirmation)
 		);
@@ -631,14 +371,6 @@ function discoveryItem(record: CapabilityRecord): DiscoveryItem {
 function cloneInspection(record: CapabilityRecord): InspectedCapability {
 	const { modelDiscoverable: _discoverable, ...inspection } = record;
 	return structuredClone(inspection);
-}
-
-function cloneRef(ref: CapabilityRef): CapabilityRef {
-	return structuredClone(ref);
-}
-
-function cloneContextItem(item: CapabilityContextItem): CapabilityContextItem {
-	return structuredClone(item);
 }
 
 function freeze<T>(value: T): T {

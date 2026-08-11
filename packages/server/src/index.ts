@@ -1,5 +1,5 @@
+import { serveHarness } from "./http-server";
 import { log } from "./logger";
-import { serveHarness } from "./server";
 
 const contextBudget = process.env["HARNESS_CONTEXT_BUDGET"];
 const server = serveHarness({

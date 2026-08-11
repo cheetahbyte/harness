@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
 	CapabilityCatalog,
-	CapabilityContext,
 	type CapabilitySnapshot,
-} from "../src/capability-control";
+} from "../src/capabilities/catalog";
+import { CapabilityContext } from "../src/capabilities/context";
 import {
 	ConfirmationRequiredError,
 	TaskRuntime,
-	TaskScheduler,
 } from "../src/task-runtime";
+import { TaskScheduler } from "../src/task-scheduler";
 
 function snapshot(
 	confirmation: "none" | "confirm_once" | "confirm_each" = "none",

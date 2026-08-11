@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StreamLine } from "../../shared/src/protocol";
-import { HarnessServer, serveHarness } from "../src/server";
+import { serveHarness } from "../src/http-server";
+import { HarnessServer } from "../src/server";
 
 const paths: string[] = [];
 afterEach(() => {

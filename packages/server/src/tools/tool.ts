@@ -1,7 +1,7 @@
 import { relative, resolve } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { TSchema } from "@earendil-works/pi-ai";
-import type { EffectClass } from "../capability-control";
+import type { EffectClass } from "../capabilities/types";
 
 const writeLocks = new Map<string, Promise<void>>();
 

@@ -1,14 +1,20 @@
-import { createHmac } from "node:crypto";
+import type { CapabilitySnapshot } from "./capabilities/catalog";
+import type { CapabilityContext } from "./capabilities/context";
+import type {
+	CapabilityGrant,
+	CapabilityRef,
+	EffectClass,
+	InspectedCapability,
+	ToolGrant,
+} from "./capabilities/types";
 import {
-	type CapabilityContext,
-	type CapabilityGrant,
-	type CapabilityRef,
-	type CapabilitySnapshot,
-	canonicalJson,
-	type EffectClass,
-	type InspectedCapability,
-	type ToolGrant,
-} from "./capability-control";
+	buildTaskEvidence,
+	buildTaskLedgerDigest,
+	type CapabilityCallOutcome,
+	type EvidenceDigest,
+	type ExecutionLedgerEntry,
+	type TaskLedgerDigest,
+} from "./task-ledger";
 
 export type TaskId = string;
 export type CallId = string;
@@ -21,42 +27,8 @@ export type TaskTerminalStatus =
 	| "cancelled"
 	| "superseded";
 export type TaskState = "running" | "cancelling" | "quiescing" | "terminal";
-export type CapabilityCallOutcome =
-	| "success"
-	| "failure"
-	| "cancelled_before_start"
-	| "cancelled_acknowledged"
-	| "outcome_unknown";
-export type EvidenceDigest = {
-	scheme: "jcs-hmac-sha256-v1";
-	digest: string;
-};
-export type ExecutionLedgerEntry =
-	| {
-			type: "capability_call_started";
-			callId: CallId;
-			capability: CapabilityRef;
-			effect: EffectClass;
-			startedAt: Timestamp;
-			inputEvidence?: EvidenceDigest;
-	  }
-	| {
-			type: "capability_call_finished";
-			callId: CallId;
-			outcome: CapabilityCallOutcome;
-			finishedAt: Timestamp;
-			outputEvidence?: EvidenceDigest;
-	  }
-	| {
-			type: "grant_reduced";
-			capabilityId: string;
-			before: CapabilityGrant;
-			after: CapabilityGrant;
-			at: Timestamp;
-	  }
-	| { type: "cancellation_requested"; at: Timestamp };
 
-export type TaskFailure = { code: string; message: string };
+type TaskFailure = { code: string; message: string };
 export type TaskTerminalResult =
 	| { status: "completed"; terminalMessageIds: MessageId[] }
 	| {
@@ -66,23 +38,6 @@ export type TaskTerminalResult =
 	  }
 	| { status: "cancelled"; terminalMessageIds: MessageId[] }
 	| { status: "superseded"; terminalMessageIds: MessageId[] };
-export type SafeCapabilitySummary = {
-	id: string;
-	kind: "tool" | "skill";
-	name: string;
-	effect?: EffectClass;
-};
-export type TaskLedgerDigest = {
-	status: TaskTerminalStatus;
-	capabilityCalls: number;
-	failedCalls: number;
-	successfulMutatingCalls: number;
-	unknownMutatingCalls: number;
-	cancelledCalls: number;
-	referencedCapabilities: SafeCapabilitySummary[];
-	startedAt: Timestamp;
-	finishedAt: Timestamp;
-};
 export type CapabilityExecutor = {
 	execute(input: unknown, signal: AbortSignal): Promise<unknown>;
 	cancel?(
@@ -363,67 +318,15 @@ export class TaskRuntime {
 	digest(successor: CapabilitySnapshot): TaskLedgerDigest {
 		if (!this.terminal || !this.finishedAt)
 			throw new Error("TASK_NOT_TERMINAL");
-		const starts = this.events.filter(
-			(
-				event,
-			): event is Extract<
-				ExecutionLedgerEntry,
-				{ type: "capability_call_started" }
-			> => event.type === "capability_call_started",
+		return buildTaskLedgerDigest(
+			{
+				entries: this.events,
+				terminal: this.terminal.status,
+				startedAt: this.startedAt,
+				finishedAt: this.finishedAt,
+			},
+			successor,
 		);
-		const finishes = new Map(
-			this.events.flatMap((event) =>
-				event.type === "capability_call_finished"
-					? [[event.callId, event] as const]
-					: [],
-			),
-		);
-		const discoverable = discoverableById(successor);
-		const referenced = new Map<string, SafeCapabilitySummary>();
-		for (const start of starts) {
-			const safe = discoverable.get(start.capability.id);
-			if (safe) {
-				let effect: EffectClass | undefined;
-				try {
-					const inspected = successor.inspect(safe.ref);
-					if (inspected.kind === "tool" && "effect" in inspected.contract)
-						effect = inspected.contract.effect;
-				} catch {}
-				referenced.set(start.capability.id, {
-					id: safe.ref.id,
-					kind: safe.kind,
-					name: safe.name,
-					...(effect ? { effect } : {}),
-				});
-			}
-		}
-		return {
-			status: this.terminal.status,
-			capabilityCalls: starts.length,
-			failedCalls: starts.filter(
-				(start) => finishes.get(start.callId)?.outcome === "failure",
-			).length,
-			successfulMutatingCalls: starts.filter(
-				(start) =>
-					start.effect === "mutating" &&
-					finishes.get(start.callId)?.outcome === "success",
-			).length,
-			unknownMutatingCalls: starts.filter(
-				(start) =>
-					start.effect === "mutating" &&
-					finishes.get(start.callId)?.outcome === "outcome_unknown",
-			).length,
-			cancelledCalls: starts.filter((start) =>
-				["cancelled_before_start", "cancelled_acknowledged"].includes(
-					finishes.get(start.callId)?.outcome ?? "",
-				),
-			).length,
-			referencedCapabilities: [...referenced.values()].sort((a, b) =>
-				a.id.localeCompare(b.id),
-			),
-			startedAt: this.startedAt,
-			finishedAt: this.finishedAt,
-		};
 	}
 
 	private requireConfirmation(
@@ -472,12 +375,7 @@ export class TaskRuntime {
 	}
 
 	private evidence(value: unknown): EvidenceDigest {
-		return {
-			scheme: "jcs-hmac-sha256-v1",
-			digest: createHmac("sha256", this.evidenceKey)
-				.update(canonicalJson(redact(value)))
-				.digest("hex"),
-		};
+		return buildTaskEvidence(value, this.evidenceKey);
 	}
 
 	private timestamp(): Timestamp {
@@ -485,234 +383,10 @@ export class TaskRuntime {
 	}
 }
 
-export type Message = { id: MessageId; text: string };
-export type QueuedTask = {
-	id: string;
-	kind: "follow-up" | "supersede";
-	submissionWatermark: ConversationRevision;
-	predecessorTaskId?: TaskId;
-	requirePredecessorSuccess: boolean;
-	userInput: Message;
-	state: "queued" | "ready" | "blocked";
-};
-
-export type SchedulerDecision =
-	| { state: "ready"; queued: QueuedTask; predecessor?: TaskRuntime }
-	| { state: "blocked"; queued: QueuedTask };
-
-export class TaskScheduler {
-	private current: TaskRuntime | undefined;
-	private readonly pending: QueuedTask[] = [];
-	private readonly completed = new Map<TaskId, TaskRuntime>();
-	private replacement: QueuedTask | undefined;
-	private lastCompleted: TaskRuntime | undefined;
-
-	active(): TaskRuntime | undefined {
-		return this.current;
-	}
-
-	activate(task: TaskRuntime): void {
-		if (this.current && this.current.id !== task.id)
-			throw new Error("TASK_ALREADY_ACTIVE");
-		this.current = task;
-	}
-
-	enqueue(
-		message: Message,
-		submissionWatermark: ConversationRevision,
-		options: {
-			requirePredecessorSuccess?: boolean;
-			predecessorTaskId?: TaskId;
-		} = {},
-	): QueuedTask {
-		const queued = queuedTask(
-			message,
-			submissionWatermark,
-			options.requirePredecessorSuccess ?? false,
-			options.predecessorTaskId ?? this.current?.id,
-			"follow-up",
-		);
-		this.pending.push(queued);
-		return structuredClone(queued);
-	}
-
-	requestSupersede(
-		activeTaskId: TaskId,
-		message: Message,
-		submissionWatermark: ConversationRevision,
-	): { queued: QueuedTask; replaced?: QueuedTask } {
-		if (this.current?.id !== activeTaskId) throw new Error("TASK_NOT_ACTIVE");
-		const queued = queuedTask(
-			message,
-			submissionWatermark,
-			false,
-			activeTaskId,
-			"supersede",
-		);
-		const replaced = this.replacement;
-		this.replacement = queued;
-		return {
-			queued: structuredClone(queued),
-			...(replaced ? { replaced: structuredClone(replaced) } : {}),
-		};
-	}
-
-	settle(task: TaskRuntime): SchedulerDecision | undefined {
-		if (this.current?.id !== task.id) throw new Error("TASK_NOT_ACTIVE");
-		if (!task.result()) throw new Error("TASK_NOT_TERMINAL");
-		this.completed.set(task.id, task);
-		this.lastCompleted = task;
-		while (this.completed.size > 100)
-			this.completed.delete(this.completed.keys().next().value as string);
-		this.current = undefined;
-		return this.next();
-	}
-
-	next(): SchedulerDecision | undefined {
-		if (this.current) return undefined;
-		const replacement = this.replacement;
-		if (replacement) {
-			this.replacement = undefined;
-			replacement.state = "ready";
-			const predecessor = this.predecessor(replacement);
-			return {
-				state: "ready",
-				queued: structuredClone(replacement),
-				...(predecessor ? { predecessor } : {}),
-			};
-		}
-		const queued = this.pending[0];
-		if (!queued) return undefined;
-		const requiredPredecessor = queued.predecessorTaskId
-			? this.completed.get(queued.predecessorTaskId)?.result()?.status
-			: this.lastCompleted?.result()?.status;
-		if (
-			queued.requirePredecessorSuccess &&
-			requiredPredecessor !== "completed"
-		) {
-			queued.state = "blocked";
-			return { state: "blocked", queued: structuredClone(queued) };
-		}
-		this.pending.shift();
-		queued.state = "ready";
-		const predecessor = this.predecessor(queued);
-		return {
-			state: "ready",
-			queued: structuredClone(queued),
-			...(predecessor ? { predecessor } : {}),
-		};
-	}
-
-	resume(id: string): QueuedTask {
-		const queued = this.findPending(id);
-		queued.requirePredecessorSuccess = false;
-		queued.state = "queued";
-		return structuredClone(queued);
-	}
-
-	cancelQueued(id: string): QueuedTask {
-		const index = this.pending.findIndex((queued) => queued.id === id);
-		if (index < 0) throw new Error("QUEUED_TASK_NOT_FOUND");
-		const [removed] = this.pending.splice(index, 1);
-		if (!removed) throw new Error("QUEUED_TASK_NOT_FOUND");
-		return structuredClone(removed);
-	}
-
-	replaceQueued(
-		id: string,
-		message: Message,
-		submissionWatermark: ConversationRevision,
-	): { cancelled: QueuedTask; queued: QueuedTask } {
-		const index = this.pending.findIndex((queued) => queued.id === id);
-		const cancelled = this.pending[index];
-		if (!cancelled) throw new Error("QUEUED_TASK_NOT_FOUND");
-		const queued = queuedTask(
-			message,
-			submissionWatermark,
-			false,
-			cancelled.predecessorTaskId,
-			"follow-up",
-		);
-		this.pending[index] = queued;
-		return {
-			cancelled: structuredClone(cancelled),
-			queued: structuredClone(queued),
-		};
-	}
-
-	queue(): QueuedTask[] {
-		return structuredClone([
-			...(this.replacement ? [this.replacement] : []),
-			...this.pending,
-		]);
-	}
-
-	hasPendingSupersede(): boolean {
-		return !!this.replacement;
-	}
-
-	private predecessor(queued: QueuedTask): TaskRuntime | undefined {
-		return queued.predecessorTaskId
-			? this.completed.get(queued.predecessorTaskId)
-			: this.lastCompleted;
-	}
-
-	private findPending(id: string): QueuedTask {
-		const queued = this.pending.find((candidate) => candidate.id === id);
-		if (!queued) throw new Error("QUEUED_TASK_NOT_FOUND");
-		return queued;
-	}
-}
-
-function queuedTask(
-	message: Message,
-	submissionWatermark: ConversationRevision,
-	requirePredecessorSuccess: boolean,
-	predecessorTaskId?: TaskId,
-	kind: QueuedTask["kind"] = "follow-up",
-): QueuedTask {
-	return {
-		id: message.id,
-		kind,
-		submissionWatermark,
-		...(predecessorTaskId ? { predecessorTaskId } : {}),
-		requirePredecessorSuccess,
-		userInput: structuredClone(message),
-		state: "queued",
-	};
-}
-
 function toolEffect(inspected: InspectedCapability): EffectClass {
 	if (inspected.kind !== "tool" || !("effect" in inspected.contract))
 		throw new Error("CAPABILITY_NOT_EXECUTABLE");
 	return inspected.contract.effect;
-}
-
-function discoverableById(snapshot: CapabilitySnapshot) {
-	const found = new Map<
-		string,
-		ReturnType<CapabilitySnapshot["list"]>["items"][number]
-	>();
-	let cursor: string | undefined;
-	do {
-		const page = snapshot.list({ limit: 100, ...(cursor ? { cursor } : {}) });
-		for (const item of page.items) found.set(item.ref.id, item);
-		cursor = page.nextCursor;
-	} while (cursor);
-	return found;
-}
-
-function redact(value: unknown): unknown {
-	if (Array.isArray(value)) return value.map(redact);
-	if (!value || typeof value !== "object") return value;
-	return Object.fromEntries(
-		Object.entries(value).map(([key, item]) => [
-			key,
-			/(secret|token|password|credential|api.?key)/i.test(key)
-				? "[REDACTED]"
-				: redact(item),
-		]),
-	);
 }
 
 async function delay(milliseconds: number): Promise<void> {

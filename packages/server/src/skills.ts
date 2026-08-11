@@ -7,17 +7,15 @@ import {
 	type Skill,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import {
-	type CapabilityContext,
-	type CapabilityRef,
-	rawHash,
-	type SkillCapabilityInput,
-	structuredHash,
-	type TokenAccountant,
-} from "./capability-control";
+import type {
+	CapabilityContext,
+	TokenAccountant,
+} from "./capabilities/context";
+import { rawHash, structuredHash } from "./capabilities/hash";
+import type { CapabilityRef, SkillCapabilityInput } from "./capabilities/types";
 
-export type SkillDiscoveryState = "discoverable" | "operator_only" | "invalid";
-export type SkillRef = {
+type SkillDiscoveryState = "discoverable" | "operator_only" | "invalid";
+type SkillRef = {
 	id: string;
 	catalogGeneration: string;
 	manifestHash: string;
@@ -31,7 +29,7 @@ export type SkillSnapshotEntry = {
 	path: string;
 	discoveryState: Exclude<SkillDiscoveryState, "invalid">;
 };
-export type SkillDiagnostic = {
+type SkillDiagnostic = {
 	path: string;
 	state: "invalid";
 	error: string;

@@ -1,11 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { CapabilityCatalog } from "../src/capabilities/catalog";
 import {
-	CapabilityCatalog,
 	CapabilityContext,
-	canonicalJson,
-	structuredHash,
 	type TokenAccountant,
-} from "../src/capability-control";
+} from "../src/capabilities/context";
+import { canonicalJson, structuredHash } from "../src/capabilities/hash";
 
 const binding = { providerId: "workspace", bindingGeneration: "binding-1" };
 const execute = { maxLevel: "execute", confirmation: "none" } as const;

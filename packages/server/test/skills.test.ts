@@ -8,10 +8,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	CapabilityCatalog,
-	CapabilityContext,
-} from "../src/capability-control";
+import { CapabilityCatalog } from "../src/capabilities/catalog";
+import { CapabilityContext } from "../src/capabilities/context";
 import { activateSkill, invokeSkills, scanSkills } from "../src/skills";
 
 const paths: string[] = [];

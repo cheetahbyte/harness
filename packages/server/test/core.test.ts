@@ -592,10 +592,14 @@ function episodeId(
 	test("queues commands submitted while task construction is in progress", async () => {
 		const { server } = harness();
 		const internals = server as unknown as {
-			createTask: (...args: never[]) => Promise<unknown>;
-			runtime: { run: (_id: string, text: string) => Promise<void> };
+			taskRunner: {
+				createTask: (...args: never[]) => Promise<unknown>;
+			};
+			runtime: { run: (input: { text: string }) => Promise<void> };
 		};
-		const originalCreateTask = internals.createTask.bind(server);
+		const originalCreateTask = internals.taskRunner.createTask.bind(
+			internals.taskRunner,
+		);
 		let constructionStarted!: () => void;
 		let releaseConstruction!: () => void;
 		let releaseFirstRun!: () => void;
@@ -608,13 +612,13 @@ function episodeId(
 		const firstRunGate = new Promise<void>(
 			(resolve) => (releaseFirstRun = resolve),
 		);
-		internals.createTask = async (...args) => {
+		internals.taskRunner.createTask = async (...args) => {
 			constructionStarted();
 			await constructionGate;
 			return await originalCreateTask(...args);
 		};
 		const prompts: string[] = [];
-		internals.runtime.run = async (_id, text) => {
+		internals.runtime.run = async ({ text }) => {
 			prompts.push(text);
 			if (prompts.length === 1) await firstRunGate;
 		};
@@ -928,9 +932,9 @@ function episodeId(
 			const prompts: string[] = [];
 			(
 				server as unknown as {
-					runtime: { run: (_id: string, text: string) => Promise<void> };
+					runtime: { run: (input: { text: string }) => Promise<void> };
 				}
-			).runtime.run = async (_id, text) => {
+			).runtime.run = async ({ text }) => {
 				prompts.push(text);
 				if (prompts.length === 1) throw new Error("runtime failed");
 			};

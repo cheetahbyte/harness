@@ -2,11 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	ContextBudgetError,
-	ContextManager,
-	MAX_OBSERVATION_RECALL_LIMIT,
-} from "../src/context-manager";
+import { ContextBudgetError, ContextManager } from "../src/context/manager";
+import { MAX_OBSERVATION_RECALL_LIMIT } from "../src/context/recall";
 import { SessionStore } from "../src/session-store";
 
 const paths: string[] = [];
