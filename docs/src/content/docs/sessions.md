@@ -129,7 +129,7 @@ reuse a base URL only when the session's active model is also
 ## Settings precedence
 
 You can put session title settings in the global
-`~/.config/harness/settings.json` or the project's `.harness/settings.json`.
+`~/.config/harnez/settings.json` or the project's `.harnez/settings.json`.
 The project can override `generated`, `source`, or both.
 
 See [Configuration](/docs/configuration) for the full settings hierarchy and
@@ -137,7 +137,7 @@ provider configuration.
 
 ## Persistence
 
-By default, the server stores sessions in `.harness/harness.sqlite`. Set
+By default, the server stores sessions in `.harnez/harnez.sqlite`. Set
 `HARNEZ_DATABASE_PATH` to use another database file.
 
 The SQLite database stores session metadata, events, model selections, context

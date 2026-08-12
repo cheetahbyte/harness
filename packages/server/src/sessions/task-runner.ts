@@ -1,6 +1,6 @@
 import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
 import { slashCommandPattern } from "../../../shared/src/slash-command";
-import type { HarnessAgentRuntime } from "../agent/runtime";
+import type { HarnezAgentRuntime } from "../agent/runtime";
 import {
 	CapabilityCatalog,
 	type CapabilitySnapshot,
@@ -36,7 +36,7 @@ export type RunningTask = {
 };
 
 type RunnerOptions = {
-	runtime: HarnessAgentRuntime;
+	runtime: HarnezAgentRuntime;
 	store: SessionStore;
 	context: ContextManager;
 	capabilityBudget: number;

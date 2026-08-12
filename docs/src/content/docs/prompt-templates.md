@@ -18,9 +18,9 @@ Harnez scans four roots in this order:
 
 | Scope | Location |
 | --- | --- |
-| Project | `.harness/prompts/<name>.md` |
+| Project | `.harnez/prompts/<name>.md` |
 | Project, shared | `.agents/prompts/<name>.md` |
-| User | `~/.harness/prompts/<name>.md` |
+| User | `~/.harnez/prompts/<name>.md` |
 | User, shared | `~/.agents/prompts/<name>.md` |
 
 Each template is one `.md` file directly inside a root. Harnez does not scan
@@ -31,7 +31,7 @@ template shadows a user template of the same name.
 ## Create a template
 
 ```text
-.harness/prompts/
+.harnez/prompts/
 └── review-pr.md
 ```
 

@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
 import type {
@@ -21,10 +21,23 @@ export interface SessionSummary {
 	title: string | null;
 }
 
+const DATABASE_PATH = ".harnez/harnez.sqlite";
+const LEGACY_DATABASE_PATH = ".harness/harness.sqlite";
+
+/**
+ * A database written before the rename keeps being used in place, so upgrading
+ * never starts a workspace over with an empty session history.
+ */
+function defaultDatabasePath(): string {
+	return !existsSync(DATABASE_PATH) && existsSync(LEGACY_DATABASE_PATH)
+		? LEGACY_DATABASE_PATH
+		: DATABASE_PATH;
+}
+
 export class SessionStore {
 	readonly db: Database;
 
-	constructor(path = ".harness/harness.sqlite") {
+	constructor(path = defaultDatabasePath()) {
 		mkdirSync(dirname(path), { recursive: true });
 		this.db = new Database(path, { create: true });
 		migrate(this.db);

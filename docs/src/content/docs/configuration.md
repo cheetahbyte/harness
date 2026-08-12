@@ -8,11 +8,17 @@ slug: configuration
 Harnez keeps credentials and global settings in your user config directory.
 
 ```text
-~/.config/harness/auth.json
-~/.config/harness/settings.json
+~/.config/harnez/auth.json
+~/.config/harnez/settings.json
 ```
 
-`$XDG_CONFIG_HOME/harness` is used instead when that variable is set.
+`$XDG_CONFIG_HOME/harnez` is used instead when that variable is set.
+
+These directories were named `harness` before the project was renamed. An
+install that still has the old name keeps working: each location is read from
+its pre-rename spelling whenever the new one is absent, and writes go back to
+whichever file was found. Nothing needs to be moved by hand, though renaming
+`harness` to `harnez` yourself is harmless.
 
 ## `auth.json`
 
@@ -72,21 +78,23 @@ persistence.
 
 ## Project overrides
 
-A project-local `.harness/settings.json` takes precedence over the corresponding
+A project-local `.harnez/settings.json` takes precedence over the corresponding
 global values for that project. Nested session-title fields are merged
 independently, so a project may override only `generated` or only `source`:
 
 ```text
 <repo>/
-  .harness/
-    settings.json      # overrides ~/.config/harness/settings.json
-    harness.sqlite     # session, event, and context storage
+  .harnez/
+    settings.json      # overrides ~/.config/harnez/settings.json
+    harnez.sqlite     # session, event, and context storage
     skills/              # project-local skills, alongside .agents/skills
     prompts/             # project-local prompt templates, alongside .agents/prompts
 ```
 
-User-level skills live in `~/.harness/skills` and `~/.agents/skills`, and
-user-level prompt templates in `~/.harness/prompts` and `~/.agents/prompts`.
+User-level skills live in `~/.harnez/skills` and `~/.agents/skills`, and
+user-level prompt templates in `~/.harnez/prompts` and `~/.agents/prompts`. The
+pre-rename `.harness` directories are still scanned, ranking just below their
+`.harnez` counterparts.
 
 ## Environment variables
 

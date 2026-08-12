@@ -11,8 +11,8 @@ afterEach(() => {
 });
 
 function workspaces() {
-	const project = mkdtempSync(join(tmpdir(), "harness-project-"));
-	const home = mkdtempSync(join(tmpdir(), "harness-home-"));
+	const project = mkdtempSync(join(tmpdir(), "harnez-project-"));
+	const home = mkdtempSync(join(tmpdir(), "harnez-home-"));
 	paths.push(project, home);
 	return { project, home };
 }
@@ -25,17 +25,17 @@ function prompt(root: string, file: string, contents: string) {
 test("reads templates with and without frontmatter", async () => {
 	const { project, home } = workspaces();
 	prompt(
-		join(project, ".harness/prompts"),
+		join(project, ".harnez/prompts"),
 		"review-pr.md",
 		"---\ndescription: Review an open pull request\n---\nRead the diff and report defects.",
 	);
 	prompt(
-		join(project, ".harness/prompts"),
+		join(project, ".harnez/prompts"),
 		"standup.md",
 		"# Daily standup\n\nSummarize yesterday's commits.",
 	);
 	prompt(
-		join(project, ".harness/prompts"),
+		join(project, ".harnez/prompts"),
 		"renamed.md",
 		"---\nname: release-notes\n---\nDraft release notes.",
 	);
@@ -57,9 +57,9 @@ test("reads templates with and without frontmatter", async () => {
 
 test("prefers the first root that defines a name", async () => {
 	const { project, home } = workspaces();
-	prompt(join(project, ".harness/prompts"), "review.md", "Project review.");
+	prompt(join(project, ".harnez/prompts"), "review.md", "Project review.");
 	prompt(join(project, ".agents/prompts"), "review.md", "Shared review.");
-	prompt(join(home, ".harness/prompts"), "review.md", "User review.");
+	prompt(join(home, ".harnez/prompts"), "review.md", "User review.");
 	prompt(join(home, ".agents/prompts"), "plan.md", "User plan.");
 
 	const { templates } = await scanPrompts(project, home);
@@ -70,19 +70,19 @@ test("prefers the first root that defines a name", async () => {
 
 test("reports invalid templates instead of exposing them", async () => {
 	const { project, home } = workspaces();
-	prompt(join(project, ".harness/prompts"), "Review PR.md", "Mixed case name.");
+	prompt(join(project, ".harnez/prompts"), "Review PR.md", "Mixed case name.");
 	prompt(
-		join(project, ".harness/prompts"),
+		join(project, ".harnez/prompts"),
 		"empty.md",
 		"---\ndescription: Nothing follows\n---\n\n",
 	);
 	prompt(
-		join(project, ".harness/prompts"),
+		join(project, ".harnez/prompts"),
 		"broken.md",
 		"---\ndescription: []\n---\nBroken description.",
 	);
-	prompt(join(project, ".harness/prompts"), "notes.txt", "Not a template.");
-	prompt(join(project, ".harness/prompts"), "valid.md", "Valid template.");
+	prompt(join(project, ".harnez/prompts"), "notes.txt", "Not a template.");
+	prompt(join(project, ".harnez/prompts"), "valid.md", "Valid template.");
 
 	const { templates, diagnostics } = await scanPrompts(project, home);
 
@@ -98,7 +98,7 @@ test("reports invalid templates instead of exposing them", async () => {
 test("expands only a leading invocation and appends trailing text", async () => {
 	const { project, home } = workspaces();
 	prompt(
-		join(project, ".harness/prompts"),
+		join(project, ".harnez/prompts"),
 		"review-pr.md",
 		"Read the diff and report defects.",
 	);
@@ -115,4 +115,28 @@ test("expands only a leading invocation and appends trailing text", async () => 
 	);
 	for (const text of ["please /review-pr", "/unknown 42", "review-pr"])
 		expect(expandPrompt(text, templates)).toEqual({ text });
+});
+
+test("still reads templates from the pre-rename .harness directory", async () => {
+	const { project, home } = workspaces();
+	prompt(join(project, ".harness/prompts"), "legacy.md", "Legacy template.");
+	prompt(join(home, ".harness/prompts"), "user.md", "User template.");
+
+	const { templates } = await scanPrompts(project, home);
+
+	expect(templates.map((template) => template.name)).toEqual([
+		"legacy",
+		"user",
+	]);
+});
+
+test("prefers .harnez over .harness for the same template name", async () => {
+	const { project, home } = workspaces();
+	prompt(join(project, ".harnez/prompts"), "review.md", "Current.");
+	prompt(join(project, ".harness/prompts"), "review.md", "Legacy.");
+
+	const { templates } = await scanPrompts(project, home);
+
+	expect(templates).toHaveLength(1);
+	expect(templates[0]?.body).toBe("Current.");
 });

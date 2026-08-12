@@ -16,12 +16,25 @@ type Settings = {
 	session?: { title?: { generated?: boolean; source?: string } };
 };
 
-export function globalHarnessPath(file: string): string {
-	return join(
-		process.env["XDG_CONFIG_HOME"] ?? join(homedir(), ".config"),
-		"harness",
-		file,
-	);
+/**
+ * Config lives under `harnez`, but installs predating the rename wrote to
+ * `harness`. An existing legacy file keeps being used — including for writes —
+ * so upgrading never silently strands someone's credentials or settings.
+ */
+export function globalHarnezPath(file: string): string {
+	const config = process.env["XDG_CONFIG_HOME"] ?? join(homedir(), ".config");
+	const path = join(config, "harnez", file);
+	if (existsSync(path)) return path;
+	const legacy = join(config, "harness", file);
+	return existsSync(legacy) ? legacy : path;
+}
+
+/** The workspace-local counterpart, with the same pre-rename fallback. */
+export function projectHarnezPath(file: string, base = "."): string {
+	const path = join(base, ".harnez", file);
+	if (existsSync(path)) return path;
+	const legacy = join(base, ".harness", file);
+	return existsSync(legacy) ? legacy : path;
 }
 
 export class SettingsStore {
@@ -29,8 +42,8 @@ export class SettingsStore {
 	private readonly project: Settings;
 
 	constructor(
-		private readonly globalPath = globalHarnessPath("settings.json"),
-		private readonly projectPath = ".harness/settings.json",
+		private readonly globalPath = globalHarnezPath("settings.json"),
+		private readonly projectPath = projectHarnezPath("settings.json"),
 	) {
 		this.global = readSettings(globalPath);
 		this.project = readSettings(projectPath);

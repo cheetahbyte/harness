@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StreamLine } from "../../shared/src/protocol";
 import { VERSION } from "../../shared/src/version";
-import { serveHarness } from "../src/http-server";
-import { HarnessServer } from "../src/server";
+import { serveHarnez } from "../src/http-server";
+import { HarnezServer } from "../src/server";
 
 const paths: string[] = [];
 afterEach(() => {
@@ -35,9 +35,9 @@ async function readLines(
 
 describe("HTTP event stream", () => {
 	test("reports its Harnez health", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-http-test-"));
 		paths.push(dir);
-		const server = serveHarness({
+		const server = serveHarnez({
 			port: 0,
 			workspace: dir,
 			databasePath: join(dir, "state.sqlite"),
@@ -57,9 +57,9 @@ describe("HTTP event stream", () => {
 	});
 
 	test("creates a session in its requested workspace", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-http-test-"));
 		paths.push(dir);
-		const server = serveHarness({
+		const server = serveHarnez({
 			port: 0,
 			workspace: dir,
 			databasePath: join(dir, "state.sqlite"),
@@ -90,9 +90,9 @@ describe("HTTP event stream", () => {
 	});
 
 	test("lists only messaged sessions, newest first", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-http-test-"));
 		paths.push(dir);
-		const server = serveHarness({
+		const server = serveHarnez({
 			port: 0,
 			workspace: dir,
 			databasePath: join(dir, "state.sqlite"),
@@ -137,13 +137,13 @@ describe("HTTP event stream", () => {
 	});
 
 	test("responds before a command finishes", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-http-test-"));
 		paths.push(dir);
 		let release!: () => void;
 		const pending = new Promise<void>((resolve) => (release = resolve));
-		const command = HarnessServer.prototype.command;
-		HarnessServer.prototype.command = async () => pending;
-		const server = serveHarness({
+		const command = HarnezServer.prototype.command;
+		HarnezServer.prototype.command = async () => pending;
+		const server = serveHarnez({
 			port: 0,
 			workspace: dir,
 			databasePath: join(dir, "state.sqlite"),
@@ -166,19 +166,19 @@ describe("HTTP event stream", () => {
 			expect(response.status).toBe(202);
 		} finally {
 			release();
-			HarnessServer.prototype.command = command;
+			HarnezServer.prototype.command = command;
 			server.stop(true);
 		}
 	});
 
 	test("publishes detached command failures", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-http-test-"));
 		paths.push(dir);
-		const command = HarnessServer.prototype.command;
-		HarnessServer.prototype.command = async () => {
+		const command = HarnezServer.prototype.command;
+		HarnezServer.prototype.command = async () => {
 			throw new Error("expected command failure");
 		};
-		const server = serveHarness({
+		const server = serveHarnez({
 			port: 0,
 			workspace: dir,
 			databasePath: join(dir, "state.sqlite"),
@@ -211,20 +211,20 @@ describe("HTTP event stream", () => {
 			expect(line.seq).toBeGreaterThan(0);
 			await reader.cancel();
 		} finally {
-			HarnessServer.prototype.command = command;
+			HarnezServer.prototype.command = command;
 			server.stop(true);
 		}
 	});
 
 	test("resumes after a cursor without replaying earlier events", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-http-test-"));
 		paths.push(dir);
 		let failures = 0;
-		const command = HarnessServer.prototype.command;
-		HarnessServer.prototype.command = async () => {
+		const command = HarnezServer.prototype.command;
+		HarnezServer.prototype.command = async () => {
 			throw new Error(`failure ${++failures}`);
 		};
-		const server = serveHarness({
+		const server = serveHarnez({
 			port: 0,
 			workspace: dir,
 			databasePath: join(dir, "state.sqlite"),
@@ -277,13 +277,13 @@ describe("HTTP event stream", () => {
 			});
 			await resumedReader.cancel();
 		} finally {
-			HarnessServer.prototype.command = command;
+			HarnezServer.prototype.command = command;
 			server.stop(true);
 		}
 	});
 
 	test("sends a heartbeat while idle", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-http-test-"));
 		paths.push(dir);
 		const setInterval = globalThis.setInterval;
 		const intervals: { delay: number | undefined; tick: () => void }[] = [];
@@ -298,7 +298,7 @@ describe("HTTP event stream", () => {
 			});
 			return setInterval(callback, delay, ...args);
 		}) as unknown as typeof setInterval;
-		const server = serveHarness({
+		const server = serveHarnez({
 			port: 0,
 			workspace: dir,
 			databasePath: join(dir, "state.sqlite"),
@@ -327,9 +327,9 @@ describe("HTTP event stream", () => {
 	});
 
 	test("keeps idle streams past Bun's default timeout", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-http-test-"));
 		paths.push(dir);
-		const server = serveHarness({
+		const server = serveHarnez({
 			port: 0,
 			workspace: dir,
 			databasePath: join(dir, "state.sqlite"),
@@ -358,9 +358,9 @@ describe("HTTP event stream", () => {
 		}
 	}, 15_000);
 	test("exposes context lifecycle inspection without payloads", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-http-test-"));
 		paths.push(dir);
-		const server = serveHarness({
+		const server = serveHarnez({
 			port: 0,
 			workspace: dir,
 			databasePath: join(dir, "state.sqlite"),
@@ -389,9 +389,9 @@ describe("HTTP event stream", () => {
 	});
 
 	test("accepts a fake subagent handoff without importing its trace", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-http-test-"));
 		paths.push(dir);
-		const server = serveHarness({
+		const server = serveHarnez({
 			port: 0,
 			workspace: dir,
 			databasePath: join(dir, "state.sqlite"),

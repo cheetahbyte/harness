@@ -29,7 +29,7 @@ export class CoreTools {
 			name: tool.name,
 			description: tool.description,
 			providerDisplayName: "Workspace",
-			metadataTrust: "harness",
+			metadataTrust: "harnez",
 			providerBinding: { providerId: "workspace", bindingGeneration },
 			schema: tool.schema,
 			effect: tool.effect,

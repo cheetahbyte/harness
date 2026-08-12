@@ -8,15 +8,15 @@ import { SettingsStore } from "../src/settings-store";
 
 describe("session title settings", () => {
 	test("defaults and independently overrides global title settings", () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-naming-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-naming-"));
 		const global = join(dir, "config/settings.json");
-		const project = join(dir, ".harness/settings.json");
+		const project = join(dir, ".harnez/settings.json");
 		expect(new SettingsStore(global, project).sessionTitle()).toEqual({
 			generated: true,
 			source: "keywords/yake",
 		});
 		mkdirSync(join(dir, "config"));
-		mkdirSync(join(dir, ".harness"));
+		mkdirSync(join(dir, ".harnez"));
 		writeFileSync(global, JSON.stringify({ session: { title: { generated: false, source: "keywords/yake" } } }));
 		writeFileSync(project, JSON.stringify({ session: { title: { generated: true } } }));
 		expect(new SettingsStore(global, project).sessionTitle()).toEqual({

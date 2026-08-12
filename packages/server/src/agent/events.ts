@@ -85,7 +85,7 @@ export function translateAgentEvent({
 				isError: event.isError,
 			});
 			return;
-		// Pi lifecycle events Harness does not surface.
+		// Pi lifecycle events Harnez does not surface.
 		case "agent_start":
 		case "turn_start":
 		case "tool_execution_update":
@@ -327,7 +327,7 @@ export function ensureSystem({
 		payload: systemPrompt,
 		tokenCost: tokenCost(systemPrompt, 1),
 		lifecycle: "pinned",
-		reason: "Harness system prompt",
+		reason: "Harnez system prompt",
 	});
 }
 

@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 function storePath(): string {
-	const dir = mkdtempSync(join(tmpdir(), "harness-context-test-"));
+	const dir = mkdtempSync(join(tmpdir(), "harnez-context-test-"));
 	paths.push(dir);
 	return join(dir, "state.sqlite");
 }

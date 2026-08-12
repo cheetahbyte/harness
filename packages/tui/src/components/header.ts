@@ -35,7 +35,7 @@ export class HeaderView {
 	}
 
 	update(state: TuiState) {
-		this.labelText = `Harness  ${state.sessionId}    ${state.running ? "running" : "idle"}`;
+		this.labelText = `Harnez  ${state.sessionId}    ${state.running ? "running" : "idle"}`;
 		this.label.content = this.labelText;
 		this.fitNotice();
 	}

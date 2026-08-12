@@ -20,10 +20,13 @@ export type PromptScan = {
 
 const SUMMARY_LIMIT = 120;
 
+/** `.harness` is the pre-rename spelling, still read so older checkouts keep working. */
 function promptRoots(workspace: string, home = homedir()): string[] {
 	return [
+		join(workspace, ".harnez/prompts"),
 		join(workspace, ".harness/prompts"),
 		join(workspace, ".agents/prompts"),
+		join(home, ".harnez/prompts"),
 		join(home, ".harness/prompts"),
 		join(home, ".agents/prompts"),
 	];

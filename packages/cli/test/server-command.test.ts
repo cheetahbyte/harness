@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { serveHarness } from "../../server/src/http-server";
+import { serveHarnez } from "../../server/src/http-server";
 import { VERSION } from "../../shared/src/version";
 import { parseResume } from "../src/index";
 import { health, runServerCommand } from "../src/server-command";
@@ -86,7 +86,7 @@ describe("server health", () => {
 	test("recognizes Harnez and rejects another service", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "harnez-cli-test-"));
 		paths.push(dir);
-		const server = serveHarness({
+		const server = serveHarnez({
 			port: 0,
 			databasePath: join(dir, "state.sqlite"),
 		});

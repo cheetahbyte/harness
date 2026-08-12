@@ -21,7 +21,7 @@ function snapshot(
 				name: "read",
 				description: "Read files",
 				providerDisplayName: "Workspace",
-				metadataTrust: "harness",
+				metadataTrust: "harnez",
 				providerBinding: {
 					providerId: "workspace",
 					bindingGeneration: "one",
@@ -35,7 +35,7 @@ function snapshot(
 				name: "write",
 				description: "Write files",
 				providerDisplayName: "Workspace",
-				metadataTrust: "harness",
+				metadataTrust: "harnez",
 				providerBinding: {
 					providerId: "workspace",
 					bindingGeneration: "one",

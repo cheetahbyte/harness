@@ -36,10 +36,13 @@ export type SkillScan = {
 	diagnostics: SkillDiagnostic[];
 };
 
+/** `.harness` is the pre-rename spelling, still read so older checkouts keep working. */
 function skillRoots(workspace: string, home = homedir()): string[] {
 	return [
+		join(workspace, ".harnez/skills"),
 		join(workspace, ".harness/skills"),
 		join(workspace, ".agents/skills"),
+		join(home, ".harnez/skills"),
 		join(home, ".harness/skills"),
 		join(home, ".agents/skills"),
 	];

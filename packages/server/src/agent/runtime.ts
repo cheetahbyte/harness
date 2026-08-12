@@ -14,7 +14,7 @@ import { abortableSleep } from "../../../shared/src/abortable-sleep";
 import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
 import type { ContextManager } from "../context/manager";
 import { log } from "../logger";
-import { HarnessProviderError, providerModels } from "../provider";
+import { HarnezProviderError, providerModels } from "../provider";
 import type { SessionStore } from "../sessions/store";
 import type { SkillSnapshotEntry } from "../skills";
 import type { TaskRuntime } from "../task-runtime";
@@ -43,11 +43,11 @@ export type AgentRunInput = {
 };
 
 const SYSTEM_PROMPT =
-	"You are Harness, a coding agent. Use deterministic capability discovery when you need more context, and use the provided tools to inspect and change the current workspace. Runtime context belongs only to the current task.";
+	"You are Harnez, a coding agent. Use deterministic capability discovery when you need more context, and use the provided tools to inspect and change the current workspace. Runtime context belongs only to the current task.";
 const DEFAULT_CONTEXT_BUDGET = 80_000;
 
-/** Pi is contained here: server code only sees Harness events and model configuration. */
-export class HarnessAgentRuntime {
+/** Pi is contained here: server code only sees Harnez events and model configuration. */
+export class HarnezAgentRuntime {
 	private readonly agents = new Map<string, AgentEntry>();
 	private readonly credentials: CredentialStore;
 	private readonly models: Models;
@@ -80,7 +80,7 @@ export class HarnessAgentRuntime {
 		emit,
 	}: AgentRunInput): Promise<void> {
 		if (!config)
-			throw new HarnessProviderError(
+			throw new HarnezProviderError(
 				"no model configured; use /model",
 				"configuration",
 			);
@@ -274,7 +274,7 @@ export class HarnessAgentRuntime {
 	} {
 		const hardInput = model.contextWindow - model.maxTokens;
 		if (!Number.isFinite(hardInput) || hardInput <= 0)
-			throw new HarnessProviderError(
+			throw new HarnezProviderError(
 				`model ${model.id} has no usable input context window`,
 				"configuration",
 			);
@@ -304,10 +304,10 @@ export class HarnessAgentRuntime {
 	}
 }
 
-function normalizeProviderError(error: unknown): HarnessProviderError {
-	return error instanceof HarnessProviderError
+function normalizeProviderError(error: unknown): HarnezProviderError {
+	return error instanceof HarnezProviderError
 		? error
-		: new HarnessProviderError(
+		: new HarnezProviderError(
 				error instanceof Error ? error.message : String(error),
 			);
 }

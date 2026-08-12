@@ -17,13 +17,13 @@ import type {
 	ServerEvent,
 	SkillOption,
 } from "../../shared/src/protocol";
-import { HarnessAgentRuntime } from "./agent/runtime";
+import { HarnezAgentRuntime } from "./agent/runtime";
 import { ContextManager } from "./context/manager";
 import type { SubagentResult } from "./context/types";
 import { log } from "./logger";
 import { scanPrompts } from "./prompts";
 import {
-	createHarnessModels,
+	createHarnezModels,
 	JsonCredentialStore,
 	providerModels,
 } from "./provider";
@@ -42,13 +42,17 @@ import {
 	type RunningTask,
 	SessionTaskRunner,
 } from "./sessions/task-runner";
-import { globalHarnessPath, SettingsStore } from "./settings-store";
+import {
+	globalHarnezPath,
+	projectHarnezPath,
+	SettingsStore,
+} from "./settings-store";
 import { availableSkills } from "./skills";
 import type { TaskRuntime } from "./task-runtime";
 
-export class HarnessServer {
+export class HarnezServer {
 	private readonly sessions = new Map<string, Session>();
-	private readonly runtime: HarnessAgentRuntime;
+	private readonly runtime: HarnezAgentRuntime;
 	private readonly credentials: CredentialStore;
 	private readonly models: ModelRegistry;
 	private readonly defaultWorkspace: string;
@@ -63,8 +67,8 @@ export class HarnessServer {
 		workspace = process.cwd(),
 		models?: ModelRegistry,
 		private readonly defaultSettings = new SettingsStore(
-			globalHarnessPath("settings.json"),
-			resolve(workspace, ".harness/settings.json"),
+			globalHarnezPath("settings.json"),
+			projectHarnezPath("settings.json", resolve(workspace)),
 		),
 		options: { contextBudget?: number } = {},
 	) {
@@ -75,14 +79,14 @@ export class HarnessServer {
 		)
 			throw new Error("context budget must be a positive number");
 		this.defaultWorkspace = workspacePath(workspace);
-		this.credentials = new JsonCredentialStore(globalHarnessPath("auth.json"));
-		this.models = models ?? createHarnessModels(this.credentials);
+		this.credentials = new JsonCredentialStore(globalHarnezPath("auth.json"));
+		this.models = models ?? createHarnezModels(this.credentials);
 		this.namer = new SessionNamer(this.models as Models, this.credentials);
 		this.authentication = new SessionAuthentication(this.models, (id, event) =>
 			this.publish(id, event, false),
 		);
 		this.context = new ContextManager(this.store);
-		this.runtime = new HarnessAgentRuntime({
+		this.runtime = new HarnezAgentRuntime({
 			credentials: this.credentials,
 			models: this.models as Models,
 			store: this.store,
@@ -705,8 +709,8 @@ export class HarnessServer {
 		return workspace === this.defaultWorkspace
 			? this.defaultSettings
 			: new SettingsStore(
-					globalHarnessPath("settings.json"),
-					resolve(workspace, ".harness/settings.json"),
+					globalHarnezPath("settings.json"),
+					projectHarnezPath("settings.json", resolve(workspace)),
 				);
 	}
 

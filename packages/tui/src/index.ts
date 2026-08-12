@@ -5,7 +5,7 @@ import {
 } from "@opentui/core";
 import { abortableSleep } from "../../shared/src/abortable-sleep";
 import { TuiApp } from "./app";
-import { HarnessClient, type SessionSummary } from "./client";
+import { HarnezClient, type SessionSummary } from "./client";
 import { WizardView } from "./components/wizard";
 import { createTuiStore } from "./store";
 
@@ -20,7 +20,7 @@ export async function runTui(
 		notice?: Promise<{ full: string; short: string } | undefined>;
 	} = {},
 ): Promise<void> {
-	const client = new HarnessClient();
+	const client = new HarnezClient();
 	const renderer = await createCliRenderer({
 		exitOnCtrlC: true,
 		targetFps: 30,

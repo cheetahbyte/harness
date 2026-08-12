@@ -11,7 +11,7 @@ import { join } from "node:path";
 import type { AuthType, ServerEvent } from "../../shared/src/protocol";
 import type { AuthInteraction } from "@earendil-works/pi-ai";
 import { JsonCredentialStore } from "../src/provider";
-import { HarnessServer } from "../src/server";
+import { HarnezServer } from "../src/server";
 import { SessionStore } from "../src/sessions/store";
 import { SettingsStore } from "../src/settings-store";
 import { BashTool } from "../src/tools/bash";
@@ -21,12 +21,12 @@ afterEach(() => {
 	for (const path of paths.splice(0))
 		rmSync(path, { recursive: true, force: true });
 });
-function harness(contextBudget?: number) {
-	const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+function harnez(contextBudget?: number) {
+	const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
 	paths.push(dir);
 	return {
 		dir,
-		server: new HarnessServer(
+		server: new HarnezServer(
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			undefined,
@@ -39,7 +39,7 @@ function harness(contextBudget?: number) {
 function settings(dir: string) {
 	return new SettingsStore(
 		join(dir, "config/settings.json"),
-		join(dir, ".harness/settings.json"),
+		join(dir, ".harnez/settings.json"),
 	);
 }
 
@@ -95,7 +95,7 @@ async function until(assertion: () => void): Promise<void> {
 
 describe("first milestone", () => {
 	test("does not list a session until a user submits a message", async () => {
-		const { server } = harness();
+		const { server } = harnez();
 		const id = server.createSession();
 
 		expect(server.store.list()).toEqual([]);
@@ -115,7 +115,7 @@ describe("first milestone", () => {
 	});
 
 	test("persists user messages for session replay", async () => {
-		const { server } = harness();
+		const { server } = harnez();
 		const id = server.createSession();
 
 		await server.command(id, {
@@ -132,10 +132,10 @@ describe("first milestone", () => {
 	});
 
 	test("keeps each session's workspace", () => {
-		const first = mkdtempSync(join(tmpdir(), "harness-workspace-test-"));
-		const second = mkdtempSync(join(tmpdir(), "harness-workspace-test-"));
+		const first = mkdtempSync(join(tmpdir(), "harnez-workspace-test-"));
+		const second = mkdtempSync(join(tmpdir(), "harnez-workspace-test-"));
 		paths.push(first, second);
-		const server = new HarnessServer(
+		const server = new HarnezServer(
 			new SessionStore(join(first, "state.sqlite")),
 			first,
 			fakeModels(),
@@ -147,7 +147,7 @@ describe("first milestone", () => {
 
 		expect(server.workspace(firstId)).toBe(first);
 		expect(server.workspace(secondId)).toBe(second);
-		const restarted = new HarnessServer(
+		const restarted = new HarnezServer(
 			new SessionStore(join(first, "state.sqlite")),
 			first,
 			fakeModels(),
@@ -157,20 +157,20 @@ describe("first milestone", () => {
 	});
 
 	test("uses project settings from each session workspace", () => {
-		const first = mkdtempSync(join(tmpdir(), "harness-workspace-test-"));
-		const second = mkdtempSync(join(tmpdir(), "harness-workspace-test-"));
+		const first = mkdtempSync(join(tmpdir(), "harnez-workspace-test-"));
+		const second = mkdtempSync(join(tmpdir(), "harnez-workspace-test-"));
 		paths.push(first, second);
 		for (const [dir, model] of [
 			[first, "first-model"],
 			[second, "second-model"],
 		] as const) {
-			mkdirSync(join(dir, ".harness"));
+			mkdirSync(join(dir, ".harnez"));
 			writeFileSync(
-				join(dir, ".harness/settings.json"),
+				join(dir, ".harnez/settings.json"),
 				JSON.stringify({ model: { provider: "fake", model } }),
 			);
 		}
-		const server = new HarnessServer(
+		const server = new HarnezServer(
 			new SessionStore(join(first, "state.sqlite")),
 			first,
 			fakeModels(),
@@ -193,7 +193,7 @@ describe("first milestone", () => {
 	});
 
 	test("titles a session from only its first normal prompt", async () => {
-		const { server } = harness();
+		const { server } = harnez();
 		const id = server.createSession();
 
 		await server.command(id, {
@@ -214,7 +214,7 @@ describe("first milestone", () => {
 	});
 
 	test("titles the idle steer command used by the TUI for its first prompt", async () => {
-		const { server } = harness();
+		const { server } = harnez();
 		const id = server.createSession();
 
 		await server.command(id, {
@@ -228,7 +228,7 @@ describe("first milestone", () => {
 	});
 
 	test("manually names a session without an automatic rename race", async () => {
-		const { dir, server } = harness();
+		const { dir, server } = harnez();
 		const id = server.createSession();
 		let finishNaming!: (title: string) => void;
 		(
@@ -252,7 +252,7 @@ describe("first milestone", () => {
 			"My session",
 		);
 		expect(server.store.claimNamingPrompt(id)).toBe(false);
-		const restarted = new HarnessServer(
+		const restarted = new HarnezServer(
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			fakeModels(),
@@ -267,7 +267,7 @@ describe("first milestone", () => {
 	});
 
 	test("consumes the first prompt while title generation is disabled", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
 		paths.push(dir);
 		mkdirSync(join(dir, "config"), { recursive: true });
 		writeFileSync(
@@ -275,7 +275,7 @@ describe("first milestone", () => {
 			JSON.stringify({ session: { title: { generated: false } } }),
 		);
 		const path = join(dir, "state.sqlite");
-		const server = new HarnessServer(
+		const server = new HarnezServer(
 			new SessionStore(path),
 			dir,
 			fakeModels(),
@@ -290,7 +290,7 @@ describe("first milestone", () => {
 			join(dir, "config/settings.json"),
 			JSON.stringify({ session: { title: { generated: true } } }),
 		);
-		const restarted = new HarnessServer(
+		const restarted = new HarnezServer(
 			new SessionStore(path),
 			dir,
 			fakeModels(),
@@ -367,7 +367,7 @@ function episodeId(
 
 
 	test("does not persist a credential after its queued write is cancelled", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
 		paths.push(dir);
 		const credentials = new JsonCredentialStore(join(dir, "auth.json"));
 		let release!: () => void;
@@ -404,9 +404,9 @@ function episodeId(
 	});
 
 	test("lists transient configured provider and model catalogs", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
 		paths.push(dir);
-		const server = new HarnessServer(
+		const server = new HarnezServer(
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			fakeModels(),
@@ -445,10 +445,10 @@ function episodeId(
 	});
 
 	test("lists skills for composer suggestions", async () => {
-		const { dir, server } = harness();
-		mkdirSync(join(dir, ".harness/skills/review"), { recursive: true });
+		const { dir, server } = harnez();
+		mkdirSync(join(dir, ".harnez/skills/review"), { recursive: true });
 		writeFileSync(
-			join(dir, ".harness/skills/review/SKILL.md"),
+			join(dir, ".harnez/skills/review/SKILL.md"),
 			"---\nname: review\ndescription: Review changes\n---\nReview carefully.",
 		);
 		const id = server.createSession();
@@ -466,10 +466,10 @@ function episodeId(
 	});
 
 	test("lists prompt templates for composer suggestions", async () => {
-		const { dir, server } = harness();
-		mkdirSync(join(dir, ".harness/prompts"), { recursive: true });
+		const { dir, server } = harnez();
+		mkdirSync(join(dir, ".harnez/prompts"), { recursive: true });
 		writeFileSync(
-			join(dir, ".harness/prompts/review-pr.md"),
+			join(dir, ".harnez/prompts/review-pr.md"),
 			"---\ndescription: Review an open pull request\n---\nRead the diff.",
 		);
 		const id = server.createSession();
@@ -487,9 +487,9 @@ function episodeId(
 	});
 
 	test("persists a selected non-OpenAI model", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
 		paths.push(dir);
-		const server = new HarnessServer(
+		const server = new HarnezServer(
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			fakeModels(),
@@ -519,7 +519,7 @@ function episodeId(
 			),
 		).toEqual({ model: { provider: "fake", model: "model-1" } });
 
-		const restarted = new HarnessServer(
+		const restarted = new HarnezServer(
 			new SessionStore(join(dir, "fresh.sqlite")),
 			dir,
 			fakeModels(),
@@ -534,12 +534,12 @@ function episodeId(
 			config: { provider: "fake", model: "model-1" },
 		});
 
-		mkdirSync(join(dir, ".harness"));
+		mkdirSync(join(dir, ".harnez"));
 		writeFileSync(
-			join(dir, ".harness/settings.json"),
+			join(dir, ".harnez/settings.json"),
 			'{"model":{"provider":"project","model":"model-2"}}',
 		);
-		const project = new HarnessServer(
+		const project = new HarnezServer(
 			new SessionStore(join(dir, "project.sqlite")),
 			dir,
 			fakeModels(),
@@ -558,18 +558,18 @@ function episodeId(
 			model: "model-1",
 		});
 		expect(
-			JSON.parse(readFileSync(join(dir, ".harness/settings.json"), "utf8")),
+			JSON.parse(readFileSync(join(dir, ".harnez/settings.json"), "utf8")),
 		).toEqual({ model: { provider: "fake", model: "model-1" } });
 	});
 
 	test("cycles and persists the selected model's supported thinking level", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
 		paths.push(dir);
 		const models = fakeModels({
 			reasoning: true,
 			thinkingLevelMap: { high: null, xhigh: "xhigh", max: null },
 		});
-		const server = new HarnessServer(
+		const server = new HarnezServer(
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			models,
@@ -610,7 +610,7 @@ function episodeId(
 			},
 		});
 
-		const restarted = new HarnessServer(
+		const restarted = new HarnezServer(
 			new SessionStore(join(dir, "fresh.sqlite")),
 			dir,
 			models,
@@ -624,10 +624,10 @@ function episodeId(
 	});
 
 	test("persists the fast cycle and cycles through its available models", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
 		paths.push(dir);
 		const models = fakeModels({}, ["model-1", "model-2"]);
-		const server = new HarnessServer(
+		const server = new HarnezServer(
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			models,
@@ -681,13 +681,13 @@ function episodeId(
 	});
 
 	test("keeps a thinking level per fast-cycle model", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
 		paths.push(dir);
 		const models = fakeModels(
 			{ reasoning: true, thinkingLevelMap: { high: null, xhigh: "xhigh", max: null } },
 			["model-1", "model-2"],
 		);
-		const server = new HarnessServer(
+		const server = new HarnezServer(
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			models,
@@ -744,9 +744,9 @@ function episodeId(
 	});
 
 	test("applies a thinking-level change made during a run to the next prompt", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
 		paths.push(dir);
-		const server = new HarnessServer(
+		const server = new HarnezServer(
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			fakeModels({
@@ -797,7 +797,7 @@ function episodeId(
 	});
 
 	test("persists the thinking block preference", async () => {
-		const { dir, server } = harness();
+		const { dir, server } = harnez();
 		const id = server.createSession();
 
 		await server.command(id, {
@@ -809,7 +809,7 @@ function episodeId(
 			JSON.parse(readFileSync(join(dir, "config/settings.json"), "utf8")),
 		).toEqual({ disableThinkingBlocks: true });
 
-		const restarted = new HarnessServer(
+		const restarted = new HarnezServer(
 			new SessionStore(join(dir, "fresh.sqlite")),
 			dir,
 			fakeModels(),
@@ -824,9 +824,9 @@ function episodeId(
 	});
 
 	test("rejects an unknown model before persisting it", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
 		paths.push(dir);
-		const server = new HarnessServer(
+		const server = new HarnezServer(
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			fakeModels(),
@@ -844,9 +844,9 @@ function episodeId(
 	});
 
 	test("relays a login prompt without persisting its answer", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
 		paths.push(dir);
-		const server = new HarnessServer(
+		const server = new HarnezServer(
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			fakeModels(),
@@ -876,13 +876,13 @@ function episodeId(
 	});
 
 	test("closes a failed login transiently", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
 		paths.push(dir);
 		const models = fakeModels();
 		models.login = async () => {
 			throw new Error("login failed");
 		};
-		const server = new HarnessServer(
+		const server = new HarnezServer(
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			models,
@@ -908,9 +908,9 @@ function episodeId(
 	});
 
 	test("cancels one login and rejects a concurrent login", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
 		paths.push(dir);
-		const server = new HarnessServer(
+		const server = new HarnezServer(
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			fakeModels(),
@@ -942,7 +942,7 @@ function episodeId(
 	});
 
 	test("does not run slash tool shortcuts without a configured model", async () => {
-		const { server } = harness();
+		const { server } = harnez();
 		const id = server.createSession();
 		await server.command(id, { type: "prompt", text: "/read note.txt" });
 		expect(server.store.events(id)).toContainEqual({
@@ -953,7 +953,7 @@ function episodeId(
 	});
 
 	test("queues a follow-up after completion", async () => {
-		const { server } = harness();
+		const { server } = harnez();
 		(server as unknown as { runtime: { run: () => Promise<void> } }).runtime.run =
 			async () => {};
 		const id = server.createSession();
@@ -996,7 +996,7 @@ function episodeId(
 	});
 
 	test("queues commands submitted while task construction is in progress", async () => {
-		const { server } = harness();
+		const { server } = harnez();
 		const internals = server as unknown as {
 			taskRunner: {
 				createTask: (...args: never[]) => Promise<unknown>;
@@ -1048,7 +1048,7 @@ function episodeId(
 	});
 
 	test("persists an explicit provider/model selection for resume", async () => {
-		const { dir, server } = harness();
+		const { dir, server } = harnez();
 		const id = server.createSession();
 		await server.command(id, {
 			type: "configure",
@@ -1057,7 +1057,7 @@ function episodeId(
 			baseUrl: "http://127.0.0.1:1/v1",
 		});
 		expect(
-			new HarnessServer(
+			new HarnezServer(
 				new SessionStore(join(dir, "state.sqlite")),
 				dir,
 				undefined,
@@ -1105,16 +1105,16 @@ function episodeId(
 			},
 		});
 		try {
-			const { dir, server } = harness();
+			const { dir, server } = harnez();
 			writeFileSync(join(dir, "note.txt"), "hello");
-			mkdirSync(join(dir, ".harness/skills/review"), { recursive: true });
+			mkdirSync(join(dir, ".harnez/skills/review"), { recursive: true });
 			writeFileSync(
-				join(dir, ".harness/skills/review/SKILL.md"),
+				join(dir, ".harnez/skills/review/SKILL.md"),
 				"---\nname: review\ndescription: review instructions\n---\nReview carefully.",
 			);
-			mkdirSync(join(dir, ".harness/skills/manual"), { recursive: true });
+			mkdirSync(join(dir, ".harnez/skills/manual"), { recursive: true });
 			writeFileSync(
-				join(dir, ".harness/skills/manual/SKILL.md"),
+				join(dir, ".harnez/skills/manual/SKILL.md"),
 				"---\nname: manual\ndescription: manual instructions\ndisable-model-invocation: true\n---\nManual only.",
 			);
 			const id = server.createSession();
@@ -1176,10 +1176,10 @@ function episodeId(
 			},
 		});
 		try {
-			const { dir, server } = harness();
-			mkdirSync(join(dir, ".harness/prompts"), { recursive: true });
+			const { dir, server } = harnez();
+			mkdirSync(join(dir, ".harnez/prompts"), { recursive: true });
 			writeFileSync(
-				join(dir, ".harness/prompts/review-pr.md"),
+				join(dir, ".harnez/prompts/review-pr.md"),
 				"---\ndescription: Review an open pull request\n---\nRead the diff and report defects.",
 			);
 			const id = server.createSession();
@@ -1241,7 +1241,7 @@ function episodeId(
 			},
 		});
 		try {
-			const { server } = harness();
+			const { server } = harnez();
 			const id = server.createSession();
 			await server.command(id, {
 				type: "configure",
@@ -1308,7 +1308,7 @@ function episodeId(
 			},
 		});
 		try {
-			const { server } = harness();
+			const { server } = harnez();
 			const id = server.createSession();
 			let toolStarted!: () => void;
 			const toolCall = new Promise<void>((resolve) => {
@@ -1352,7 +1352,7 @@ function episodeId(
 	});
 
 	test("drains an independent follow-up after a runtime error", async () => {
-		const { server } = harness();
+		const { server } = harnez();
 		let calls = 0;
 		(server as unknown as { runtime: { run: () => Promise<void> } }).runtime.run =
 			async () => {
@@ -1373,7 +1373,7 @@ function episodeId(
 	});
 
 	test("blocks only an explicitly success-dependent queued task", async () => {
-		const { server } = harness();
+		const { server } = harnez();
 		let calls = 0;
 		(server as unknown as { runtime: { run: () => Promise<void> } }).runtime.run =
 			async () => {
@@ -1399,7 +1399,7 @@ function episodeId(
 
 	test("resumes, cancels, or replaces a blocked queued task", async () => {
 		for (const recovery of ["resume", "cancel", "replace"] as const) {
-			const { server } = harness();
+			const { server } = harnez();
 			const prompts: string[] = [];
 			(
 				server as unknown as {
@@ -1472,7 +1472,7 @@ function episodeId(
 			},
 		});
 		try {
-			const { server } = harness();
+			const { server } = harnez();
 			const id = server.createSession();
 			let toolStarted!: () => void;
 			const toolCall = new Promise<void>((resolve) => (toolStarted = resolve));
@@ -1566,7 +1566,7 @@ function episodeId(
 			},
 		});
 		try {
-			const { server } = harness();
+			const { server } = harnez();
 			const id = server.createSession();
 			const context = (
 				server as unknown as {
@@ -1640,7 +1640,7 @@ function episodeId(
 				}),
 		});
 		try {
-			const { server } = harness();
+			const { server } = harnez();
 			const id = server.createSession();
 			await server.command(id, {
 				type: "configure",
@@ -1708,7 +1708,7 @@ function episodeId(
 		});
 		try {
 			const output = "x".repeat(10_000);
-			const { dir, server } = harness(1_500);
+			const { dir, server } = harnez(1_500);
 			writeFileSync(join(dir, "note.txt"), output);
 			const id = server.createSession();
 			await server.command(id, {
@@ -1730,7 +1730,7 @@ function episodeId(
 				),
 			).toBe(true);
 
-			const restarted = new HarnessServer(
+			const restarted = new HarnezServer(
 				new SessionStore(join(dir, "state.sqlite")),
 				dir,
 				undefined,
@@ -1796,7 +1796,7 @@ function episodeId(
 			},
 		});
 		try {
-			const { dir, server } = harness();
+			const { dir, server } = harnez();
 			writeFileSync(join(dir, "note.txt"), `0123456789ABCDE${"x".repeat(20_000)}`);
 			const id = server.createSession();
 			await server.command(id, {
@@ -1884,7 +1884,7 @@ function episodeId(
 			},
 		});
 		try {
-			const { dir, server } = harness(1_600);
+			const { dir, server } = harnez(1_600);
 			writeFileSync(join(dir, "note.txt"), "auth uses JWT");
 			const id = server.createSession();
 			await server.command(id, {
@@ -1937,7 +1937,7 @@ function episodeId(
 			},
 		});
 		try {
-			const { server } = harness(500);
+			const { server } = harnez(500);
 			const id = server.createSession();
 			await server.command(id, {
 				type: "configure",
@@ -1979,7 +1979,7 @@ function episodeId(
 			},
 		});
 		try {
-			const { server } = harness(1_200);
+			const { server } = harnez(1_200);
 			const id = server.createSession();
 			await server.command(id, {
 				type: "configure",

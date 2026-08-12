@@ -24,7 +24,7 @@ export type SessionSummary = {
 	title: string | null;
 };
 
-export class HarnessClient {
+export class HarnezClient {
 	constructor(
 		readonly base = process.env["HARNEZ_URL"] ??
 			process.env["HARNESS_URL"] ??

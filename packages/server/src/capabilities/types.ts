@@ -1,5 +1,5 @@
 export type EffectClass = "read_only" | "mutating";
-type MetadataTrust = "harness" | "operator_approved" | "provider_untrusted";
+type MetadataTrust = "harnez" | "operator_approved" | "provider_untrusted";
 export type ProviderBindingRef = {
 	providerId: string;
 	bindingGeneration: string;

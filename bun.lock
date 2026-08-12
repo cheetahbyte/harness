@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "harness",
+      "name": "harnez",
       "dependencies": {
         "@ade_oshineye/yaket": "0.5.3",
         "@earendil-works/pi-agent-core": "^0.84.1",
