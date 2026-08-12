@@ -32,7 +32,16 @@ export class HarnessClient {
 		});
 		if (!response.ok)
 			throw new Error(`session creation failed (${response.status})`);
-		return ((await response.json()) as { sessionId: string }).sessionId;
+		const body: unknown = await response.json();
+		if (
+			!body ||
+			typeof body !== "object" ||
+			!("sessionId" in body) ||
+			typeof body.sessionId !== "string" ||
+			!body.sessionId
+		)
+			throw new Error("session creation returned an invalid response");
+		return body.sessionId;
 	}
 
 	async send(sessionId: string, command: ClientCommand): Promise<void> {

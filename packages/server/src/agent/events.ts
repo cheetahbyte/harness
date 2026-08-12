@@ -90,12 +90,9 @@ export function translateAgentEvent({
 		case "turn_start":
 		case "tool_execution_update":
 			return;
-		default: {
-			const unhandled: never = event;
-			throw new Error(
-				`unhandled agent event: ${(unhandled as { type: string }).type}`,
-			);
-		}
+		default:
+			// Unknown future events are ignored rather than crashing the run.
+			return;
 	}
 }
 

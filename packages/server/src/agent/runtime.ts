@@ -355,7 +355,7 @@ function streamWithRetry(
 						{
 							...context,
 							attempt: attempt + 1,
-							error: terminal.error.errorMessage,
+							error: retryError?.errorMessage,
 						},
 						"provider stream failed",
 					);

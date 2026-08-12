@@ -12,7 +12,15 @@ async function execute(
 ): Promise<string> {
 	const tool = tools.agentTools().find((tool) => tool.name === name);
 	if (!tool) throw new Error(`unknown tool: ${name}`);
-	const result = await tool.execute("test", input, signal);
+	let result: Awaited<ReturnType<typeof tool.execute>>;
+	try {
+		result = await tool.execute("test", input, signal);
+	} catch (error) {
+		throw new Error(
+			`tool.execute failed for ${name} with ${JSON.stringify(input)}: ${error instanceof Error ? error.message : String(error)}`,
+			{ cause: error },
+		);
+	}
 	return result.content
 		.flatMap((content) => (content.type === "text" ? [content.text] : []))
 		.join("");

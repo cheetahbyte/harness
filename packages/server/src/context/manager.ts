@@ -627,10 +627,12 @@ export class ContextManager {
 	}
 }
 
-function projectedPayloads(items: ContextItem[]): unknown[] {
+function projectedPayloads(
+	items: ContextItem[],
+): NonNullable<ReturnType<typeof projectedPayload>>[] {
 	return items.flatMap((item) => {
 		if (item.kind === "system" || item.kind === "observation") return [];
 		const payload = projectedPayload(item);
-		return payload === undefined ? [] : [payload];
+		return payload == null ? [] : [payload];
 	});
 }
