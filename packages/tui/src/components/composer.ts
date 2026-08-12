@@ -7,9 +7,11 @@ import {
 	SyntaxStyle,
 	TextRenderable,
 } from "@opentui/core";
+import { slashCommandPattern } from "../../../shared/src/slash-command";
 import type { FollowUp } from "../store";
 
 const ACCENT = "#89b4fa";
+const SUGGESTION_WINDOW_SIZE = 5;
 type CommandHint = {
 	name: string;
 	description: string;
@@ -67,7 +69,7 @@ export class ComposerView {
 			marginBottom: 1,
 			visible: false,
 		});
-		this.suggestionRows = Array.from({ length: 5 }, () => {
+		this.suggestionRows = Array.from({ length: SUGGESTION_WINDOW_SIZE }, () => {
 			const root = new BoxRenderable(renderer, {
 				width: "100%",
 				height: 1,
@@ -266,9 +268,7 @@ export class ComposerView {
 	private highlightSkills(text: string) {
 		this.input.clearAllHighlights();
 		if (this.skillStyleId === null) return;
-		for (const match of text.matchAll(
-			/(^|\s)\/([a-z0-9-]+)(?=$|\s|[.,!?;:])/g,
-		)) {
+		for (const match of text.matchAll(slashCommandPattern())) {
 			const prefix = match[1] ?? "";
 			const name = `/${match[2] ?? ""}`;
 			if (
@@ -289,7 +289,7 @@ export class ComposerView {
 	private renderSuggestions() {
 		const visible = this.matches.slice(
 			this.suggestionOffset,
-			this.suggestionOffset + 5,
+			this.suggestionOffset + SUGGESTION_WINDOW_SIZE,
 		);
 		this.suggestions.height = visible.length;
 		for (const [index, row] of this.suggestionRows.entries()) {
@@ -306,7 +306,11 @@ export class ComposerView {
 	private ensureSelectionVisible() {
 		if (this.selectedSuggestion < this.suggestionOffset)
 			this.suggestionOffset = this.selectedSuggestion;
-		if (this.selectedSuggestion >= this.suggestionOffset + 5)
-			this.suggestionOffset = this.selectedSuggestion - 4;
+		if (
+			this.selectedSuggestion >=
+			this.suggestionOffset + SUGGESTION_WINDOW_SIZE
+		)
+			this.suggestionOffset =
+				this.selectedSuggestion - (SUGGESTION_WINDOW_SIZE - 1);
 	}
 }

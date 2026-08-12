@@ -200,8 +200,6 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 						);
 						if (index < 0) return state;
 						merged = true;
-						const entry = state.entries[index];
-						if (!entry) return state;
 						return {
 							entries: state.entries.map((current, currentIndex) =>
 								currentIndex === index

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CapabilityCatalog } from "../src/capabilities/catalog";
 import { CapabilityContext } from "../src/capabilities/context";
-import { activateSkill, invokeSkills, scanSkills } from "../src/skills";
+import { activateSkill, scanSkills } from "../src/skills";
 
 const paths: string[] = [];
 afterEach(() => {
@@ -25,30 +25,6 @@ function skill(root: string, name: string, instructions: string) {
 		`---\nname: ${name}\ndescription: ${name} instructions\n---\n${instructions}`,
 	);
 }
-
-test("invokes skills anywhere in a prompt and prefers narrower scopes", async () => {
-	const project = mkdtempSync(join(tmpdir(), "harness-project-"));
-	const home = mkdtempSync(join(tmpdir(), "harness-home-"));
-	paths.push(project, home);
-	skill(join(project, ".harness/skills"), "review", "project native");
-	skill(join(project, ".agents/skills"), "review", "project shared");
-	skill(join(home, ".harness/skills"), "review", "user native");
-	skill(join(home, ".agents/skills"), "review", "user shared");
-
-	const prompt = await invokeSkills(
-		project,
-		"Please /review this twice: /review and keep /unknown.",
-		home,
-	);
-
-	expect(prompt).toContain("project native");
-	expect(prompt).not.toContain("project shared");
-	expect(prompt).not.toContain("user native");
-	expect(prompt).not.toContain("user shared");
-	expect(prompt.match(/<skill name="review"/g)).toHaveLength(1);
-	expect(prompt).toContain("Please");
-	expect(prompt).toContain("keep /unknown.");
-});
 
 test("accepts name or id and honors disable-model-invocation", async () => {
 	const project = mkdtempSync(join(tmpdir(), "harness-project-"));

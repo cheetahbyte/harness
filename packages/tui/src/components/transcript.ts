@@ -8,6 +8,7 @@ import {
 	TextRenderable,
 	t,
 } from "@opentui/core";
+import { slashCommandPattern } from "../../../shared/src/slash-command";
 import type { TranscriptEntry } from "../store";
 
 const ACCENT = "#89b4fa";
@@ -158,9 +159,7 @@ function formatEntry(
 		return `${prefix}${entry.kind === "reasoning" ? entry.text.trimEnd() : entry.text}${["status", "aborted"].includes(entry.kind) ? "]" : ""}`;
 	const chunks = [];
 	let position = 0;
-	for (const match of entry.text.matchAll(
-		/(^|\s)\/([a-z0-9-]+)(?=$|\s|[.,!?;:])/g,
-	)) {
+	for (const match of entry.text.matchAll(slashCommandPattern())) {
 		const start = (match.index ?? 0) + (match[1] ?? "").length;
 		const skill = match[2] ?? "";
 		if (!skillNames.has(skill)) continue;

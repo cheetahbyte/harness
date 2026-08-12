@@ -26,9 +26,6 @@ export class TaskScheduler {
 	private replacement: QueuedTask | undefined;
 	private lastCompleted: TaskRuntime | undefined;
 
-	active(): TaskRuntime | undefined {
-		return this.current;
-	}
 	activate(task: TaskRuntime): void {
 		if (this.current && this.current.id !== task.id)
 			throw new Error("TASK_ALREADY_ACTIVE");
@@ -147,12 +144,6 @@ export class TaskScheduler {
 			cancelled: structuredClone(cancelled),
 			queued: structuredClone(queued),
 		};
-	}
-	queue(): QueuedTask[] {
-		return structuredClone([
-			...(this.replacement ? [this.replacement] : []),
-			...this.pending,
-		]);
 	}
 	hasPendingSupersede(): boolean {
 		return !!this.replacement;

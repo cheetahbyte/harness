@@ -119,6 +119,7 @@ export class CapabilityCatalog {
 		this.disabledProviders.add(providerId);
 	}
 
+	/** Revocation and provider disabling override any snapshot a task still holds. */
 	verifyExecution(ref: CapabilityRef): void {
 		if (this.revoked.has(ref.id)) throw new Error("AUTHORIZATION_REVOKED");
 		if (this.disabledProviders.has(ref.providerBinding.providerId))
@@ -199,10 +200,11 @@ export class CapabilitySnapshot {
 		const record = this.resolve(ref);
 		const grant = this.grant(ref.id);
 		if (record.kind !== grant.kind) throw new Error("AUTHORIZATION_DENIED");
-		const levels = grant.kind === "tool" ? toolLevels : skillLevels;
-		const required = levelIndex(levels, action);
+		const levels: readonly string[] =
+			grant.kind === "tool" ? toolLevels : skillLevels;
+		const required = levels.indexOf(action);
 		const permitted =
-			required >= 0 && levelIndex(levels, grant.maxLevel) >= required;
+			required >= 0 && levels.indexOf(grant.maxLevel) >= required;
 		if (!permitted) throw new Error("AUTHORIZATION_DENIED");
 	}
 
@@ -290,12 +292,9 @@ function atLeast(
 	grant: CapabilityGrant,
 	required: "discover" | "inspect",
 ): boolean {
-	const levels = grant.kind === "tool" ? toolLevels : skillLevels;
-	return levelIndex(levels, grant.maxLevel) >= levelIndex(levels, required);
-}
-
-function levelIndex(levels: readonly string[], level: string): number {
-	return levels.indexOf(level);
+	const levels: readonly string[] =
+		grant.kind === "tool" ? toolLevels : skillLevels;
+	return levels.indexOf(grant.maxLevel) >= levels.indexOf(required);
 }
 
 function grantIsReduction(

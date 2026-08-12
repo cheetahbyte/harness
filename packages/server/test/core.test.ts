@@ -59,8 +59,6 @@ function fakeModels(modelOverrides: Record<string, unknown> = {}) {
 		getProviders: () => [fakeProvider],
 		getProvider: (provider: string) =>
 			provider === "fake" ? fakeProvider : undefined,
-		getModels: (provider?: string) =>
-			provider && provider !== "fake" ? [] : [fakeModel],
 		getModel: (provider: string, model: string) =>
 			provider === "fake" && model === "model-1" ? fakeModel : undefined,
 		checkAuth: async (provider: string) =>

@@ -164,9 +164,7 @@ export function archivedCost(items: ContextItem[]): number {
 function evictionRank(item: ContextItem): number {
 	if (item.kind === "assistant") return 5;
 	if (item.source?.isError) return 4;
-	return (
-		{ early: 0, normal: 1, late: 2 }[
-			item.source?.evictionPriority ?? "normal"
-		] ?? 1
-	);
+	return { early: 0, normal: 1, late: 2 }[
+		item.source?.evictionPriority ?? "normal"
+	];
 }

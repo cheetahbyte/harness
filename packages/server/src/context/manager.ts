@@ -430,11 +430,7 @@ export class ContextManager {
 			throw new ContextBudgetError(state.estimatedTokens, options.budget);
 		return {
 			payloads: [
-				...state.items.flatMap((item) => {
-					if (item.kind === "system" || item.kind === "observation") return [];
-					const payload = projectedPayload(item);
-					return payload === undefined ? [] : [payload];
-				}),
+				...projectedPayloads(state.items),
 				...episodeConclusionPayloads(state.items, state.episodes),
 			],
 			estimatedTokens: state.estimatedTokens,
@@ -538,11 +534,7 @@ export class ContextManager {
 		if (estimatedTokens > options.budget)
 			throw new ContextBudgetError(estimatedTokens, options.budget);
 		return {
-			payloads: items.flatMap((item) => {
-				if (item.kind === "system" || item.kind === "observation") return [];
-				const payload = projectedPayload(item);
-				return payload === undefined ? [] : [payload];
-			}),
+			payloads: projectedPayloads(items),
 			estimatedTokens,
 			evictedIds: [],
 		};
@@ -563,8 +555,8 @@ export class ContextManager {
 			kind: "subagent-handoff",
 			payload: result,
 			compactPayload,
-			tokenCost: Math.ceil(JSON.stringify(result).length / 4),
-			compactTokenCost: Math.ceil(JSON.stringify(compactPayload).length / 4),
+			tokenCost: tokenCost(result),
+			compactTokenCost: tokenCost(compactPayload),
 			lifecycle: "retained",
 			projection: "compact",
 			reason: "structured subagent handoff",
@@ -633,4 +625,12 @@ export class ContextManager {
 			),
 		};
 	}
+}
+
+function projectedPayloads(items: ContextItem[]): unknown[] {
+	return items.flatMap((item) => {
+		if (item.kind === "system" || item.kind === "observation") return [];
+		const payload = projectedPayload(item);
+		return payload === undefined ? [] : [payload];
+	});
 }

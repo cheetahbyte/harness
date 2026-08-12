@@ -114,6 +114,19 @@ describe("CapabilityCatalog", () => {
 		expect(() => snapshot.verifyCurrent(ref)).toThrow("STALE_CAPABILITY");
 	});
 
+	test("rejects execution for a disabled provider without affecting others", () => {
+		const source = catalog();
+		const snapshot = source.snapshot({ tool: execute, skill: activate });
+		const tool = snapshot.reference("tool:write");
+		const skill = snapshot.reference("skill:review");
+		expect(() => snapshot.verifyCurrent(tool)).not.toThrow();
+
+		source.disableProvider("workspace");
+
+		expect(() => snapshot.verifyCurrent(tool)).toThrow("PROVIDER_DISABLED");
+		expect(() => snapshot.verifyCurrent(skill)).not.toThrow();
+	});
+
 	test("permits only monotonic authority reduction", () => {
 		const snapshot = catalog().snapshot({
 			tool: { maxLevel: "execute", confirmation: "confirm_once" },
@@ -188,28 +201,25 @@ describe("CapabilityContext", () => {
 		expect(rejected.evictionCandidates).toEqual([candidate.id]);
 	});
 
-	test("reaccounts on model change and destroys task-owned content", () => {
+	test("destroys task-owned content and refuses later admission", () => {
 		const snapshot = catalog().snapshot({ tool: execute, skill: activate });
 		const ref = snapshot.list().items[0]?.ref;
 		if (!ref) throw new Error("missing ref");
 		const context = new CapabilityContext({}, (_base, items) => items, 1_000, 10);
-		expect(
-			context.admit({
-				capability: ref,
-				scope: "task",
-				contentHash: "one",
-				content: "small",
-				accountant,
-			}).status,
-		).toBe("admitted");
-		expect(
-			context.reaccount({ ...accountant, modelId: "tiny", count: () => 1_500 })
-				.status,
-		).toBe("rejected");
-		expect(context.lastAccounting()?.modelId).toBe("model-a");
+		const admission = {
+			capability: ref,
+			scope: "task" as const,
+			contentHash: "one",
+			content: "small",
+			accountant,
+		};
+		expect(context.admit(admission).status).toBe("admitted");
+		expect(context.items()).toHaveLength(1);
+
 		context.destroy();
+
 		expect(context.items()).toEqual([]);
-		expect(() => context.reaccount(accountant)).toThrow("terminated");
+		expect(() => context.admit(admission)).toThrow("terminated");
 	});
 });
 

@@ -75,11 +75,16 @@ export function episodeStates(
 	items: ContextItem[],
 	snapshots: EpisodeSnapshot[],
 ): ContextEpisode[] {
+	const itemsByEpisodeId = new Map<string, ContextItem[]>();
+	for (const item of items) {
+		if (!item.episodeId) continue;
+		const episodeItems = itemsByEpisodeId.get(item.episodeId) ?? [];
+		episodeItems.push(item);
+		itemsByEpisodeId.set(item.episodeId, episodeItems);
+	}
 	const archivedActionIds = new Set(
 		snapshots.flatMap(({ episode, malformed }) => {
-			const episodeItems = items.filter(
-				(item) => item.episodeId === episode.id,
-			);
+			const episodeItems = itemsByEpisodeId.get(episode.id) ?? [];
 			return !malformed &&
 				episode.kind === "action" &&
 				episode.state === "completed" &&
@@ -90,7 +95,7 @@ export function episodeStates(
 	);
 	return snapshots.map(({ episode, malformed }) => {
 		if (malformed || episode.state !== "completed") return episode;
-		const episodeItems = items.filter((item) => item.episodeId === episode.id);
+		const episodeItems = itemsByEpisodeId.get(episode.id) ?? [];
 		const archived =
 			allEvictableItemsArchived(episodeItems) &&
 			(episode.kind === "action" ||

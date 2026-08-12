@@ -156,19 +156,16 @@ export class TuiApp {
 			} catch (error) {
 				return this.reportError(error);
 			}
-		let command = followUp
-			? { type: "follow-up" as const, id: crypto.randomUUID(), text }
-			: commandForInput(text);
+		let command: ClientCommand = commandForInput(text);
 		let id: string | undefined;
-		if (command.type === "steer") {
+		if (followUp) {
+			id = crypto.randomUUID();
+			command = { type: "follow-up", id, text };
+			this.store.getState().addFollowUp(id, text);
+		} else if (command.type === "steer") {
 			id = crypto.randomUUID();
 			command = { ...command, id };
 			this.store.getState().addSteering(id, text);
-		}
-		if (command.type === "follow-up") {
-			id = command.id ?? crypto.randomUUID();
-			command = { ...command, id };
-			this.store.getState().addFollowUp(id, text);
 		}
 		try {
 			await this.send(command);
@@ -415,7 +412,7 @@ export class TuiApp {
 			);
 		}
 		const authUrl = this.authUrl;
-		this.openWizard();
+		this.composer.setActive(false);
 		this.wizard.show(
 			{
 				kind: "input",
@@ -449,7 +446,7 @@ export class TuiApp {
 	}
 
 	private showNoticeText(title: string, text: string, open?: () => void) {
-		this.openWizard();
+		this.composer.setActive(false);
 		this.wizard.show(
 			{ kind: "notice", title, text },
 			{ cancel: () => this.escape(), ...(open ? { open } : {}) },
@@ -463,7 +460,7 @@ export class TuiApp {
 		searchable = false,
 		descriptionLayout: "inline" | "two-line" = "two-line",
 	) {
-		this.openWizard();
+		this.composer.setActive(false);
 		this.wizard.show(
 			{
 				kind: "select",
@@ -474,10 +471,6 @@ export class TuiApp {
 			},
 			{ select, cancel: () => this.escape() },
 		);
-	}
-
-	private openWizard() {
-		this.composer.setActive(false);
 	}
 
 	private escape() {
