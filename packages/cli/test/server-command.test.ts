@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serveHarness } from "../../server/src/http-server";
+import { VERSION } from "../../shared/src/version";
 import { parseResume } from "../src/index";
 import { health, runServerCommand } from "../src/server-command";
 
@@ -22,7 +23,38 @@ describe("CLI arguments", () => {
 	});
 
 	test("rejects unknown server commands", async () => {
-		await expect(runServerCommand(["restart"])).rejects.toThrow("Usage:");
+		await expect(runServerCommand(["reload"])).rejects.toThrow("Usage:");
+		await expect(runServerCommand(["stop", "now"])).rejects.toThrow("Usage:");
+	});
+
+	/**
+	 * Restarting a server Harnez did not spawn would stop something it cannot
+	 * start again, so the refusal has to come before anything is signalled.
+	 */
+	test("never restarts a server reached through a configured URL", async () => {
+		const previous = process.env["HARNEZ_URL"];
+		process.env["HARNEZ_URL"] = "http://127.0.0.1:9";
+		try {
+			await expect(runServerCommand(["restart"])).rejects.toThrow(
+				"cannot restart the server configured at",
+			);
+		} finally {
+			if (previous === undefined) delete process.env["HARNEZ_URL"];
+			else process.env["HARNEZ_URL"] = previous;
+		}
+	});
+
+	test("restart reports when no server is running instead of starting one", async () => {
+		const previous = process.env["HARNEZ_PORT"];
+		process.env["HARNEZ_PORT"] = "9";
+		try {
+			await expect(runServerCommand(["restart"])).rejects.toThrow(
+				"no Harnez server is running",
+			);
+		} finally {
+			if (previous === undefined) delete process.env["HARNEZ_PORT"];
+			else process.env["HARNEZ_PORT"] = previous;
+		}
 	});
 
 	test("never signals a server reached through a remote URL", async () => {
@@ -66,6 +98,7 @@ describe("server health", () => {
 			expect(await health(server.url.toString())).toEqual({
 				name: "harnez",
 				pid: process.pid,
+				version: VERSION,
 			});
 			await expect(health(other.url.toString())).rejects.toThrow(
 				"not Harnez",

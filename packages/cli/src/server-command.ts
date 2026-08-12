@@ -3,9 +3,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { runServer } from "../../server/src/index";
 
-export type Health = { name: "harnez"; pid: number };
+/**
+ * `version` is optional because a server started by an older build predates the
+ * field; callers must treat a missing version as "unknown", not "mismatched".
+ */
+export type Health = { name: "harnez"; pid: number; version?: string };
 
-const SERVER_USAGE = "Usage: harnez server <start|status|stop|run>";
+const SERVER_USAGE = "Usage: harnez server <start|status|stop|restart|run>";
+const LOCAL_HOSTNAMES = ["127.0.0.1", "localhost", "[::1]"];
 
 function serverUrl(): string {
 	return (
@@ -25,7 +30,7 @@ export async function health(base = serverUrl()): Promise<Health | undefined> {
 		return undefined;
 	}
 	const body = (await response.json().catch(() => undefined)) as
-		| { name?: unknown; pid?: unknown }
+		| { name?: unknown; pid?: unknown; version?: unknown }
 		| undefined;
 	if (
 		!response.ok ||
@@ -34,7 +39,11 @@ export async function health(base = serverUrl()): Promise<Health | undefined> {
 		Number(body.pid) <= 0
 	)
 		throw new Error(`${base} is responding, but it is not Harnez`);
-	return { name: "harnez", pid: Number(body.pid) };
+	return {
+		name: "harnez",
+		pid: Number(body.pid),
+		...(typeof body.version === "string" ? { version: body.version } : {}),
+	};
 }
 
 export async function ensureServer(): Promise<void> {
@@ -70,6 +79,45 @@ export async function ensureServer(): Promise<void> {
 	throw new Error(`Harnez server did not start; see ${logPath}`);
 }
 
+/**
+ * Signals the managed server and waits for it to leave the port. Returns the
+ * process it stopped, or undefined when nothing was running. Callers that start
+ * a replacement depend on the wait: returning before the port is free would race
+ * the new process onto an address the old one still holds.
+ */
+async function stopServer(): Promise<Health | undefined> {
+	const hostname = new URL(serverUrl()).hostname;
+	if (!LOCAL_HOSTNAMES.includes(hostname))
+		throw new Error("Harnez can only stop a local server");
+	const running = await health();
+	if (!running) return undefined;
+	process.kill(running.pid, "SIGTERM");
+	if (await waitForHealth(false)) return running;
+	throw new Error(`Harnez server ${running.pid} did not stop`);
+}
+
+/**
+ * Restarts the managed server so a new build takes effect. Returns undefined
+ * when nothing was running, leaving it to the caller to decide whether that is
+ * an error or simply nothing to do.
+ */
+export async function restartServer(): Promise<Health | undefined> {
+	/**
+	 * Checked before stopping anything: a server reached through a configured URL
+	 * is not ours to spawn, so restarting it would stop a server we could never
+	 * start again.
+	 */
+	if (process.env["HARNEZ_URL"] ?? process.env["HARNESS_URL"])
+		throw new Error(
+			`Harnez cannot restart the server configured at ${serverUrl()}; restart it where it runs`,
+		);
+	if (!(await stopServer())) return undefined;
+	await ensureServer();
+	const running = await health();
+	if (!running) throw new Error("Harnez server exited during restart");
+	return running;
+}
+
 export async function runServerCommand(args: string[]): Promise<void> {
 	if (args.length !== 1) throw new Error(SERVER_USAGE);
 	switch (args[0]) {
@@ -90,20 +138,21 @@ export async function runServerCommand(args: string[]): Promise<void> {
 			return;
 		}
 		case "stop": {
-			const hostname = new URL(serverUrl()).hostname;
-			if (!["127.0.0.1", "localhost", "[::1]"].includes(hostname))
-				throw new Error("Harnez can only stop a local server");
-			const running = await health();
-			if (!running) {
-				console.log("Harnez server already stopped");
-				return;
-			}
-			process.kill(running.pid, "SIGTERM");
-			if (await waitForHealth(false)) {
-				console.log("Harnez server stopped");
-				return;
-			}
-			throw new Error(`Harnez server ${running.pid} did not stop`);
+			console.log(
+				(await stopServer())
+					? "Harnez server stopped"
+					: "Harnez server already stopped",
+			);
+			return;
+		}
+		case "restart": {
+			const running = await restartServer();
+			if (!running)
+				throw new Error(
+					"no Harnez server is running; start one with `harnez server start`",
+				);
+			console.log(`Harnez server restarted (pid ${running.pid})`);
+			return;
 		}
 		case "run":
 			process.env["HARNEZ_DATABASE_PATH"] ??= join(
@@ -132,7 +181,7 @@ function selfCommand(): string[] {
 		: [process.execPath, entry ?? "packages/cli/src/index.ts"];
 }
 
-function dataDirectory(): string {
+export function dataDirectory(): string {
 	if (process.env["HARNEZ_DATA_DIR"]) return process.env["HARNEZ_DATA_DIR"];
 	if (process.platform === "darwin")
 		return join(homedir(), "Library", "Application Support", "harnez");

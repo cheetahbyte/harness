@@ -3,6 +3,7 @@ import type {
 	ServerEvent,
 	StreamLine,
 } from "../../shared/src/protocol";
+import { VERSION } from "../../shared/src/version";
 import type { SubagentResult } from "./context/types";
 import { log } from "./logger";
 import { HarnessServer } from "./server";
@@ -46,7 +47,11 @@ async function fetchHarness(
 		"http request",
 	);
 	if (request.method === "GET" && url.pathname === "/health")
-		return Response.json({ name: "harnez", pid: process.pid });
+		return Response.json({
+			name: "harnez",
+			pid: process.pid,
+			version: VERSION,
+		});
 	if (request.method === "GET" && url.pathname === "/sessions")
 		return Response.json(harness.store.list());
 	if (request.method === "POST" && url.pathname === "/sessions")

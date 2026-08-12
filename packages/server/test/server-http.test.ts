@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StreamLine } from "../../shared/src/protocol";
+import { VERSION } from "../../shared/src/version";
 import { serveHarness } from "../src/http-server";
 import { HarnessServer } from "../src/server";
 
@@ -45,7 +46,11 @@ describe("HTTP event stream", () => {
 			const base = server.url.toString().replace(/\/$/, "");
 			const health = await fetch(`${base}/health`);
 			expect(health.status).toBe(200);
-			expect(await health.json()).toEqual({ name: "harnez", pid: process.pid });
+			expect(await health.json()).toEqual({
+				name: "harnez",
+				pid: process.pid,
+				version: VERSION,
+			});
 		} finally {
 			server.stop(true);
 		}

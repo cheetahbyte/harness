@@ -30,6 +30,7 @@ details about workspaces, persistence, and automatic titles.
 harnez server start
 harnez server status
 harnez server stop
+harnez server restart
 harnez server run
 ```
 
@@ -38,7 +39,58 @@ harnez server run
 | `harnez server start` | Starts the local server if it is not already running. |
 | `harnez server status` | Shows whether the local server is running. |
 | `harnez server stop` | Stops the local server. |
+| `harnez server restart` | Stops the local server and starts it again with the same configuration. |
 | `harnez server run` | Runs the local server in the foreground. |
+
+`restart` waits for the old process to release the port before starting the
+replacement, so it never leaves two servers behind. It reports an error instead
+of starting one when no server is running, and refuses outright when
+`HARNEZ_URL` points at a server it did not spawn — that server is not Harnez's
+to restart.
+
+A running server keeps serving the build it started with, so restart it after
+an update to pick up new code.
+
+## Updating
+
+```text
+harnez update
+harnez --version
+```
+
+`harnez update` compares the installed version against the `latest` release on
+the npm registry. When a newer one exists it installs it with the package
+manager that owns the running binary (npm, bun, pnpm, or yarn), then restarts
+the local server so the new build is the one serving sessions. An already
+current installation reports so and changes nothing.
+
+The server is only restarted once the install has succeeded and the version on
+disk matches what was requested, so a failed download never leaves a server
+running against a half-updated installation. If the restart itself fails, the
+update still stands — finish it with `harnez server restart`.
+
+Updating requires an installation a package manager owns. Running from a source
+checkout, or from a binary pointed at by `HARNEZ_BINARY`, reports the available
+version and leaves the installation alone.
+
+### Update notifications
+
+The TUI checks for a newer release in the background at startup and shows it in
+the top-right corner of the header:
+
+```text
+update available: 0.1.8 → 0.2.0 · run `harnez update`
+```
+
+The check never blocks startup and a registry that cannot be reached is
+ignored. The answer is cached in the data directory for 24 hours, so the notice
+appears at most once a day rather than on every launch. Set
+`HARNEZ_DISABLE_UPDATE_CHECK=1` to turn it off.
+
+Because the client and server are separate processes, the server can be running
+an older build than the client that just launched — after an update where the
+restart was skipped, for instance. The header reports that case too, pointing at
+`harnez server restart`.
 
 ## Slash commands
 

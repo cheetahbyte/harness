@@ -13,7 +13,12 @@ const RECONNECT_BASE_DELAY_MS = 250;
 const RECONNECT_MAX_DELAY_MS = 5_000;
 
 export async function runTui(
-	options: { sessionId?: string; pickSession?: boolean } = {},
+	options: {
+		sessionId?: string;
+		pickSession?: boolean;
+		/** Resolved off the startup path; see the caller in the CLI entry point. */
+		notice?: Promise<{ full: string; short: string } | undefined>;
+	} = {},
 ): Promise<void> {
 	const client = new HarnessClient();
 	const renderer = await createCliRenderer({
@@ -87,6 +92,12 @@ export async function runTui(
 	}
 
 	void streamWithReconnect();
+	/** Guarded on the signal so a late answer never touches a torn-down renderer. */
+	void options.notice
+		?.then((text) => {
+			if (text && !controller.signal.aborted) app.setNotice(text);
+		})
+		.catch(() => undefined);
 	await new Promise<void>((resolve) => renderer.once("destroy", resolve));
 	app.destroy();
 	controller.abort();

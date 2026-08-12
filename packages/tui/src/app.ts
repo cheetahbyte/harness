@@ -159,6 +159,11 @@ export class TuiApp {
 		this.sync();
 	}
 
+	setNotice(text: { full: string; short: string }) {
+		this.header.setNotice(text);
+		this.renderer.requestRender();
+	}
+
 	destroy() {
 		this.unsubscribe();
 		this.renderer.off(CliRenderEvents.RESIZE, this.updateLayout);
@@ -293,6 +298,8 @@ export class TuiApp {
 
 	private updateLayout = () => {
 		const compact = this.root.ctx.height < 9;
+		/** A narrower terminal may no longer have room for the header's notice. */
+		this.header.update(this.store.getState());
 		this.header.root.visible = !compact;
 		this.footer.root.visible = !compact;
 		this.composer.setCompact(compact);
