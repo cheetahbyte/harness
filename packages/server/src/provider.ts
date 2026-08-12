@@ -41,6 +41,13 @@ export class JsonCredentialStore implements CredentialStore {
 			throw error;
 		}
 	}
+	private async write(data: Record<string, Credential>): Promise<void> {
+		await mkdir(dirname(this.path), { recursive: true });
+		const temp = `${this.path}.${crypto.randomUUID()}`;
+		await writeFile(temp, JSON.stringify(data), { mode: 0o600 });
+		await rename(temp, this.path);
+		await chmod(this.path, 0o600);
+	}
 	async read(
 		providerId: string,
 		options?: AuthOperationOptions,
@@ -69,11 +76,7 @@ export class JsonCredentialStore implements CredentialStore {
 			options?.signal?.throwIfAborted();
 			if (result !== undefined) data[providerId] = result;
 			else result = data[providerId];
-			await mkdir(dirname(this.path), { recursive: true });
-			const temp = `${this.path}.${crypto.randomUUID()}`;
-			await writeFile(temp, JSON.stringify(data), { mode: 0o600 });
-			await rename(temp, this.path);
-			await chmod(this.path, 0o600);
+			await this.write(data);
 		});
 		this.chain = operation.then(
 			() => {},
@@ -91,11 +94,7 @@ export class JsonCredentialStore implements CredentialStore {
 			const data = await this.data();
 			delete data[providerId];
 			options?.signal?.throwIfAborted();
-			await mkdir(dirname(this.path), { recursive: true });
-			const temp = `${this.path}.${crypto.randomUUID()}`;
-			await writeFile(temp, JSON.stringify(data), { mode: 0o600 });
-			await rename(temp, this.path);
-			await chmod(this.path, 0o600);
+			await this.write(data);
 		});
 		this.chain = operation.then(
 			() => {},

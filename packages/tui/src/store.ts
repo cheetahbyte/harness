@@ -112,10 +112,9 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 									blocked: true,
 								},
 							];
-						const blocked = followUps.filter((followUp) => followUp.blocked);
 						return {
 							followUps,
-							blockedQueueId: blocked.length === 1 ? blocked[0]?.id : undefined,
+							blockedQueueId: blockedQueueId(followUps),
 							running:
 								event.state === "running" ||
 								event.state === "cancelling" ||
@@ -319,11 +318,15 @@ function finishActive(entries: TranscriptEntry[]): TranscriptEntry[] {
 
 function withoutFollowUp(state: Pick<TuiState, "followUps">, id: string) {
 	const followUps = state.followUps.filter((followUp) => followUp.id !== id);
-	const blocked = followUps.filter((followUp) => followUp.blocked);
 	return {
 		followUps,
-		blockedQueueId: blocked.length === 1 ? blocked[0]?.id : undefined,
+		blockedQueueId: blockedQueueId(followUps),
 	};
+}
+
+function blockedQueueId(followUps: FollowUp[]): string | undefined {
+	const blocked = followUps.filter((followUp) => followUp.blocked);
+	return blocked.length === 1 ? blocked[0]?.id : undefined;
 }
 
 function formatDuration(durationMs: number): string {

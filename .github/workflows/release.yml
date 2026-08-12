@@ -122,7 +122,7 @@ jobs:
           test "$package_version" = "$tag"
 
       # Trusted publishing needs npm >=11.5.1.
-      - run: npm install --global npm@latest
+      - run: npm install --global npm@11.5.1
 
       - run: npm publish ./npm-platform/npm-darwin-arm64 --tag darwin-arm64
       - run: npm publish ./npm-platform/npm-darwin-x64 --tag darwin-x64

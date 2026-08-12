@@ -199,13 +199,10 @@ export class CapabilitySnapshot {
 		const record = this.resolve(ref);
 		const grant = this.grant(ref.id);
 		if (record.kind !== grant.kind) throw new Error("AUTHORIZATION_DENIED");
+		const levels = grant.kind === "tool" ? toolLevels : skillLevels;
+		const required = levelIndex(levels, action);
 		const permitted =
-			grant.kind === "tool"
-				? action !== "activate" &&
-					toolLevels.indexOf(grant.maxLevel) >= toolLevels.indexOf(action)
-				: action !== "load" &&
-					action !== "execute" &&
-					skillLevels.indexOf(grant.maxLevel) >= skillLevels.indexOf(action);
+			required >= 0 && levelIndex(levels, grant.maxLevel) >= required;
 		if (!permitted) throw new Error("AUTHORIZATION_DENIED");
 	}
 
@@ -293,11 +290,12 @@ function atLeast(
 	grant: CapabilityGrant,
 	required: "discover" | "inspect",
 ): boolean {
-	const current =
-		grant.kind === "tool"
-			? toolLevels.indexOf(grant.maxLevel)
-			: skillLevels.indexOf(grant.maxLevel);
-	return current >= (required === "discover" ? 1 : 2);
+	const levels = grant.kind === "tool" ? toolLevels : skillLevels;
+	return levelIndex(levels, grant.maxLevel) >= levelIndex(levels, required);
+}
+
+function levelIndex(levels: readonly string[], level: string): number {
+	return levels.indexOf(level);
 }
 
 function grantIsReduction(

@@ -83,10 +83,7 @@ export function episodeStates(
 			return !malformed &&
 				episode.kind === "action" &&
 				episode.state === "completed" &&
-				episodeItems.some(isEpisodeItemEvictable) &&
-				episodeItems
-					.filter(isEpisodeItemEvictable)
-					.every((item) => item.lifecycle === "archived")
+				allEvictableItemsArchived(episodeItems)
 				? [episode.id]
 				: [];
 		}),
@@ -95,10 +92,7 @@ export function episodeStates(
 		if (malformed || episode.state !== "completed") return episode;
 		const episodeItems = items.filter((item) => item.episodeId === episode.id);
 		const archived =
-			episodeItems.some(isEpisodeItemEvictable) &&
-			episodeItems
-				.filter(isEpisodeItemEvictable)
-				.every((item) => item.lifecycle === "archived") &&
+			allEvictableItemsArchived(episodeItems) &&
 			(episode.kind === "action" ||
 				!snapshots.some(
 					({ episode: dependent }) =>
@@ -112,6 +106,14 @@ export function episodeStates(
 
 function isEpisodeItemEvictable(item: ContextItem): boolean {
 	return item.kind !== "user" && item.lifecycle !== "pinned";
+}
+
+function allEvictableItemsArchived(items: ContextItem[]): boolean {
+	const evictableItems = items.filter(isEpisodeItemEvictable);
+	return (
+		evictableItems.length > 0 &&
+		evictableItems.every((item) => item.lifecycle === "archived")
+	);
 }
 export function structuralEvictionCandidates(
 	episodes: ContextEpisode[],

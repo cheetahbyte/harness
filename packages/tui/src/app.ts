@@ -154,10 +154,7 @@ export class TuiApp {
 			try {
 				if (await this.runCommand(text)) return;
 			} catch (error) {
-				return this.store.getState().apply({
-					type: "error",
-					message: error instanceof Error ? error.message : String(error),
-				});
+				return this.reportError(error);
 			}
 		let command = followUp
 			? { type: "follow-up" as const, id: crypto.randomUUID(), text }
@@ -177,11 +174,15 @@ export class TuiApp {
 			await this.send(command);
 		} catch (error) {
 			if (id) this.store.getState().removeCommand(id);
-			this.store.getState().apply({
-				type: "error",
-				message: error instanceof Error ? error.message : String(error),
-			});
+			this.reportError(error);
 		}
+	}
+
+	private reportError(error: unknown) {
+		this.store.getState().apply({
+			type: "error",
+			message: error instanceof Error ? error.message : String(error),
+		});
 	}
 
 	private async runCommand(input: string): Promise<boolean> {
@@ -247,19 +248,13 @@ export class TuiApp {
 				type: "ui-settings",
 				disableThinkingBlocks: !disabled,
 			});
-			this.store.getState().apply({
-				type: "error",
-				message: error instanceof Error ? error.message : String(error),
-			});
+			this.reportError(error);
 		});
 	}
 
 	private cycleThinkingLevel() {
 		void this.send({ type: "cycle-thinking-level" }).catch((error) => {
-			this.store.getState().apply({
-				type: "error",
-				message: error instanceof Error ? error.message : String(error),
-			});
+			this.reportError(error);
 		});
 	}
 
@@ -505,10 +500,7 @@ export class TuiApp {
 			await this.send(command);
 		} catch (error) {
 			this.closeWizard();
-			this.store.getState().apply({
-				type: "error",
-				message: error instanceof Error ? error.message : String(error),
-			});
+			this.reportError(error);
 		}
 	}
 }

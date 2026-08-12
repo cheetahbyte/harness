@@ -25,15 +25,14 @@ export class HarnessClient {
 	) {}
 
 	async createSession(workspace = process.cwd()): Promise<string> {
-		return (
-			(await (
-				await fetch(`${this.base}/sessions`, {
-					method: "POST",
-					headers: { "content-type": "application/json" },
-					body: JSON.stringify({ cwd: workspace }),
-				})
-			).json()) as { sessionId: string }
-		).sessionId;
+		const response = await fetch(`${this.base}/sessions`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ cwd: workspace }),
+		});
+		if (!response.ok)
+			throw new Error(`session creation failed (${response.status})`);
+		return ((await response.json()) as { sessionId: string }).sessionId;
 	}
 
 	async send(sessionId: string, command: ClientCommand): Promise<void> {

@@ -134,6 +134,18 @@ describe("CapabilityCatalog", () => {
 			}),
 		).toThrow("cannot grow");
 	});
+
+	test("fails closed for actions outside a capability's levels", () => {
+		const snapshot = catalog().snapshot({ tool: execute, skill: activate });
+		const tool = snapshot.reference("tool:write");
+		const skill = snapshot.reference("skill:review");
+		expect(() => snapshot.require(tool, "future_action" as never)).toThrow(
+			"AUTHORIZATION_DENIED",
+		);
+		expect(() => snapshot.require(skill, "future_action" as never)).toThrow(
+			"AUTHORIZATION_DENIED",
+		);
+	});
 });
 
 describe("CapabilityContext", () => {

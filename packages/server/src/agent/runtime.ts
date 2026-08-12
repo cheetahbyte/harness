@@ -28,6 +28,7 @@ import {
 	recordAgentMessage,
 	translateAgentEvent,
 } from "./events";
+import { messageKey } from "./message";
 import { agentTools, TOOL_OVERHEAD_TOKENS } from "./tools";
 
 export type AgentRunInput = {
@@ -133,7 +134,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 			entry.promptGroupId = undefined;
 			throw error;
 		}
-		entry.preRecorded.add(JSON.stringify(message));
+		entry.preRecorded.add(messageKey(message));
 		const abort = () => entry?.agent.abort();
 		signal.addEventListener("abort", abort, { once: true });
 		try {
@@ -371,10 +372,7 @@ function streamWithRetry(
 						{
 							...context,
 							attempt: attempt + 1,
-							error:
-								terminal.type === "error"
-									? terminal.error.errorMessage
-									: undefined,
+							error: terminal.error.errorMessage,
 						},
 						"provider stream failed",
 					);

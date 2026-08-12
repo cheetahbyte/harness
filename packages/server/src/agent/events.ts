@@ -10,6 +10,7 @@ import type { SessionStore } from "../session-store";
 import type { TaskRuntime } from "../task-runtime";
 import { tokenCost } from "../token-cost";
 import type { CoreTools } from "../tools";
+import { detailsRecord, messageKey } from "./message";
 
 export type QueueCallbacks = {
 	onStarted: () => void;
@@ -325,7 +326,6 @@ export function queueMessage(
 		},
 	};
 }
-const messageKey = (message: AgentMessage): string => JSON.stringify(message);
 function externalizeToolResult({
 	sessionId,
 	message,
@@ -376,13 +376,6 @@ function observationId(
 ): string | undefined {
 	const id = detailsRecord(message.details)["observationId"];
 	return typeof id === "string" ? id : undefined;
-}
-function detailsRecord(details: unknown): Record<string, unknown> {
-	return typeof details === "object" &&
-		details !== null &&
-		!Array.isArray(details)
-		? (details as Record<string, unknown>)
-		: {};
 }
 function messageText(
 	message:

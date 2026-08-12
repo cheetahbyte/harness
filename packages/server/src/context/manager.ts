@@ -129,6 +129,14 @@ export class ContextManager {
 		return this.activeEpisodes.get(sessionId);
 	}
 
+	private activeEpisodeIds(sessionId: string): Set<string> {
+		return new Set(
+			this.episodes(sessionId)
+				.filter((episode) => episode.state === "active")
+				.map((episode) => episode.id),
+		);
+	}
+
 	archive(id: string, reason: string): void {
 		const item = this.store.contextItem(id);
 		if (item?.kind !== "tool-result" || item.lifecycle !== "retained")
@@ -144,11 +152,7 @@ export class ContextManager {
 	completeTurn(sessionId: string, newToolResultIds: string[] = []): void {
 		const newToolCallIds = new Set(newToolResultIds);
 		const items = this.store.contextItems(sessionId);
-		const activeEpisodeIds = new Set(
-			this.episodes(sessionId)
-				.filter((episode) => episode.state === "active")
-				.map((episode) => episode.id),
-		);
+		const activeEpisodeIds = this.activeEpisodeIds(sessionId);
 		const retainedGroups = new Set<string>();
 		for (const item of items)
 			if (
@@ -181,11 +185,7 @@ export class ContextManager {
 	}
 
 	completeGroup(sessionId: string, groupId: string): void {
-		const activeEpisodeIds = new Set(
-			this.episodes(sessionId)
-				.filter((episode) => episode.state === "active")
-				.map((episode) => episode.id),
-		);
+		const activeEpisodeIds = this.activeEpisodeIds(sessionId);
 		for (const item of this.store.contextItems(sessionId))
 			if (
 				item.groupId === groupId &&

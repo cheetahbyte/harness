@@ -10,6 +10,8 @@ import {
 	TextRenderable,
 } from "@opentui/core";
 
+const ACCENT = "#89b4fa";
+
 export type WizardScreen =
 	| {
 			kind: "select";
@@ -64,7 +66,7 @@ export class WizardView {
 			maxHeight: "70%",
 			flexDirection: "column",
 			border: ["top", "bottom"],
-			borderColor: "#89b4fa",
+			borderColor: ACCENT,
 			padding: 1,
 			visible: false,
 		});
@@ -112,7 +114,7 @@ export class WizardView {
 			focusedTextColor: "#cdd6f4",
 			selectedTextColor: "#89dceb",
 			descriptionColor: "#6c7086",
-			selectedDescriptionColor: "#89b4fa",
+			selectedDescriptionColor: ACCENT,
 			showScrollIndicator: true,
 			visible: false,
 		});
@@ -316,7 +318,7 @@ export class WizardView {
 			row.description.content = option.description
 				? ` · ${option.description}`
 				: "";
-			row.description.fg = selected ? "#89b4fa" : "#6c7086";
+			row.description.fg = selected ? ACCENT : "#6c7086";
 		}
 	}
 }

@@ -228,7 +228,7 @@ export class HarnessServer {
 		id: string,
 		session: Session,
 		command: ClientCommand,
-	): Promise<boolean> {
+	): Promise<void> {
 		if (command.type === "abort") {
 			log.info({ sessionId: id, running: !!session.running }, "run aborted");
 			if (
@@ -237,7 +237,7 @@ export class HarnessServer {
 				session.running.task.id !== command.taskId
 			)
 				throw new Error("task is not active");
-			if (!session.running) return true;
+			if (!session.running) return;
 			if (session.pendingSteer) {
 				this.emit(id, {
 					type: "command",
@@ -254,37 +254,36 @@ export class HarnessServer {
 			});
 			session.running.controller.abort();
 			await session.running.task.cancel("cancelled");
-			return true;
+			return;
 		}
 		if (command.type === "confirm") {
 			this.activeTask(session, command.taskId).confirm(command.callId);
-			return true;
+			return;
 		}
 		if (command.type === "acknowledge-unknown-effects") {
 			this.activeTask(session, command.taskId).acknowledgeUnknownPriorEffects();
-			return true;
+			return;
 		}
-		return false;
 	}
 
 	private async handleQueueControl(
 		id: string,
 		session: Session,
 		command: ClientCommand,
-	): Promise<boolean> {
+	): Promise<void> {
 		if (command.type === "resume-queued") {
 			const queued = session.scheduler.resume(command.taskId);
 			this.emitCommand(id, queued, "queued");
 			await this.advance(id, session.scheduler.next());
-			return true;
+			return;
 		}
 		if (command.type === "cancel-queued") {
 			const queued = session.scheduler.cancelQueued(command.taskId);
 			this.emitCommand(id, queued, "cancelled");
 			await this.advance(id, session.scheduler.next());
-			return true;
+			return;
 		}
-		if (command.type !== "replace-queued") return false;
+		if (command.type !== "replace-queued") return;
 		const { cancelled, queued } = session.scheduler.replaceQueued(
 			command.taskId,
 			{ id: command.id ?? crypto.randomUUID(), text: command.text },
@@ -293,7 +292,6 @@ export class HarnessServer {
 		this.emitCommand(id, cancelled, "cancelled");
 		this.emitCommand(id, queued, "queued");
 		await this.advance(id, session.scheduler.next());
-		return true;
 	}
 
 	private handleConfigure(
