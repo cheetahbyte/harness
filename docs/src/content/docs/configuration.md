@@ -82,9 +82,11 @@ independently, so a project may override only `generated` or only `source`:
     settings.json      # overrides ~/.config/harness/settings.json
     harness.sqlite     # session, event, and context storage
     skills/              # project-local skills, alongside .agents/skills
+    prompts/             # project-local prompt templates, alongside .agents/prompts
 ```
 
-User-level skills live in `~/.harness/skills` and `~/.agents/skills`.
+User-level skills live in `~/.harness/skills` and `~/.agents/skills`, and
+user-level prompt templates in `~/.harness/prompts` and `~/.agents/prompts`.
 
 ## Environment variables
 

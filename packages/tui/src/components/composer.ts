@@ -7,24 +7,28 @@ import {
 	SyntaxStyle,
 	TextRenderable,
 } from "@opentui/core";
-import { slashCommandPattern } from "../../../shared/src/slash-command";
+import {
+	expandsAt,
+	type SlashCommandKind,
+	slashCommandPattern,
+} from "../../../shared/src/slash-command";
 import type { FollowUp } from "../store";
 
 const ACCENT = "#89b4fa";
 const SUGGESTION_WINDOW_SIZE = 5;
-type CommandHint = {
+export type CommandHint = {
 	name: string;
 	description: string;
-	kind: "command" | "skill";
+	kind: SlashCommandKind;
 };
 
 export class ComposerView {
 	readonly root: BoxRenderable;
 	private readonly input: InputRenderable;
-	private readonly skillStyle = SyntaxStyle.fromStyles({
+	private readonly highlightStyle = SyntaxStyle.fromStyles({
 		skill: { fg: ACCENT },
 	});
-	private readonly skillStyleId = this.skillStyle.getStyleId("skill");
+	private readonly highlightStyleId = this.highlightStyle.getStyleId("skill");
 	private readonly queue: TextRenderable;
 	private readonly suggestions: BoxRenderable;
 	private readonly suggestionRows: {
@@ -120,11 +124,11 @@ export class ComposerView {
 			textColor: "#a6adc8",
 			backgroundColor: "transparent",
 			focusedBackgroundColor: "transparent",
-			syntaxStyle: this.skillStyle,
+			syntaxStyle: this.highlightStyle,
 		});
 		this.input.on(InputRenderableEvents.ENTER, () => this.submit(false));
 		this.input.on(InputRenderableEvents.INPUT, (text: string) => {
-			this.highlightSkills(text);
+			this.highlightCommands(text);
 			this.syncSuggestions(text);
 		});
 		this.inputRow.add(this.input);
@@ -147,7 +151,7 @@ export class ComposerView {
 
 	setCommands(commands: readonly CommandHint[]) {
 		this.commands = commands;
-		this.highlightSkills(this.input.value);
+		this.highlightCommands(this.input.value);
 		this.syncSuggestions(this.input.value);
 	}
 
@@ -178,7 +182,7 @@ export class ComposerView {
 
 	destroy() {
 		this.renderer.keyInput.off("keypress", this.handleKey);
-		this.skillStyle.destroy();
+		this.highlightStyle.destroy();
 	}
 
 	private handleKey = (key: KeyEvent) => {
@@ -271,23 +275,22 @@ export class ComposerView {
 		this.input.value = `${this.input.value.slice(0, this.suggestionStart)}${this.matches[this.selectedSuggestion]?.name ?? ""}${suffix}`;
 	}
 
-	private highlightSkills(text: string) {
+	private highlightCommands(text: string) {
 		this.input.clearAllHighlights();
-		if (this.skillStyleId === null) return;
+		const styleId = this.highlightStyleId;
+		if (styleId === null) return;
 		for (const match of text.matchAll(slashCommandPattern())) {
 			const prefix = match[1] ?? "";
 			const name = `/${match[2] ?? ""}`;
-			if (
-				!this.commands.some(
-					(command) => command.kind === "skill" && command.name === name,
-				)
-			)
-				continue;
 			const start = (match.index ?? 0) + prefix.length;
+			const command = this.commands.find(
+				(candidate) => candidate.name === name,
+			);
+			if (!expandsAt(command?.kind, start)) continue;
 			this.input.addHighlightByCharRange({
 				start,
 				end: start + name.length,
-				styleId: this.skillStyleId,
+				styleId,
 			});
 		}
 	}

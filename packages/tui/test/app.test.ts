@@ -481,6 +481,68 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("suggests prompt templates as their own command only at the start", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			store.getState().apply({
+				type: "prompts",
+				prompts: [{ name: "review-pr", description: "Review a pull request" }],
+			});
+			store.getState().apply({
+				type: "skills",
+				skills: [{ name: "review-pr", description: "Shadowed by the template" }],
+			});
+			await view.renderOnce();
+			await view.mockInput.typeText("/rev");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain(
+				"/review-pr  Review a pull request",
+			);
+			expect(view.captureCharFrame()).not.toContain("Shadowed by the template");
+			await view.mockInput.typeText("iew-pr and then /rev");
+			await view.flush();
+			expect(view.captureCharFrame()).not.toContain("Review a pull request");
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("uses the accent for a leading prompt template only", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			store.getState().apply({
+				type: "prompts",
+				prompts: [{ name: "standup", description: "Daily standup" }],
+			});
+			store.getState().addUser("/standup after /standup");
+			await view.flush();
+			const accented = view
+				.captureSpans()
+				.lines.flatMap((line) => line.spans)
+				.filter(
+					(span) =>
+						span.text === "/standup" && span.fg.equals(RGBA.fromHex("#89b4fa")),
+				);
+			expect(accented).toHaveLength(1);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("limits and truncates slash suggestions", async () => {
 		const store = createTuiStore("session-1");
 		const view = await createTestRenderer({

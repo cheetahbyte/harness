@@ -465,6 +465,27 @@ function episodeId(
 		});
 	});
 
+	test("lists prompt templates for composer suggestions", async () => {
+		const { dir, server } = harness();
+		mkdirSync(join(dir, ".harness/prompts"), { recursive: true });
+		writeFileSync(
+			join(dir, ".harness/prompts/review-pr.md"),
+			"---\ndescription: Review an open pull request\n---\nRead the diff.",
+		);
+		const id = server.createSession();
+		const events: ServerEvent[] = [];
+		server.subscribe(id, (event) => events.push(event));
+
+		await server.command(id, { type: "list-prompts" });
+
+		expect(events).toContainEqual({
+			type: "prompts",
+			prompts: [
+				{ name: "review-pr", description: "Review an open pull request" },
+			],
+		});
+	});
+
 	test("persists a selected non-OpenAI model", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
 		paths.push(dir);
@@ -1133,6 +1154,51 @@ function episodeId(
 					(event) => event.type === "usage" && event.totalTokens === 9,
 				),
 			).toBe(true);
+		} finally {
+			provider.stop(true);
+			delete process.env["HARNESS_OPENAI_API_KEY"];
+		}
+	});
+
+	test("sends an expanded prompt template but keeps the typed text", async () => {
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
+		const requests: string[] = [];
+		const provider = Bun.serve({
+			port: 0,
+			fetch: async (request) => {
+				requests.push(await request.text());
+				return new Response(
+					'data: {"id":"one","choices":[{"delta":{"content":"done"},"finish_reason":null}]}\n\n' +
+						'data: {"id":"one","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n' +
+						"data: [DONE]\n\n",
+					{ headers: { "content-type": "text/event-stream" } },
+				);
+			},
+		});
+		try {
+			const { dir, server } = harness();
+			mkdirSync(join(dir, ".harness/prompts"), { recursive: true });
+			writeFileSync(
+				join(dir, ".harness/prompts/review-pr.md"),
+				"---\ndescription: Review an open pull request\n---\nRead the diff and report defects.",
+			);
+			const id = server.createSession();
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+
+			await server.command(id, { type: "prompt", text: "/review-pr #42" });
+
+			expect(requests[0]).toContain("Read the diff and report defects.");
+			expect(requests[0]).toContain("#42");
+			expect(requests[0]).not.toContain("/review-pr");
+			expect(server.store.events(id)).toContainEqual({
+				type: "user",
+				text: "/review-pr #42",
+			});
 		} finally {
 			provider.stop(true);
 			delete process.env["HARNESS_OPENAI_API_KEY"];

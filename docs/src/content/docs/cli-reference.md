@@ -52,6 +52,7 @@ Typed directly into the TUI composer.
 | `/fast-cycle` | Open the fast-cycle picker. `Space` checks or unchecks a model, `Enter` saves the selection. |
 | `/session-name <name>` | Set the current session name. Automatic naming will not replace a name you set. |
 | `/<skill-name>` | Invoke a skill loaded from `.harnez/skills` or `.agents/skills`. Available skills appear in autocomplete with their own description. |
+| `/<prompt-name>` | Expand a prompt template from `.harness/prompts` or `.agents/prompts` into the prompt. Only recognized as the first word; trailing text is appended to the template. |
 
 ## Keyboard shortcuts
 
@@ -65,7 +66,7 @@ Typed directly into the TUI composer.
 | `Ctrl+P` | Switch to the next model picked with `/fast-cycle`. |
 | `Cmd+C` | Copy the current terminal selection. |
 | `Ctrl+C` | Quit. |
-| `↑` / `↓` / `Tab` | Navigate and accept command or skill autocomplete suggestions. |
+| `↑` / `↓` / `Tab` | Navigate and accept command, prompt-template, or skill autocomplete suggestions. |
 
 Changing the thinking level or the model while a task is running applies it to
 the next prompt without interrupting the active task. Each fast-cycle model

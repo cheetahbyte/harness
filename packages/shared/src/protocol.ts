@@ -18,6 +18,8 @@ export type ModelOption = {
 
 export type SkillOption = { name: string; description: string };
 
+export type PromptOption = { name: string; description: string };
+
 export type ModelConfig = {
 	provider: string;
 	model: string;
@@ -68,6 +70,7 @@ export type ClientCommand =
 	| { type: "list-providers"; authType?: AuthType }
 	| { type: "list-models"; provider?: string }
 	| { type: "list-skills" }
+	| { type: "list-prompts" }
 	| { type: "set-session-title"; title: string }
 	| { type: "set-disable-thinking-blocks"; disabled: boolean }
 	| { type: "login"; provider: string; authType: AuthType }
@@ -120,6 +123,7 @@ export type ServerEvent =
 	| { type: "providers"; providers: ProviderOption[] }
 	| { type: "models"; models: ModelOption[] }
 	| { type: "skills"; skills: SkillOption[] }
+	| { type: "prompts"; prompts: PromptOption[] }
 	| { type: "auth-prompt"; prompt: AuthPromptEvent }
 	| { type: "auth-notify"; notification: AuthNotifyEvent }
 	| { type: "auth-completed"; provider: string }

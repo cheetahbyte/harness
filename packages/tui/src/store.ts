@@ -6,6 +6,7 @@ import type {
 	FastCycleEntry,
 	ModelConfig,
 	ModelOption,
+	PromptOption,
 	ProviderOption,
 	ServerEvent,
 	SkillOption,
@@ -77,6 +78,7 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 			entries: [],
 			followUps: [],
 			skills: [],
+			prompts: [],
 			running: false,
 			status: "ready",
 			activeTaskId: undefined,
@@ -159,6 +161,7 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 					return;
 				}
 				if (event.type === "skills") return set({ skills: event.skills });
+				if (event.type === "prompts") return set({ prompts: event.prompts });
 				if (event.type === "providers")
 					return set({
 						wizard: { kind: "providers", providers: event.providers },
@@ -324,6 +327,7 @@ export type TuiState = {
 	entries: TranscriptEntry[];
 	followUps: FollowUp[];
 	skills: SkillOption[];
+	prompts: PromptOption[];
 	running: boolean;
 	status: string;
 	activeTaskId: string | undefined;

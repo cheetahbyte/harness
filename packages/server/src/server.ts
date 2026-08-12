@@ -12,6 +12,7 @@ import type {
 	FastCycleEntry,
 	ModelConfig,
 	ModelOption,
+	PromptOption,
 	ProviderOption,
 	ServerEvent,
 	SkillOption,
@@ -20,6 +21,7 @@ import { HarnessAgentRuntime } from "./agent/runtime";
 import { ContextManager } from "./context/manager";
 import type { SubagentResult } from "./context/types";
 import { log } from "./logger";
+import { scanPrompts } from "./prompts";
 import {
 	createHarnessModels,
 	JsonCredentialStore,
@@ -201,6 +203,9 @@ export class HarnessServer {
 				return;
 			case "list-skills":
 				await this.listSkills(id);
+				return;
+			case "list-prompts":
+				await this.listPrompts(id);
 				return;
 			case "set-session-title": {
 				const title =
@@ -655,6 +660,20 @@ export class HarnessServer {
 		this.publish(id, { type: "skills", skills }, false);
 	}
 
+	private async listPrompts(id: string): Promise<void> {
+		const { templates, diagnostics } = await scanPrompts(this.workspace(id));
+		for (const diagnostic of diagnostics)
+			log.warn(
+				{ sessionId: id, path: diagnostic.path, error: diagnostic.error },
+				"prompt template ignored",
+			);
+		const prompts: PromptOption[] = templates.map(({ name, description }) => ({
+			name,
+			description,
+		}));
+		this.publish(id, { type: "prompts", prompts }, false);
+	}
+
 	private run(
 		id: string,
 		command: string | QueuedTask | PendingSteer,
@@ -728,6 +747,7 @@ function isImmediateCommand(type: ClientCommand["type"]): boolean {
 		type === "list-providers" ||
 		type === "list-models" ||
 		type === "list-skills" ||
+		type === "list-prompts" ||
 		type === "set-session-title" ||
 		type === "set-fast-cycle" ||
 		type === "set-disable-thinking-blocks" ||

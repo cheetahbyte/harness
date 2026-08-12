@@ -56,9 +56,11 @@ export async function runTui(
 					},
 					onConnected: () => {
 						attempt = 0;
-						void client
-							.send(sessionId, { type: "list-skills" })
-							.catch(() => undefined);
+						for (const command of [
+							{ type: "list-skills" },
+							{ type: "list-prompts" },
+						] as const)
+							void client.send(sessionId, command).catch(() => undefined);
 					},
 					from: cursor,
 				});

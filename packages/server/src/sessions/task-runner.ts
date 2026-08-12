@@ -11,6 +11,7 @@ import {
 } from "../capabilities/context";
 import type { ContextManager } from "../context/manager";
 import { log } from "../logger";
+import { expandPrompt, scanPrompts } from "../prompts";
 import { activateSkill, type SkillSnapshotEntry, scanSkills } from "../skills";
 import { TaskRuntime, type TaskTerminalStatus } from "../task-runtime";
 import { tokenCost } from "../token-cost";
@@ -299,13 +300,20 @@ export class SessionTaskRunner {
 	}): Promise<RunningTask> {
 		const bindingGeneration = crypto.randomUUID();
 		const contextWatermark = this.options.store.contextSequence(id);
-		const tools = new CoreTools(this.options.workspace(id));
-		const scanned = await scanSkills(
-			this.options.workspace(id),
-			undefined,
-			bindingGeneration,
-		);
+		const workspace = this.options.workspace(id);
+		const tools = new CoreTools(workspace);
+		const [scanned, prompts] = await Promise.all([
+			scanSkills(workspace, undefined, bindingGeneration),
+			scanPrompts(workspace),
+		]);
 		const skills = [...scanned.discoverable, ...scanned.operatorOnly];
+		/** A template expands before skills are selected, so it can invoke them. */
+		const { text: expanded, template } = expandPrompt(text, prompts.templates);
+		if (template)
+			log.info(
+				{ sessionId: id, prompt: template.name, path: template.path },
+				"prompt template expanded",
+			);
 		const catalog = new CapabilityCatalog(
 			[
 				...tools.capabilities(bindingGeneration),
@@ -319,14 +327,14 @@ export class SessionTaskRunner {
 		});
 		const { task, context, accountant } = this.createRuntime({
 			id,
-			text,
+			text: expanded,
 			snapshot,
 			contextWatermark,
 			...(predecessor ? { predecessor } : {}),
 			...(submissionWatermark === undefined ? {} : { submissionWatermark }),
 		});
 		this.loadTools(task, snapshot, context, accountant);
-		const { prompt, selected } = selectedSkills(text, skills);
+		const { prompt, selected } = selectedSkills(expanded, skills);
 		await this.activateSkills(selected, snapshot, context, accountant);
 		return {
 			controller,

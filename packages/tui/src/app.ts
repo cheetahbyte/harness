@@ -14,7 +14,7 @@ import type {
 	ModelOption,
 	ProviderOption,
 } from "../../shared/src/protocol";
-import { ComposerView } from "./components/composer";
+import { type CommandHint, ComposerView } from "./components/composer";
 import { FooterView } from "./components/footer";
 import { HeaderView } from "./components/header";
 import { TranscriptView } from "./components/transcript";
@@ -27,9 +27,7 @@ type WizardFlow =
 	| { kind: "login-active" }
 	| { kind: "model"; provider?: string }
 	| { kind: "fast-cycle" };
-type AppCommand = {
-	name: string;
-	description: string;
+type AppCommand = CommandHint & {
 	kind: "command";
 	run: (args: string) => void | Promise<void>;
 };
@@ -232,17 +230,30 @@ export class TuiApp {
 		const state = this.store.getState();
 		this.header.update(state);
 		this.transcript.setSkills(state.skills.map((skill) => skill.name));
+		this.transcript.setPrompts(state.prompts.map((prompt) => prompt.name));
 		this.transcript.setDisableThinkingBlocks(state.disableThinkingBlocks);
 		this.transcript.update(state.entries);
 		this.composer.update(state.followUps);
-		this.composer.setCommands([
+		/**
+		 * One row per name, in the order a leading `/name` resolves: a built-in
+		 * command shadows a prompt template, which shadows a skill.
+		 */
+		const named = new Map<string, CommandHint>();
+		for (const command of [
 			...this.commands,
+			...state.prompts.map((prompt) => ({
+				name: `/${prompt.name}`,
+				description: prompt.description,
+				kind: "prompt" as const,
+			})),
 			...state.skills.map((skill) => ({
 				name: `/${skill.name}`,
 				description: skill.description,
 				kind: "skill" as const,
 			})),
-		]);
+		])
+			if (!named.has(command.name)) named.set(command.name, command);
+		this.composer.setCommands([...named.values()]);
 		this.footer.update(state);
 		if (state.wizard !== this.renderedWizard) {
 			this.renderedWizard = state.wizard;
