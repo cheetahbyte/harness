@@ -37,6 +37,17 @@ describe("CLI arguments", () => {
 			else process.env["HARNEZ_URL"] = previous;
 		}
 	});
+
+	test("allows an IPv6 loopback URL", async () => {
+		const previous = process.env["HARNEZ_URL"];
+		process.env["HARNEZ_URL"] = "http://[::1]:9";
+		try {
+			await expect(runServerCommand(["stop"])).resolves.toBeUndefined();
+		} finally {
+			if (previous === undefined) delete process.env["HARNEZ_URL"];
+			else process.env["HARNEZ_URL"] = previous;
+		}
+	});
 });
 
 describe("server health", () => {

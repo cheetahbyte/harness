@@ -5,7 +5,8 @@ import type { ContextManager } from "../context/manager";
 import { activateSkill, type SkillSnapshotEntry } from "../skills";
 import type { TaskRuntime } from "../task-runtime";
 import { tokenCost } from "../token-cost";
-import type { CoreTools } from "../tools";
+import { CoreTools } from "../tools";
+import { detailsRecord } from "./message";
 
 const RECALL_DESCRIPTION =
 	"Read an exact slice from an archived observation:// reference.";
@@ -15,11 +16,13 @@ const EPISODE_DESCRIPTION =
 
 export const TOOL_OVERHEAD_TOKENS = tokenCost({
 	tools: [
-		...(["read", "write", "edit", "bash"] as const).map((name) => ({
-			name,
-			description: toolDescription(name),
-			parameters: toolSchema(name),
-		})),
+		...new CoreTools("")
+			.agentTools()
+			.map(({ name, description, parameters }) => ({
+				name,
+				description,
+				parameters,
+			})),
 		{
 			name: "recall_observation",
 			description: RECALL_DESCRIPTION,
@@ -349,25 +352,6 @@ function episodeTool(sessionId: string, context: ContextManager): AgentTool {
 		},
 	};
 }
-type CoreToolName = "read" | "write" | "edit" | "bash";
-function toolDescription(name: CoreToolName): string {
-	return {
-		read: "Read a text file in the workspace.",
-		write: "Write a text file in the workspace.",
-		edit: "Replace exact text in a file.",
-		bash: "Run a shell command in the workspace.",
-	}[name];
-}
-function toolSchema(name: CoreToolName) {
-	const path = Type.String({ minLength: 1 });
-	return name === "read"
-		? Type.Object({ path })
-		: name === "write"
-			? Type.Object({ path, content: Type.String() })
-			: name === "edit"
-				? Type.Object({ path, oldText: Type.String(), newText: Type.String() })
-				: Type.Object({ command: Type.String({ minLength: 1 }) });
-}
 function recallSchema() {
 	return Type.Object({ reference: Type.String({ minLength: 1 }) });
 }
@@ -424,11 +408,4 @@ function previewOutput(output: string, id: string, limit: number): string {
 	const visible = Math.max(0, limit - marker.length);
 	const head = Math.ceil(visible / 2);
 	return `${output.slice(0, head)}${marker}${output.slice(output.length - (visible - head))}`;
-}
-function detailsRecord(details: unknown): Record<string, unknown> {
-	return typeof details === "object" &&
-		details !== null &&
-		!Array.isArray(details)
-		? (details as Record<string, unknown>)
-		: {};
 }

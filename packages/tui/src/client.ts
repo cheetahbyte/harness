@@ -25,15 +25,23 @@ export class HarnessClient {
 	) {}
 
 	async createSession(workspace = process.cwd()): Promise<string> {
-		return (
-			(await (
-				await fetch(`${this.base}/sessions`, {
-					method: "POST",
-					headers: { "content-type": "application/json" },
-					body: JSON.stringify({ cwd: workspace }),
-				})
-			).json()) as { sessionId: string }
-		).sessionId;
+		const response = await fetch(`${this.base}/sessions`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ cwd: workspace }),
+		});
+		if (!response.ok)
+			throw new Error(`session creation failed (${response.status})`);
+		const body: unknown = await response.json();
+		if (
+			!body ||
+			typeof body !== "object" ||
+			!("sessionId" in body) ||
+			typeof body.sessionId !== "string" ||
+			!body.sessionId
+		)
+			throw new Error("session creation returned an invalid response");
+		return body.sessionId;
 	}
 
 	async send(sessionId: string, command: ClientCommand): Promise<void> {

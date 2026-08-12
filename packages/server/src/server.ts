@@ -1,7 +1,12 @@
 import { EventEmitter } from "node:events";
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
-import type { CredentialStore, Models } from "@earendil-works/pi-ai";
+import {
+	type CredentialStore,
+	clampThinkingLevel,
+	getSupportedThinkingLevels,
+	type Models,
+} from "@earendil-works/pi-ai";
 import type {
 	AuthType,
 	ClientCommand,
@@ -27,6 +32,7 @@ import {
 import { SessionStore } from "./session-store";
 import {
 	type PendingSteer,
+	pendingCommandType,
 	type RunningTask,
 	SessionTaskRunner,
 	type TaskSession,
@@ -94,7 +100,7 @@ export class HarnessServer {
 			capabilityBudget: 8_000,
 			workspace: (sessionId) => this.workspace(sessionId),
 			modelConfig: (sessionId) => this.modelConfig(sessionId),
-			emit: (sessionId, event) => this.emit(sessionId, event),
+			emit: (sessionId, event) => this.publish(sessionId, event),
 		});
 	}
 
@@ -143,7 +149,7 @@ export class HarnessServer {
 	}
 
 	reportError(id: string, error: unknown): void {
-		this.emit(id, {
+		this.publish(id, {
 			type: "error",
 			message: error instanceof Error ? error.message : String(error),
 		});
@@ -163,6 +169,10 @@ export class HarnessServer {
 		}
 		if (isQueueControl(command.type)) {
 			await this.handleQueueControl(id, session, command);
+			return;
+		}
+		if (command.type === "cycle-thinking-level") {
+			this.cycleThinkingLevel(id, session);
 			return;
 		}
 		if (this.handleConfigure(id, session, command)) return;
@@ -219,7 +229,7 @@ export class HarnessServer {
 		id: string,
 		session: Session,
 		command: ClientCommand,
-	): Promise<boolean> {
+	): Promise<void> {
 		if (command.type === "abort") {
 			log.info({ sessionId: id, running: !!session.running }, "run aborted");
 			if (
@@ -228,9 +238,9 @@ export class HarnessServer {
 				session.running.task.id !== command.taskId
 			)
 				throw new Error("task is not active");
-			if (!session.running) return true;
+			if (!session.running) return;
 			if (session.pendingSteer) {
-				this.emit(id, {
+				this.publish(id, {
 					type: "command",
 					id: session.pendingSteer.id,
 					command: "steer",
@@ -238,73 +248,107 @@ export class HarnessServer {
 				});
 				delete session.pendingSteer;
 			}
-			this.emit(id, {
+			this.publish(id, {
 				type: "task-state",
 				taskId: session.running.task.id,
 				state: "cancelling",
 			});
 			session.running.controller.abort();
 			await session.running.task.cancel("cancelled");
-			return true;
+			return;
 		}
 		if (command.type === "confirm") {
 			this.activeTask(session, command.taskId).confirm(command.callId);
-			return true;
+			return;
 		}
 		if (command.type === "acknowledge-unknown-effects") {
 			this.activeTask(session, command.taskId).acknowledgeUnknownPriorEffects();
-			return true;
+			return;
 		}
-		return false;
 	}
 
 	private async handleQueueControl(
 		id: string,
 		session: Session,
 		command: ClientCommand,
-	): Promise<boolean> {
+	): Promise<void> {
 		if (command.type === "resume-queued") {
 			const queued = session.scheduler.resume(command.taskId);
 			this.emitCommand(id, queued, "queued");
 			await this.advance(id, session.scheduler.next());
-			return true;
+			return;
 		}
 		if (command.type === "cancel-queued") {
 			const queued = session.scheduler.cancelQueued(command.taskId);
 			this.emitCommand(id, queued, "cancelled");
 			await this.advance(id, session.scheduler.next());
-			return true;
+			return;
 		}
-		if (command.type !== "replace-queued") return false;
+		if (command.type !== "replace-queued") return;
 		const { cancelled, queued } = session.scheduler.replaceQueued(
 			command.taskId,
 			{ id: command.id ?? crypto.randomUUID(), text: command.text },
-			this.contextSequence(id),
+			this.store.contextSequence(id),
 		);
 		this.emitCommand(id, cancelled, "cancelled");
 		this.emitCommand(id, queued, "queued");
 		await this.advance(id, session.scheduler.next());
-		return true;
 	}
 
 	private handleConfigure(
 		id: string,
 		session: Session,
 		command: ClientCommand,
+		allowRunning = false,
 	): boolean {
 		if (command.type !== "configure") return false;
-		if (session.running) throw new Error("cannot change model while running");
-		const config = {
+		if (session.running && !allowRunning)
+			throw new Error("cannot change model while running");
+		const selected = {
 			provider: command.provider,
 			model: command.model,
 			...(command.baseUrl ? { baseUrl: command.baseUrl } : {}),
 		};
-		providerModels(config, this.credentials, this.models as Models);
+		const { model } = providerModels(
+			selected,
+			this.credentials,
+			this.models as Models,
+		);
+		const config = {
+			...selected,
+			...(command.thinkingLevel
+				? { thinkingLevel: clampThinkingLevel(model, command.thinkingLevel) }
+				: {}),
+		};
 		this.store.setModelConfig(id, config);
 		this.settingsFor(id).setModelConfig(config);
-		this.runtime.forget(id);
-		this.emit(id, { type: "model-config", config });
+		if (!session.running) this.runtime.forget(id);
+		this.publish(id, { type: "model-config", config });
 		return true;
+	}
+
+	private cycleThinkingLevel(id: string, session: Session): void {
+		const config = this.modelConfig(id);
+		if (!config) throw new Error("select a model with /model");
+		const { model } = providerModels(
+			config,
+			this.credentials,
+			this.models as Models,
+		);
+		const levels = getSupportedThinkingLevels(model);
+		const current = clampThinkingLevel(model, config.thinkingLevel ?? "medium");
+		const next = levels[(levels.indexOf(current) + 1) % levels.length];
+		if (!next) throw new Error("model has no supported thinking levels");
+		this.handleConfigure(
+			id,
+			session,
+			{
+				type: "configure",
+				...config,
+				thinkingLevel: next,
+			},
+			true,
+		);
 	}
 
 	private handleQueuedSubmission(
@@ -316,7 +360,7 @@ export class HarnessServer {
 			return false;
 		const pending = session.scheduler.enqueue(
 			{ id: command.id ?? crypto.randomUUID(), text: command.text },
-			this.contextSequence(id),
+			this.store.contextSequence(id),
 			{
 				requirePredecessorSuccess:
 					command.type === "enqueue" &&
@@ -324,16 +368,15 @@ export class HarnessServer {
 			},
 		);
 		this.emitCommand(id, pending, "queued");
-		this.emit(id, { type: "status", text: "follow-up queued" });
+		this.publish(id, { type: "status", text: "follow-up queued" });
 		return true;
 	}
 
 	private async handleSupersede(
 		id: string,
 		session: Session,
-		command: ClientCommand,
-	): Promise<boolean> {
-		if (command.type !== "supersede") return false;
+		command: Extract<ClientCommand, { type: "supersede" }>,
+	): Promise<void> {
 		if (!session.running) {
 			const commandId = command.id ?? crypto.randomUUID();
 			await this.run(id, {
@@ -341,15 +384,15 @@ export class HarnessServer {
 				kind: "supersede",
 				state: "ready",
 				userInput: { id: commandId, text: command.text },
-				submissionWatermark: this.contextSequence(id),
+				submissionWatermark: this.store.contextSequence(id),
 				requirePredecessorSuccess: false,
 			});
-			return true;
+			return;
 		}
 		if (command.taskId && command.taskId !== session.running.task.id)
 			throw new Error("task is not active");
 		if (session.pendingSteer) {
-			this.emit(id, {
+			this.publish(id, {
 				type: "command",
 				id: session.pendingSteer.id,
 				command: "steer",
@@ -360,26 +403,24 @@ export class HarnessServer {
 		const { queued, replaced } = session.scheduler.requestSupersede(
 			session.running.task.id,
 			{ id: command.id ?? crypto.randomUUID(), text: command.text },
-			this.contextSequence(id),
+			this.store.contextSequence(id),
 		);
 		if (replaced) this.emitCommand(id, replaced, "replaced");
 		this.emitCommand(id, queued, "queued");
-		this.emit(id, {
+		this.publish(id, {
 			type: "task-state",
 			taskId: session.running.task.id,
 			state: "cancelling",
 		});
 		session.running.controller.abort();
 		await session.running.task.cancel("superseded");
-		return true;
 	}
 
 	private async handleSteer(
 		id: string,
 		session: Session,
-		command: ClientCommand,
-	): Promise<boolean> {
-		if (command.type !== "steer") return false;
+		command: Extract<ClientCommand, { type: "steer" }>,
+	): Promise<void> {
 		const pending: PendingSteer = {
 			id: command.id ?? crypto.randomUUID(),
 			type: "steer",
@@ -387,7 +428,7 @@ export class HarnessServer {
 		};
 		if (!session.running) {
 			await this.run(id, pending);
-			return true;
+			return;
 		}
 		if (
 			this.runtime.steer(id, pending.text, {
@@ -396,13 +437,12 @@ export class HarnessServer {
 				onReplaced: () => this.emitCommand(id, pending, "replaced"),
 			})
 		)
-			return true;
+			return;
 		if (session.pendingSteer)
 			this.emitCommand(id, session.pendingSteer, "replaced");
 		session.pendingSteer = pending;
-		this.emit(id, { type: "status", text: "steering after current turn" });
+		this.publish(id, { type: "status", text: "steering after current turn" });
 		session.running.controller.abort();
-		return true;
 	}
 
 	private async submitPrompt(
@@ -416,7 +456,7 @@ export class HarnessServer {
 		}
 		const pending = session.scheduler.enqueue(
 			{ id: crypto.randomUUID(), text },
-			this.contextSequence(id),
+			this.store.contextSequence(id),
 		);
 		this.emitCommand(id, pending, "queued");
 	}
@@ -432,10 +472,10 @@ export class HarnessServer {
 		command: QueuedTask | PendingSteer,
 		state: "queued" | "started" | "cancelled" | "replaced",
 	): void {
-		this.emit(id, {
+		this.publish(id, {
 			type: "command",
 			id: command.id,
-			command: "kind" in command ? command.kind : command.type,
+			command: pendingCommandType(command),
 			state,
 		});
 	}
@@ -522,10 +562,6 @@ export class HarnessServer {
 		return this.store.modelConfig(id) ?? this.settingsFor(id).modelConfig();
 	}
 
-	private contextSequence(id: string): number {
-		return this.store.contextItems(id).at(-1)?.sequence ?? 0;
-	}
-
 	private settingsFor(id: string): SettingsStore {
 		const workspace = this.workspace(id);
 		return workspace === this.defaultWorkspace
@@ -547,10 +583,6 @@ export class HarnessServer {
 			this.sessions.set(id, session);
 		}
 		return session;
-	}
-
-	private emit(id: string, event: ServerEvent): void {
-		this.publish(id, event);
 	}
 
 	private publish(id: string, event: ServerEvent, persist = true): void {

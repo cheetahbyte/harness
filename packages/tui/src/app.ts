@@ -126,6 +126,7 @@ export class TuiApp {
 			submit: (text, followUp) => void this.submit(text, followUp),
 			abort: () => this.escape(),
 			toggleThinking: () => this.toggleThinking(),
+			cycleThinkingLevel: () => this.cycleThinkingLevel(),
 		});
 		this.wizard = new WizardView(renderer);
 		this.footer = new FooterView(renderer);
@@ -153,34 +154,32 @@ export class TuiApp {
 			try {
 				if (await this.runCommand(text)) return;
 			} catch (error) {
-				return this.store.getState().apply({
-					type: "error",
-					message: error instanceof Error ? error.message : String(error),
-				});
+				return this.reportError(error);
 			}
-		let command = followUp
-			? { type: "follow-up" as const, id: crypto.randomUUID(), text }
-			: commandForInput(text);
+		let command: ClientCommand = commandForInput(text);
 		let id: string | undefined;
-		if (command.type === "steer") {
+		if (followUp) {
+			id = crypto.randomUUID();
+			command = { type: "follow-up", id, text };
+			this.store.getState().addFollowUp(id, text);
+		} else if (command.type === "steer") {
 			id = crypto.randomUUID();
 			command = { ...command, id };
 			this.store.getState().addSteering(id, text);
-		}
-		if (command.type === "follow-up") {
-			id = command.id ?? crypto.randomUUID();
-			command = { ...command, id };
-			this.store.getState().addFollowUp(id, text);
 		}
 		try {
 			await this.send(command);
 		} catch (error) {
 			if (id) this.store.getState().removeCommand(id);
-			this.store.getState().apply({
-				type: "error",
-				message: error instanceof Error ? error.message : String(error),
-			});
+			this.reportError(error);
 		}
+	}
+
+	private reportError(error: unknown) {
+		this.store.getState().apply({
+			type: "error",
+			message: error instanceof Error ? error.message : String(error),
+		});
 	}
 
 	private async runCommand(input: string): Promise<boolean> {
@@ -246,10 +245,13 @@ export class TuiApp {
 				type: "ui-settings",
 				disableThinkingBlocks: !disabled,
 			});
-			this.store.getState().apply({
-				type: "error",
-				message: error instanceof Error ? error.message : String(error),
-			});
+			this.reportError(error);
+		});
+	}
+
+	private cycleThinkingLevel() {
+		void this.send({ type: "cycle-thinking-level" }).catch((error) => {
+			this.reportError(error);
 		});
 	}
 
@@ -410,7 +412,7 @@ export class TuiApp {
 			);
 		}
 		const authUrl = this.authUrl;
-		this.openWizard();
+		this.composer.setActive(false);
 		this.wizard.show(
 			{
 				kind: "input",
@@ -444,7 +446,7 @@ export class TuiApp {
 	}
 
 	private showNoticeText(title: string, text: string, open?: () => void) {
-		this.openWizard();
+		this.composer.setActive(false);
 		this.wizard.show(
 			{ kind: "notice", title, text },
 			{ cancel: () => this.escape(), ...(open ? { open } : {}) },
@@ -458,7 +460,7 @@ export class TuiApp {
 		searchable = false,
 		descriptionLayout: "inline" | "two-line" = "two-line",
 	) {
-		this.openWizard();
+		this.composer.setActive(false);
 		this.wizard.show(
 			{
 				kind: "select",
@@ -469,10 +471,6 @@ export class TuiApp {
 			},
 			{ select, cancel: () => this.escape() },
 		);
-	}
-
-	private openWizard() {
-		this.composer.setActive(false);
 	}
 
 	private escape() {
@@ -495,10 +493,7 @@ export class TuiApp {
 			await this.send(command);
 		} catch (error) {
 			this.closeWizard();
-			this.store.getState().apply({
-				type: "error",
-				message: error instanceof Error ? error.message : String(error),
-			});
+			this.reportError(error);
 		}
 	}
 }

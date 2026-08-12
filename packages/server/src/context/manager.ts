@@ -129,6 +129,14 @@ export class ContextManager {
 		return this.activeEpisodes.get(sessionId);
 	}
 
+	private activeEpisodeIds(sessionId: string): Set<string> {
+		return new Set(
+			this.episodes(sessionId)
+				.filter((episode) => episode.state === "active")
+				.map((episode) => episode.id),
+		);
+	}
+
 	archive(id: string, reason: string): void {
 		const item = this.store.contextItem(id);
 		if (item?.kind !== "tool-result" || item.lifecycle !== "retained")
@@ -144,11 +152,7 @@ export class ContextManager {
 	completeTurn(sessionId: string, newToolResultIds: string[] = []): void {
 		const newToolCallIds = new Set(newToolResultIds);
 		const items = this.store.contextItems(sessionId);
-		const activeEpisodeIds = new Set(
-			this.episodes(sessionId)
-				.filter((episode) => episode.state === "active")
-				.map((episode) => episode.id),
-		);
+		const activeEpisodeIds = this.activeEpisodeIds(sessionId);
 		const retainedGroups = new Set<string>();
 		for (const item of items)
 			if (
@@ -181,11 +185,7 @@ export class ContextManager {
 	}
 
 	completeGroup(sessionId: string, groupId: string): void {
-		const activeEpisodeIds = new Set(
-			this.episodes(sessionId)
-				.filter((episode) => episode.state === "active")
-				.map((episode) => episode.id),
-		);
+		const activeEpisodeIds = this.activeEpisodeIds(sessionId);
 		for (const item of this.store.contextItems(sessionId))
 			if (
 				item.groupId === groupId &&
@@ -430,11 +430,7 @@ export class ContextManager {
 			throw new ContextBudgetError(state.estimatedTokens, options.budget);
 		return {
 			payloads: [
-				...state.items.flatMap((item) => {
-					if (item.kind === "system" || item.kind === "observation") return [];
-					const payload = projectedPayload(item);
-					return payload === undefined ? [] : [payload];
-				}),
+				...projectedPayloads(state.items),
 				...episodeConclusionPayloads(state.items, state.episodes),
 			],
 			estimatedTokens: state.estimatedTokens,
@@ -538,11 +534,7 @@ export class ContextManager {
 		if (estimatedTokens > options.budget)
 			throw new ContextBudgetError(estimatedTokens, options.budget);
 		return {
-			payloads: items.flatMap((item) => {
-				if (item.kind === "system" || item.kind === "observation") return [];
-				const payload = projectedPayload(item);
-				return payload === undefined ? [] : [payload];
-			}),
+			payloads: projectedPayloads(items),
 			estimatedTokens,
 			evictedIds: [],
 		};
@@ -563,8 +555,8 @@ export class ContextManager {
 			kind: "subagent-handoff",
 			payload: result,
 			compactPayload,
-			tokenCost: Math.ceil(JSON.stringify(result).length / 4),
-			compactTokenCost: Math.ceil(JSON.stringify(compactPayload).length / 4),
+			tokenCost: tokenCost(result),
+			compactTokenCost: tokenCost(compactPayload),
 			lifecycle: "retained",
 			projection: "compact",
 			reason: "structured subagent handoff",
@@ -633,4 +625,14 @@ export class ContextManager {
 			),
 		};
 	}
+}
+
+function projectedPayloads(
+	items: ContextItem[],
+): NonNullable<ReturnType<typeof projectedPayload>>[] {
+	return items.flatMap((item) => {
+		if (item.kind === "system" || item.kind === "observation") return [];
+		const payload = projectedPayload(item);
+		return payload == null ? [] : [payload];
+	});
 }

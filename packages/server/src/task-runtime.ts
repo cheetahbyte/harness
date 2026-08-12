@@ -45,14 +45,6 @@ export type CapabilityExecutor = {
 	): Promise<"cancelled_acknowledged" | "outcome_unknown">;
 };
 export type ExecuteOptions = { confirmationId?: string };
-export type TokenReconciliation = {
-	modelId: string;
-	estimatedInputTokens: number;
-	providerInputTokens: number;
-	absoluteDivergence: number;
-	percentageDivergence: number;
-};
-
 type InFlight = {
 	callId: CallId;
 	ref: CapabilityRef;
@@ -84,8 +76,6 @@ export class TaskRuntime {
 	private readonly confirmedCalls = new Map<string, string>();
 	private readonly confirmedCapabilities = new Set<string>();
 	private readonly loadedCapabilities = new Map<string, CapabilityRef>();
-	private readonly steers: string[] = [];
-	private readonly reconciliations: TokenReconciliation[] = [];
 	private cancellation: Promise<TaskTerminalResult> | undefined;
 	private terminal?: TaskTerminalResult;
 	private finishedAt?: Timestamp;
@@ -208,47 +198,8 @@ export class TaskRuntime {
 		});
 	}
 
-	steer(message: string): void {
-		if (this.state !== "running") throw new Error("TASK_NOT_RUNNING");
-		this.steers.push(message);
-	}
-
-	steeringMessages(): readonly string[] {
-		return [...this.steers];
-	}
-
-	reconcileProviderUsage(providerInputTokens: number): void {
-		if (!Number.isSafeInteger(providerInputTokens) || providerInputTokens < 0)
-			return;
-		const accounting = this.context.lastAccounting();
-		if (!accounting) return;
-		const absoluteDivergence = Math.abs(
-			providerInputTokens - accounting.estimatedInputTokens,
-		);
-		this.reconciliations.push({
-			modelId: accounting.modelId,
-			estimatedInputTokens: accounting.estimatedInputTokens,
-			providerInputTokens,
-			absoluteDivergence,
-			percentageDivergence:
-				accounting.estimatedInputTokens === 0
-					? providerInputTokens === 0
-						? 0
-						: 100
-					: (absoluteDivergence / accounting.estimatedInputTokens) * 100,
-		});
-	}
-
-	tokenReconciliations(): TokenReconciliation[] {
-		return structuredClone(this.reconciliations);
-	}
-
 	acknowledgeUnknownPriorEffects(): void {
 		this.unknownPriorEffectsAcknowledged = true;
-	}
-
-	holdMutationsForUnknownPriorEffects(): void {
-		this.unknownPriorEffectsAcknowledged = false;
 	}
 
 	cancel(

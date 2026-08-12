@@ -9,7 +9,7 @@ export type CapabilityContextItem = {
 	contentHash: string;
 	content: ModelContextContent;
 };
-export type TokenAccounting = {
+type TokenAccounting = {
 	modelId: string;
 	serializerVersion: string;
 	method: "local_exact" | "provider_count" | "conservative_estimate";
@@ -48,7 +48,6 @@ export type ContextAdmission = {
 export class CapabilityContext {
 	private active: CapabilityContextItem[] = [];
 	private destroyed = false;
-	private accounting: TokenAccounting | undefined;
 
 	constructor(
 		private readonly baseRequest: unknown,
@@ -66,7 +65,7 @@ export class CapabilityContext {
 	}
 
 	items(): CapabilityContextItem[] {
-		return this.active.map(cloneContextItem);
+		return this.active.map((item) => structuredClone(item));
 	}
 
 	admit(input: ContextAdmission): AdmissionResult {
@@ -81,37 +80,12 @@ export class CapabilityContext {
 		};
 		const proposed = [...this.active, item];
 		const result = this.account(proposed, input.accountant, item);
-		if (result.status === "admitted") {
-			this.active = proposed;
-			this.accounting = result.accounting;
-		}
+		if (result.status === "admitted") this.active = proposed;
 		return result;
-	}
-
-	remove(id: string): boolean {
-		const before = this.active.length;
-		this.active = this.active.filter((item) => item.id !== id);
-		return this.active.length !== before;
-	}
-
-	removeStepItems(): void {
-		this.active = this.active.filter((item) => item.scope !== "step");
-	}
-
-	reaccount(accountant: TokenAccountant): AdmissionResult {
-		if (this.destroyed) throw new Error("task context is terminated");
-		const result = this.account(this.active, accountant);
-		if (result.status === "admitted") this.accounting = result.accounting;
-		return result;
-	}
-
-	lastAccounting(): TokenAccounting | undefined {
-		return this.accounting ? { ...this.accounting } : undefined;
 	}
 
 	destroy(): void {
 		this.active = [];
-		this.accounting = undefined;
 		this.destroyed = true;
 	}
 
@@ -138,7 +112,7 @@ export class CapabilityContext {
 		if (estimatedRequiredTokens <= this.budget)
 			return {
 				status: "admitted",
-				...(item ? { item: cloneContextItem(item) } : {}),
+				...(item ? { item: structuredClone(item) } : {}),
 				accounting,
 			};
 		return {
@@ -150,8 +124,4 @@ export class CapabilityContext {
 			accounting,
 		};
 	}
-}
-
-function cloneContextItem(item: CapabilityContextItem): CapabilityContextItem {
-	return structuredClone(item);
 }

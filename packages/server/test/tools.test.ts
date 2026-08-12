@@ -4,6 +4,28 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CoreTools } from "../src/tools";
 
+async function execute(
+	tools: CoreTools,
+	name: string,
+	input: Record<string, unknown>,
+	signal: AbortSignal,
+): Promise<string> {
+	const tool = tools.agentTools().find((tool) => tool.name === name);
+	if (!tool) throw new Error(`unknown tool: ${name}`);
+	let result: Awaited<ReturnType<typeof tool.execute>>;
+	try {
+		result = await tool.execute("test", input, signal);
+	} catch (error) {
+		throw new Error(
+			`tool.execute failed for ${name} with ${JSON.stringify(input)}: ${error instanceof Error ? error.message : String(error)}`,
+			{ cause: error },
+		);
+	}
+	return result.content
+		.flatMap((content) => (content.type === "text" ? [content.text] : []))
+		.join("");
+}
+
 const paths: string[] = [];
 afterEach(() => {
 	for (const path of paths.splice(0)) rmSync(path, { recursive: true, force: true });
@@ -25,16 +47,18 @@ test("registers class-backed tools and runs their file operations", async () => 
 		toolName: "write",
 		evictionPriority: "early",
 	});
-	await tools.execute("write", { path: "note.txt", content: "before" }, signal);
-	await tools.execute(
+	await execute(tools, "write", { path: "note.txt", content: "before" }, signal);
+	await execute(
+		tools,
 		"edit",
 		{ path: "note.txt", oldText: "before", newText: "after" },
 		signal,
 	);
-	expect(await tools.execute("read", { path: "note.txt" }, signal)).toBe("after");
+	expect(await execute(tools, "read", { path: "note.txt" }, signal)).toBe("after");
 	writeFileSync(join(workspace, "twice.txt"), "x x");
 	await expect(
-		tools.execute(
+		execute(
+			tools,
 			"edit",
 			{ path: "twice.txt", oldText: "x", newText: "y" },
 			signal,
@@ -52,7 +76,8 @@ test("serializes concurrent edits to the same file", async () => {
 
 	await Promise.all(
 		Array.from({ length: 20 }, (_, index) =>
-			new CoreTools(workspace).execute(
+			execute(
+				new CoreTools(workspace),
 				"edit",
 				{ path: "note.txt", oldText: `item-${index};`, newText: `done-${index};` },
 				signal,

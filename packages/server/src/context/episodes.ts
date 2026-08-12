@@ -75,30 +75,29 @@ export function episodeStates(
 	items: ContextItem[],
 	snapshots: EpisodeSnapshot[],
 ): ContextEpisode[] {
+	const itemsByEpisodeId = new Map<string, ContextItem[]>();
+	for (const item of items) {
+		if (!item.episodeId) continue;
+		const episodeItems = itemsByEpisodeId.get(item.episodeId) ?? [];
+		episodeItems.push(item);
+		itemsByEpisodeId.set(item.episodeId, episodeItems);
+	}
 	const archivedActionIds = new Set(
 		snapshots.flatMap(({ episode, malformed }) => {
-			const episodeItems = items.filter(
-				(item) => item.episodeId === episode.id,
-			);
+			const episodeItems = itemsByEpisodeId.get(episode.id) ?? [];
 			return !malformed &&
 				episode.kind === "action" &&
 				episode.state === "completed" &&
-				episodeItems.some(isEpisodeItemEvictable) &&
-				episodeItems
-					.filter(isEpisodeItemEvictable)
-					.every((item) => item.lifecycle === "archived")
+				allEvictableItemsArchived(episodeItems)
 				? [episode.id]
 				: [];
 		}),
 	);
 	return snapshots.map(({ episode, malformed }) => {
 		if (malformed || episode.state !== "completed") return episode;
-		const episodeItems = items.filter((item) => item.episodeId === episode.id);
+		const episodeItems = itemsByEpisodeId.get(episode.id) ?? [];
 		const archived =
-			episodeItems.some(isEpisodeItemEvictable) &&
-			episodeItems
-				.filter(isEpisodeItemEvictable)
-				.every((item) => item.lifecycle === "archived") &&
+			allEvictableItemsArchived(episodeItems) &&
 			(episode.kind === "action" ||
 				!snapshots.some(
 					({ episode: dependent }) =>
@@ -112,6 +111,14 @@ export function episodeStates(
 
 function isEpisodeItemEvictable(item: ContextItem): boolean {
 	return item.kind !== "user" && item.lifecycle !== "pinned";
+}
+
+function allEvictableItemsArchived(items: ContextItem[]): boolean {
+	const evictableItems = items.filter(isEpisodeItemEvictable);
+	return (
+		evictableItems.length > 0 &&
+		evictableItems.every((item) => item.lifecycle === "archived")
+	);
 }
 export function structuralEvictionCandidates(
 	episodes: ContextEpisode[],

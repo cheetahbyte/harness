@@ -67,14 +67,8 @@ export function assistantText(payload: unknown): string {
 	const content = (payload as { content?: unknown }).content;
 	if (!Array.isArray(content)) return "";
 	return content
-		.flatMap((item) =>
-			item &&
-			typeof item === "object" &&
-			(item as { type?: unknown }).type === "text" &&
-			typeof (item as { text?: unknown }).text === "string"
-				? [(item as { text: string }).text]
-				: [],
-		)
+		.filter(isTextItem)
+		.map((item) => item.text)
 		.join("");
 }
 
@@ -86,13 +80,7 @@ export function userVisibleAssistant(payload: unknown): unknown | undefined {
 	};
 	if (message.role !== "assistant" || !Array.isArray(message.content))
 		return undefined;
-	const content = message.content.filter(
-		(item) =>
-			item &&
-			typeof item === "object" &&
-			(item as { type?: unknown }).type === "text" &&
-			typeof (item as { text?: unknown }).text === "string",
-	);
+	const content = message.content.filter(isTextItem);
 	message.content = content;
 	return content.length ? message : undefined;
 }
@@ -101,15 +89,20 @@ export function projectionCost(
 	item: ContextItem,
 	projection: ContextProjection = item.projection,
 ): number {
-	return projection === "full"
-		? item.tokenCost
-		: projection === "omitted"
-			? 0
-			: item.compactPayload === undefined
-				? projection === "reference"
-					? 0
-					: item.tokenCost
-				: (item.compactTokenCost ?? item.tokenCost);
+	if (projection === "full") return item.tokenCost;
+	if (projection === "omitted") return 0;
+	if (item.compactPayload === undefined)
+		return projection === "reference" ? 0 : item.tokenCost;
+	return item.compactTokenCost ?? item.tokenCost;
+}
+
+function isTextItem(item: unknown): item is { type: "text"; text: string } {
+	return (
+		!!item &&
+		typeof item === "object" &&
+		(item as { type?: unknown }).type === "text" &&
+		typeof (item as { text?: unknown }).text === "string"
+	);
 }
 
 export function evictionCandidates(
@@ -171,9 +164,7 @@ export function archivedCost(items: ContextItem[]): number {
 function evictionRank(item: ContextItem): number {
 	if (item.kind === "assistant") return 5;
 	if (item.source?.isError) return 4;
-	return (
-		{ early: 0, normal: 1, late: 2 }[
-			item.source?.evictionPriority ?? "normal"
-		] ?? 1
-	);
+	return { early: 0, normal: 1, late: 2 }[
+		item.source?.evictionPriority ?? "normal"
+	];
 }

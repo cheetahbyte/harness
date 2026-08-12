@@ -4,6 +4,7 @@ import {
 	type AssistantMessageEvent,
 	type AssistantMessageEventStream,
 	type CredentialStore,
+	clampThinkingLevel,
 	createAssistantMessageEventStream,
 	isRetryableAssistantError,
 	type Model,
@@ -27,6 +28,7 @@ import {
 	recordAgentMessage,
 	translateAgentEvent,
 } from "./events";
+import { messageKey } from "./message";
 import { agentTools, TOOL_OVERHEAD_TOKENS } from "./tools";
 
 export type AgentRunInput = {
@@ -40,17 +42,12 @@ export type AgentRunInput = {
 	emit: (event: ServerEvent) => void;
 };
 
-interface AgentRuntime {
-	run(input: AgentRunInput): Promise<void>;
-	forget(sessionId: string): void;
-	inspect(sessionId: string): ReturnType<ContextManager["inspect"]>;
-}
 const SYSTEM_PROMPT =
 	"You are Harness, a coding agent. Use deterministic capability discovery when you need more context, and use the provided tools to inspect and change the current workspace. Runtime context belongs only to the current task.";
 const DEFAULT_CONTEXT_BUDGET = 80_000;
 
 /** Pi is contained here: server code only sees Harness events and model configuration. */
-export class HarnessAgentRuntime implements AgentRuntime {
+export class HarnessAgentRuntime {
 	private readonly agents = new Map<string, AgentEntry>();
 	private readonly credentials: CredentialStore;
 	private readonly models: Models;
@@ -132,7 +129,7 @@ export class HarnessAgentRuntime implements AgentRuntime {
 			entry.promptGroupId = undefined;
 			throw error;
 		}
-		entry.preRecorded.add(JSON.stringify(message));
+		entry.preRecorded.add(messageKey(message));
 		const abort = () => entry?.agent.abort();
 		signal.addEventListener("abort", abort, { once: true });
 		try {
@@ -158,18 +155,6 @@ export class HarnessAgentRuntime implements AgentRuntime {
 		entry.steering = queued;
 		entry.queued.set(queued.message, queued);
 		entry.agent.steer(queued.message as never);
-		return true;
-	}
-	followUp(
-		sessionId: string,
-		text: string,
-		callbacks: QueueCallbacks,
-	): boolean {
-		const entry = this.agents.get(sessionId);
-		if (!entry?.agent.state.isStreaming) return false;
-		const queued = queueMessage(text, callbacks);
-		entry.queued.set(queued.message, queued);
-		entry.agent.followUp(queued.message as never);
 		return true;
 	}
 	forget(sessionId: string): void {
@@ -227,7 +212,10 @@ export class HarnessAgentRuntime implements AgentRuntime {
 		const agent = new Agent({
 			initialState: {
 				model,
-				thinkingLevel: "medium",
+				thinkingLevel: clampThinkingLevel(
+					model,
+					config.thinkingLevel ?? "medium",
+				),
 				systemPrompt: SYSTEM_PROMPT,
 				tools: agentTools({
 					sessionId,
@@ -367,10 +355,7 @@ function streamWithRetry(
 						{
 							...context,
 							attempt: attempt + 1,
-							error:
-								terminal.type === "error"
-									? terminal.error.errorMessage
-									: undefined,
+							error: retryError?.errorMessage,
 						},
 						"provider stream failed",
 					);

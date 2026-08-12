@@ -22,11 +22,6 @@ type RegistryProvider = {
 export type ModelRegistry = {
 	getProviders(): readonly RegistryProvider[];
 	getProvider(id: string): RegistryProvider | undefined;
-	getModels(provider?: string): readonly {
-		id: string;
-		name: string;
-		provider: string;
-	}[];
 	getModel(provider: string, model: string): unknown;
 	checkAuth(provider: string): Promise<{ type: AuthType } | undefined>;
 	getAvailable(

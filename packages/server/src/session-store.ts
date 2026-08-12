@@ -206,6 +206,10 @@ export class SessionStore {
 		).map(contextItemFromRow);
 	}
 
+	contextSequence(sessionId: string): number {
+		return this.contextItems(sessionId).at(-1)?.sequence ?? 0;
+	}
+
 	contextItem(id: string): ContextItem | undefined {
 		const row = this.db
 			.query(`${contextItemQuery} WHERE context_items.id = ?`)

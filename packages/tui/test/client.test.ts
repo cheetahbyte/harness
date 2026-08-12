@@ -64,6 +64,34 @@ test("surfaces a rejected server command", async () => {
 	}
 });
 
+test("surfaces a rejected session creation", async () => {
+	const server = Bun.serve({
+		port: 0,
+		fetch: () => Response.json({ error: "session unavailable" }, { status: 503 }),
+	});
+	try {
+		await expect(
+			new HarnessClient(server.url.toString().replace(/\/$/, "")).createSession(),
+		).rejects.toThrow("session creation failed (503)");
+	} finally {
+		server.stop(true);
+	}
+});
+
+test("rejects a successful session response without an id", async () => {
+	const server = Bun.serve({
+		port: 0,
+		fetch: () => Response.json({}),
+	});
+	try {
+		await expect(
+			new HarnessClient(server.url.toString().replace(/\/$/, "")).createSession(),
+		).rejects.toThrow("session creation returned an invalid response");
+	} finally {
+		server.stop(true);
+	}
+});
+
 test("creates sessions in the client working directory", async () => {
 	let cwd: unknown;
 	const server = Bun.serve({

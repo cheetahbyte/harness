@@ -1,3 +1,5 @@
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+
 export type AuthType = "oauth" | "api_key";
 
 export type ProviderOption = {
@@ -20,6 +22,7 @@ export type ModelConfig = {
 	provider: string;
 	model: string;
 	baseUrl?: string;
+	thinkingLevel?: ModelThinkingLevel;
 };
 
 export type AuthPromptEvent =
@@ -66,7 +69,8 @@ export type ClientCommand =
 	| { type: "login"; provider: string; authType: AuthType }
 	| { type: "auth-answer"; promptId: string; value: string }
 	| { type: "auth-cancel" }
-	| { type: "abort"; taskId?: string };
+	| { type: "abort"; taskId?: string }
+	| { type: "cycle-thinking-level" };
 
 export type ServerEvent =
 	| { type: "session"; sessionId: string }

@@ -36,10 +36,7 @@ export class SettingsStore {
 	}
 
 	setModelConfig(model: ModelConfig): void {
-		const project = existsSync(this.projectPath);
-		const settings = project ? this.project : this.global;
-		settings.model = model;
-		writeSettings(project ? this.projectPath : this.globalPath, settings);
+		this.save("model", model);
 	}
 
 	disableThinkingBlocks(): boolean {
@@ -51,9 +48,13 @@ export class SettingsStore {
 	}
 
 	setDisableThinkingBlocks(disabled: boolean): void {
+		this.save("disableThinkingBlocks", disabled);
+	}
+
+	private save<K extends keyof Settings>(key: K, value: Settings[K]): void {
 		const project = existsSync(this.projectPath);
 		const settings = project ? this.project : this.global;
-		settings.disableThinkingBlocks = disabled;
+		settings[key] = value;
 		writeSettings(project ? this.projectPath : this.globalPath, settings);
 	}
 }

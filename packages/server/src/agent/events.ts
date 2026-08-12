@@ -10,6 +10,7 @@ import type { SessionStore } from "../session-store";
 import type { TaskRuntime } from "../task-runtime";
 import { tokenCost } from "../token-cost";
 import type { CoreTools } from "../tools";
+import { detailsRecord, messageKey } from "./message";
 
 export type QueueCallbacks = {
 	onStarted: () => void;
@@ -31,7 +32,7 @@ export type AgentEntry = {
 	task: TaskRuntime;
 };
 
-export async function translateAgentEvent({
+export function translateAgentEvent({
 	sessionId,
 	entry,
 	event,
@@ -45,35 +46,54 @@ export async function translateAgentEvent({
 	emit: (event: ServerEvent) => void;
 	context: ContextManager;
 	shrink: () => void;
-}): Promise<void> {
-	if (event.type === "message_start")
-		handleMessageStart(
-			sessionId,
-			entry,
-			event.message as AgentMessage,
-			context,
-		);
-	if (event.type === "turn_end") finishQueuedMessages(entry);
-	if (event.type === "message_update") emitMessageUpdate(event, emit);
-	if (event.type === "message_end")
-		handleMessageEnd(sessionId, entry, event.message, context, emit);
-	if (event.type === "agent_end")
-		handleAgentEnd(sessionId, entry, context, shrink, emit);
-	if (event.type === "tool_execution_start")
-		emit({
-			type: "tool-call",
-			id: event.toolCallId,
-			name: event.toolName,
-			input: event.args,
-		});
-	if (event.type === "tool_execution_end")
-		emit({
-			type: "tool-result",
-			id: event.toolCallId,
-			name: event.toolName,
-			output: messageText(event.result),
-			isError: event.isError,
-		});
+}): void {
+	switch (event.type) {
+		case "message_start":
+			handleMessageStart(
+				sessionId,
+				entry,
+				event.message as AgentMessage,
+				context,
+			);
+			return;
+		case "turn_end":
+			finishQueuedMessages(entry);
+			return;
+		case "message_update":
+			emitMessageUpdate(event, emit);
+			return;
+		case "message_end":
+			handleMessageEnd(sessionId, entry, event.message, context, emit);
+			return;
+		case "agent_end":
+			handleAgentEnd(sessionId, entry, context, shrink, emit);
+			return;
+		case "tool_execution_start":
+			emit({
+				type: "tool-call",
+				id: event.toolCallId,
+				name: event.toolName,
+				input: event.args,
+			});
+			return;
+		case "tool_execution_end":
+			emit({
+				type: "tool-result",
+				id: event.toolCallId,
+				name: event.toolName,
+				output: messageText(event.result),
+				isError: event.isError,
+			});
+			return;
+		// Pi lifecycle events Harness does not surface.
+		case "agent_start":
+		case "turn_start":
+		case "tool_execution_update":
+			return;
+		default:
+			// Unknown future events are ignored rather than crashing the run.
+			return;
+	}
 }
 
 function handleMessageStart(
@@ -120,7 +140,6 @@ function handleMessageEnd(
 	if (!entry.preRecorded.delete(messageKey(message)))
 		recordAgentMessage({ sessionId, entry, message, context });
 	if (message.role !== "assistant") return;
-	entry.task.reconcileProviderUsage(message.usage.input);
 	emit({
 		type: "usage",
 		input: message.usage.input,
@@ -325,7 +344,6 @@ export function queueMessage(
 		},
 	};
 }
-const messageKey = (message: AgentMessage): string => JSON.stringify(message);
 function externalizeToolResult({
 	sessionId,
 	message,
@@ -376,13 +394,6 @@ function observationId(
 ): string | undefined {
 	const id = detailsRecord(message.details)["observationId"];
 	return typeof id === "string" ? id : undefined;
-}
-function detailsRecord(details: unknown): Record<string, unknown> {
-	return typeof details === "object" &&
-		details !== null &&
-		!Array.isArray(details)
-		? (details as Record<string, unknown>)
-		: {};
 }
 function messageText(
 	message:

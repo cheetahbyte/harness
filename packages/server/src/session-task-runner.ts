@@ -1,4 +1,5 @@
 import type { ModelConfig, ServerEvent } from "../../shared/src/protocol";
+import { slashCommandPattern } from "../../shared/src/slash-command";
 import type { HarnessAgentRuntime } from "./agent/runtime";
 import {
 	CapabilityCatalog,
@@ -301,7 +302,7 @@ export class SessionTaskRunner {
 		submissionWatermark?: number;
 	}): Promise<RunningTask> {
 		const bindingGeneration = crypto.randomUUID();
-		const contextWatermark = this.contextSequence(id);
+		const contextWatermark = this.options.store.contextSequence(id);
 		const tools = new CoreTools(this.options.workspace(id));
 		const scanned = await scanSkills(
 			this.options.workspace(id),
@@ -456,13 +457,9 @@ export class SessionTaskRunner {
 		this.options.emit(id, {
 			type: "command",
 			id: pending.id,
-			command: "kind" in pending ? pending.kind : pending.type,
+			command: pendingCommandType(pending),
 			state: "finished",
 		});
-	}
-
-	private contextSequence(id: string): number {
-		return this.options.store.contextItems(id).at(-1)?.sequence ?? 0;
 	}
 }
 
@@ -471,7 +468,13 @@ function commandText(command: string | QueuedTask | PendingSteer): string {
 	return "userInput" in command ? command.userInput.text : command.text;
 }
 
-function pendingCommandType(
+export function pendingCommandType(
+	pending: QueuedTask | PendingSteer,
+): QueuedTask["kind"] | PendingSteer["type"];
+export function pendingCommandType(
+	pending: QueuedTask | PendingSteer | undefined,
+): QueuedTask["kind"] | PendingSteer["type"] | undefined;
+export function pendingCommandType(
 	pending: QueuedTask | PendingSteer | undefined,
 ): QueuedTask["kind"] | PendingSteer["type"] | undefined {
 	if (!pending) return undefined;
@@ -484,16 +487,13 @@ function selectedSkills(
 ): { prompt: string; selected: SkillSnapshotEntry[] } {
 	const names = new Set<string>();
 	const prompt = text
-		.replace(
-			/(^|\s)\/([a-z0-9-]+)(?=$|\s|[.,!?;:])/g,
-			(match, prefix: string, name: string) => {
-				if (discoverable.some((entry) => entry.capability.name === name)) {
-					names.add(name);
-					return prefix;
-				}
-				return match;
-			},
-		)
+		.replace(slashCommandPattern(), (match, prefix: string, name: string) => {
+			if (discoverable.some((entry) => entry.capability.name === name)) {
+				names.add(name);
+				return prefix;
+			}
+			return match;
+		})
 		.trim();
 	return {
 		prompt,

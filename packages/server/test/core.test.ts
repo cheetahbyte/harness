@@ -43,7 +43,7 @@ function settings(dir: string) {
 	);
 }
 
-function fakeModels() {
+function fakeModels(modelOverrides: Record<string, unknown> = {}) {
 	const fakeProvider = {
 		id: "fake",
 		name: "Fake",
@@ -53,13 +53,12 @@ function fakeModels() {
 		id: "model-1",
 		name: "Model 1",
 		provider: "fake",
+		...modelOverrides,
 	};
 	return {
 		getProviders: () => [fakeProvider],
 		getProvider: (provider: string) =>
 			provider === "fake" ? fakeProvider : undefined,
-		getModels: (provider?: string) =>
-			provider && provider !== "fake" ? [] : [fakeModel],
 		getModel: (provider: string, model: string) =>
 			provider === "fake" && model === "model-1" ? fakeModel : undefined,
 		checkAuth: async (provider: string) =>
@@ -390,6 +389,120 @@ function episodeId(
 		).toEqual({ model: { provider: "fake", model: "model-1" } });
 	});
 
+	test("cycles and persists the selected model's supported thinking level", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const models = fakeModels({
+			reasoning: true,
+			thinkingLevelMap: { high: null, xhigh: "xhigh", max: null },
+		});
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			models,
+			settings(dir),
+		);
+		const id = server.createSession();
+		const events: ServerEvent[] = [];
+		server.subscribe(id, (event) => events.push(event));
+		await server.command(id, {
+			type: "configure",
+			provider: "fake",
+			model: "model-1",
+		});
+
+		await server.command(id, { type: "cycle-thinking-level" });
+
+		expect(server.store.modelConfig(id)).toEqual({
+			provider: "fake",
+			model: "model-1",
+			thinkingLevel: "xhigh",
+		});
+		const persistedEvent: ServerEvent = {
+			type: "model-config",
+			config: {
+				provider: "fake",
+				model: "model-1",
+				thinkingLevel: "xhigh",
+			},
+		};
+		expect(events.at(-1)).toEqual(persistedEvent);
+		expect(
+			JSON.parse(readFileSync(join(dir, "config/settings.json"), "utf8")),
+		).toEqual({
+			model: {
+				provider: "fake",
+				model: "model-1",
+				thinkingLevel: "xhigh",
+			},
+		});
+
+		const restarted = new HarnessServer(
+			new SessionStore(join(dir, "fresh.sqlite")),
+			dir,
+			models,
+			settings(dir),
+		);
+		const restartedEvents: ServerEvent[] = [];
+		restarted.subscribe(restarted.createSession(), (event) =>
+			restartedEvents.push(event),
+		);
+		expect(restartedEvents).toContainEqual(persistedEvent);
+	});
+
+	test("applies a thinking-level change made during a run to the next prompt", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			fakeModels({
+				reasoning: true,
+				thinkingLevelMap: { high: null, xhigh: "xhigh", max: null },
+			}),
+			settings(dir),
+		);
+		const id = server.createSession();
+		await server.command(id, {
+			type: "configure",
+			provider: "fake",
+			model: "model-1",
+		});
+		const internals = server as unknown as {
+			runtime: {
+				run: (input: { config: unknown }) => Promise<void>;
+				forget: (id: string) => void;
+			};
+		};
+		const configs: unknown[] = [];
+		let forgets = 0;
+		internals.runtime.forget = () => forgets++;
+		let releaseFirstRun!: () => void;
+		const firstRunGate = new Promise<void>(
+			(resolve) => (releaseFirstRun = resolve),
+		);
+		internals.runtime.run = async ({ config }) => {
+			configs.push(config);
+			if (configs.length === 1) await firstRunGate;
+		};
+		const first = server.command(id, { type: "prompt", text: "first" });
+		await until(() => expect(configs).toHaveLength(1));
+
+		await expect(
+			server.command(id, { type: "cycle-thinking-level" }),
+		).resolves.toBeUndefined();
+		expect(forgets).toBe(0);
+		releaseFirstRun();
+		await first;
+		expect(forgets).toBe(1);
+		await server.command(id, { type: "prompt", text: "second" });
+
+		expect(configs).toEqual([
+			{ provider: "fake", model: "model-1" },
+			{ provider: "fake", model: "model-1", thinkingLevel: "xhigh" },
+		]);
+	});
+
 	test("persists the thinking block preference", async () => {
 		const { dir, server } = harness();
 		const id = server.createSession();
@@ -717,6 +830,7 @@ function episodeId(
 				provider: "openai-compatible",
 				model: "test-model",
 				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+				thinkingLevel: "high",
 			});
 			await server.command(id, {
 				type: "prompt",
@@ -726,6 +840,7 @@ function episodeId(
 			expect(calls).toBe(2);
 			expect(requests[0]).toContain("Review carefully.");
 			expect(requests[0]).toContain("Manual only.");
+			expect(requests[0]).toContain('"reasoning_effort":"high"');
 			expect(
 				events.some(
 					(event) => event.type === "assistant-delta" && event.text === "done",

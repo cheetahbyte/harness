@@ -66,10 +66,7 @@ export async function ensureServer(): Promise<void> {
 		closeSync(log);
 	}
 
-	for (let attempt = 0; attempt < 100; attempt++) {
-		await Bun.sleep(50);
-		if (await health()) return;
-	}
+	if (await waitForHealth(true)) return;
 	throw new Error(`Harnez server did not start; see ${logPath}`);
 }
 
@@ -94,7 +91,7 @@ export async function runServerCommand(args: string[]): Promise<void> {
 		}
 		case "stop": {
 			const hostname = new URL(serverUrl()).hostname;
-			if (!["127.0.0.1", "localhost", "::1", "[::1]"].includes(hostname))
+			if (!["127.0.0.1", "localhost", "[::1]"].includes(hostname))
 				throw new Error("Harnez can only stop a local server");
 			const running = await health();
 			if (!running) {
@@ -102,12 +99,9 @@ export async function runServerCommand(args: string[]): Promise<void> {
 				return;
 			}
 			process.kill(running.pid, "SIGTERM");
-			for (let attempt = 0; attempt < 100; attempt++) {
-				await Bun.sleep(50);
-				if (!(await health())) {
-					console.log("Harnez server stopped");
-					return;
-				}
+			if (await waitForHealth(false)) {
+				console.log("Harnez server stopped");
+				return;
 			}
 			throw new Error(`Harnez server ${running.pid} did not stop`);
 		}
@@ -121,6 +115,14 @@ export async function runServerCommand(args: string[]): Promise<void> {
 		default:
 			throw new Error(SERVER_USAGE);
 	}
+}
+
+async function waitForHealth(running: boolean): Promise<boolean> {
+	for (let attempt = 0; attempt < 100; attempt++) {
+		await Bun.sleep(50);
+		if (Boolean(await health()) === running) return true;
+	}
+	return false;
 }
 
 function selfCommand(): string[] {

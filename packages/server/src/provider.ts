@@ -30,6 +30,14 @@ export class HarnessProviderError extends Error {
 export class JsonCredentialStore implements CredentialStore {
 	private chain = Promise.resolve();
 	constructor(private readonly path: string) {}
+	private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+		const queued = this.chain.then(operation);
+		this.chain = queued.then(
+			() => {},
+			() => {},
+		);
+		return queued;
+	}
 	private async data(): Promise<Record<string, Credential>> {
 		try {
 			return JSON.parse(await readFile(this.path, "utf8")) as Record<
@@ -40,6 +48,13 @@ export class JsonCredentialStore implements CredentialStore {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
 			throw error;
 		}
+	}
+	private async write(data: Record<string, Credential>): Promise<void> {
+		await mkdir(dirname(this.path), { recursive: true });
+		const temp = `${this.path}.${crypto.randomUUID()}`;
+		await writeFile(temp, JSON.stringify(data), { mode: 0o600 });
+		await rename(temp, this.path);
+		await chmod(this.path, 0o600);
 	}
 	async read(
 		providerId: string,
@@ -62,46 +77,28 @@ export class JsonCredentialStore implements CredentialStore {
 		options?: AuthOperationOptions,
 	): Promise<Credential | undefined> {
 		let result: Credential | undefined;
-		const operation = this.chain.then(async () => {
+		await this.enqueue(async () => {
 			options?.signal?.throwIfAborted();
 			const data = await this.data();
 			result = await fn(data[providerId]);
 			options?.signal?.throwIfAborted();
 			if (result !== undefined) data[providerId] = result;
 			else result = data[providerId];
-			await mkdir(dirname(this.path), { recursive: true });
-			const temp = `${this.path}.${crypto.randomUUID()}`;
-			await writeFile(temp, JSON.stringify(data), { mode: 0o600 });
-			await rename(temp, this.path);
-			await chmod(this.path, 0o600);
+			await this.write(data);
 		});
-		this.chain = operation.then(
-			() => {},
-			() => {},
-		);
-		await operation;
 		return result;
 	}
 	async delete(
 		providerId: string,
 		options?: AuthOperationOptions,
 	): Promise<void> {
-		const operation = this.chain.then(async () => {
+		await this.enqueue(async () => {
 			options?.signal?.throwIfAborted();
 			const data = await this.data();
 			delete data[providerId];
 			options?.signal?.throwIfAborted();
-			await mkdir(dirname(this.path), { recursive: true });
-			const temp = `${this.path}.${crypto.randomUUID()}`;
-			await writeFile(temp, JSON.stringify(data), { mode: 0o600 });
-			await rename(temp, this.path);
-			await chmod(this.path, 0o600);
+			await this.write(data);
 		});
-		this.chain = operation.then(
-			() => {},
-			() => {},
-		);
-		await operation;
 	}
 }
 
