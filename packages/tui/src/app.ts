@@ -10,6 +10,8 @@ import type {
 	AuthPromptEvent,
 	AuthType,
 	ClientCommand,
+	FastCycleEntry,
+	ModelOption,
 	ProviderOption,
 } from "../../shared/src/protocol";
 import { ComposerView } from "./components/composer";
@@ -23,7 +25,8 @@ type WizardFlow =
 	| { kind: "login-method"; provider?: string }
 	| { kind: "login-provider"; authType: AuthType }
 	| { kind: "login-active" }
-	| { kind: "model"; provider?: string };
+	| { kind: "model"; provider?: string }
+	| { kind: "fast-cycle" };
 type AppCommand = {
 	name: string;
 	description: string;
@@ -73,6 +76,12 @@ export class TuiApp {
 					/^\S+\s+\S+(?:\s+\S+)?\s*$/.test(args)
 						? this.send(commandForInput(`/model ${args}`))
 						: this.openModel(args || undefined),
+			},
+			{
+				name: "/fast-cycle",
+				description: "Pick the models Ctrl+P cycles through",
+				kind: "command",
+				run: () => this.openFastCycle(),
 			},
 			{
 				name: "/session-name",
@@ -136,6 +145,7 @@ export class TuiApp {
 			abort: () => this.escape(),
 			toggleThinking: () => this.toggleThinking(),
 			cycleThinkingLevel: () => this.cycleThinkingLevel(),
+			cycleModel: () => this.cycleModel(),
 		});
 		this.wizard = new WizardView(renderer);
 		this.footer = new FooterView(renderer);
@@ -264,6 +274,12 @@ export class TuiApp {
 		});
 	}
 
+	private cycleModel() {
+		void this.send({ type: "cycle-model" }).catch((error) => {
+			this.reportError(error);
+		});
+	}
+
 	private updateLayout = () => {
 		const compact = this.root.ctx.height < 9;
 		this.header.root.visible = !compact;
@@ -287,6 +303,12 @@ export class TuiApp {
 			type: "list-models",
 			...(provider ? { provider } : {}),
 		});
+	}
+
+	private openFastCycle() {
+		this.flow = { kind: "fast-cycle" };
+		this.showNoticeText("Fast cycle", "Loading configured models…");
+		void this.sendWizard({ type: "list-models" });
 	}
 
 	private renderWizard(wizard: WizardState) {
@@ -364,6 +386,7 @@ export class TuiApp {
 
 	private showModels(wizard: Extract<WizardState, { kind: "models" }>) {
 		const flow = this.flow;
+		if (flow?.kind === "fast-cycle") return this.showFastCycle(wizard.models);
 		if (flow?.kind !== "model") return;
 		const models = wizard.models.filter(
 			(model) => !flow.provider || model.provider === flow.provider,
@@ -391,6 +414,61 @@ export class TuiApp {
 			},
 			true,
 			"inline",
+		);
+	}
+
+	/** Space-toggled picker over every configured model; the check marks are the cycle. */
+	private showFastCycle(models: ModelOption[]) {
+		if (!models.length)
+			return this.showNoticeText(
+				"Fast cycle",
+				"No configured models. Run /login first.",
+			);
+		const { fastCycle } = this.store.getState();
+		const levels = new Map(
+			fastCycle.map((entry) => [modelKey(entry), entry.thinkingLevel]),
+		);
+		this.composer.setActive(false);
+		this.wizard.show(
+			{
+				kind: "multiselect",
+				title: "Select the models Ctrl+P cycles through",
+				options: models.map((model) => {
+					const key = modelKey({ provider: model.provider, model: model.id });
+					const level = levels.get(key);
+					return {
+						name: model.name,
+						description: level
+							? `${model.providerName} · ${level}`
+							: model.providerName,
+						value: key,
+					};
+				}),
+				selected: fastCycle.map(modelKey),
+				searchable: true,
+			},
+			{
+				confirm: (values) => {
+					const selected = new Set(values);
+					const entries: FastCycleEntry[] = models
+						.map((model) => ({
+							key: modelKey({ provider: model.provider, model: model.id }),
+							model,
+						}))
+						.filter(({ key }) => selected.has(key))
+						.map(({ key, model }) => {
+							const level = levels.get(key);
+							return {
+								provider: model.provider,
+								model: model.id,
+								...(level ? { thinkingLevel: level } : {}),
+							};
+						});
+					this.closeWizard();
+					void this.sendWizard({ type: "set-fast-cycle", entries });
+				},
+				cancel: () => this.escape(),
+			},
 		);
 	}
 
@@ -505,6 +583,10 @@ export class TuiApp {
 			this.reportError(error);
 		}
 	}
+}
+
+function modelKey(config: { provider: string; model: string }): string {
+	return `${config.provider}/${config.model}`;
 }
 
 function noticeText(notification: AuthNotifyEvent): string {

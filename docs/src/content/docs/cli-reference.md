@@ -49,6 +49,7 @@ Typed directly into the TUI composer.
 | `/login [provider]` | Open the provider-authentication wizard. Omit the provider to pick from a list. |
 | `/model [provider]` | Open the model picker for a provider, or the current one if omitted. |
 | `/model <provider> <model> [base-url]` | Set the active provider, model, and optional custom endpoint directly, without the wizard. |
+| `/fast-cycle` | Open the fast-cycle picker. `Space` checks or unchecks a model, `Enter` saves the selection. |
 | `/session-name <name>` | Set the current session name. Automatic naming will not replace a name you set. |
 | `/<skill-name>` | Invoke a skill loaded from `.harnez/skills` or `.agents/skills`. Available skills appear in autocomplete with their own description. |
 
@@ -61,12 +62,15 @@ Typed directly into the TUI composer.
 | `Esc` | Abort the current step: generation, running tools, and anything pending in it. |
 | `Ctrl+T` | Toggle visibility of the model's thinking blocks. |
 | `Shift+Tab` | Cycle through the selected model's supported thinking levels. |
+| `Ctrl+P` | Switch to the next model picked with `/fast-cycle`. |
 | `Cmd+C` | Copy the current terminal selection. |
 | `Ctrl+C` | Quit. |
 | `↑` / `↓` / `Tab` | Navigate and accept command or skill autocomplete suggestions. |
 
-Changing the thinking level while a task is running applies it to the next
-prompt without interrupting the active task.
+Changing the thinking level or the model while a task is running applies it to
+the next prompt without interrupting the active task. Each fast-cycle model
+keeps its own thinking level, so `Ctrl+P` restores the level that model last
+used. Entries whose model is no longer available are skipped.
 
 > [!TIP] Steering vs. aborting
 > These map directly onto the three ways to interrupt the [agent

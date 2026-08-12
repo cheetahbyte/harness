@@ -30,6 +30,10 @@ token set or an API key. Harnez writes the file with `0o600` permissions, and
     "baseUrl": null,
     "thinkingLevel": "medium"
   },
+  "fastCycle": [
+    { "provider": "openai-codex", "model": "gpt-5.1-codex", "thinkingLevel": "medium" },
+    { "provider": "anthropic", "model": "claude-opus-4-5", "thinkingLevel": "high" }
+  ],
   "disableThinkingBlocks": false,
   "session": {
     "title": {
@@ -43,6 +47,15 @@ token set or an API key. Harnez writes the file with `0o600` permissions, and
 `model` is whatever `/model` last set. `thinkingLevel` is the last level
 selected with `Shift+Tab`; supported levels depend on the model. `baseUrl`
 only applies to the `openai-compatible` provider.
+
+`fastCycle` is the list `Ctrl+P` steps through, in the order `/fast-cycle`
+listed the models. Each entry carries its own `thinkingLevel`, so `Shift+Tab`
+changes the level of the active model only, and selecting that model again
+restores it. Entries whose model is unavailable are skipped while cycling.
+
+The picker writes the whole list, so an entry whose model is missing from it —
+for example while that provider is signed out — is dropped when you save.
+Cycling never drops entries; it only skips the ones it cannot resolve.
 
 New sessions are titled from their first prompt by default. Set
 `session.title.generated` to `false` to disable this. `session.title.source`

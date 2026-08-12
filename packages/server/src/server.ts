@@ -9,6 +9,8 @@ import {
 import type {
 	AuthType,
 	ClientCommand,
+	FastCycleEntry,
+	ModelConfig,
 	ModelOption,
 	ProviderOption,
 	ServerEvent,
@@ -132,6 +134,7 @@ export class HarnessServer {
 			listener(event, seq);
 		const model = this.modelConfig(id);
 		if (model) listener({ type: "model-config", config: model });
+		listener({ type: "fast-cycle", entries: this.settingsFor(id).fastCycle() });
 		listener({
 			type: "ui-settings",
 			disableThinkingBlocks: this.settingsFor(id).disableThinkingBlocks(),
@@ -165,6 +168,10 @@ export class HarnessServer {
 		}
 		if (command.type === "cycle-thinking-level") {
 			this.cycleThinkingLevel(id, session);
+			return;
+		}
+		if (command.type === "cycle-model") {
+			this.cycleModel(id, session);
 			return;
 		}
 		if (this.handleConfigure(id, session, command)) return;
@@ -206,6 +213,9 @@ export class HarnessServer {
 				this.store.setTitle(id, title);
 				return;
 			}
+			case "set-fast-cycle":
+				this.setFastCycle(id, command.entries);
+				return;
 			case "set-disable-thinking-blocks":
 				this.settingsFor(id).setDisableThinkingBlocks(command.disabled);
 				this.publish(
@@ -317,10 +327,15 @@ export class HarnessServer {
 			this.credentials,
 			this.models as Models,
 		);
+		/** An unset level falls back to the one this model last cycled to. */
+		const thinkingLevel =
+			command.thinkingLevel ??
+			this.fastCycleEntry(id, selected)?.thinkingLevel ??
+			undefined;
 		const config = {
 			...selected,
-			...(command.thinkingLevel
-				? { thinkingLevel: clampThinkingLevel(model, command.thinkingLevel) }
+			...(thinkingLevel
+				? { thinkingLevel: clampThinkingLevel(model, thinkingLevel) }
 				: {}),
 		};
 		this.store.setModelConfig(id, config);
@@ -352,6 +367,81 @@ export class HarnessServer {
 			},
 			true,
 		);
+		this.rememberThinkingLevel(id, config, next);
+	}
+
+	/** Cycles to the next available `/fast-cycle` entry, each with its own level. */
+	private cycleModel(id: string, session: Session): void {
+		const entries = this.settingsFor(id).fastCycle();
+		if (!entries.length)
+			throw new Error("no fast-cycle models; pick some with /fast-cycle");
+		const current = this.modelConfig(id);
+		const from = current
+			? entries.findIndex((entry) => sameModel(entry, current))
+			: -1;
+		for (let offset = 1; offset <= entries.length; offset++) {
+			const entry = entries[(from + offset + entries.length) % entries.length];
+			if (!entry || !this.available(entry)) continue;
+			this.handleConfigure(id, session, { type: "configure", ...entry }, true);
+			return;
+		}
+		throw new Error("no fast-cycle model is available");
+	}
+
+	private setFastCycle(id: string, entries: FastCycleEntry[]): void {
+		if (!Array.isArray(entries)) throw new Error("fast-cycle entries required");
+		const settings = this.settingsFor(id);
+		const normalized: FastCycleEntry[] = [];
+		for (const entry of entries) {
+			if (!entry?.provider || !entry.model)
+				throw new Error("fast-cycle entries need a provider and a model");
+			if (normalized.some((existing) => sameModel(existing, entry))) continue;
+			/** Keep the level the entry already had unless the picker sent one. */
+			const thinkingLevel =
+				entry.thinkingLevel ?? this.fastCycleEntry(id, entry)?.thinkingLevel;
+			normalized.push({
+				provider: entry.provider,
+				model: entry.model,
+				...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}),
+				...(thinkingLevel ? { thinkingLevel } : {}),
+			});
+		}
+		settings.setFastCycle(normalized);
+		this.publish(id, { type: "fast-cycle", entries: normalized }, false);
+	}
+
+	private rememberThinkingLevel(
+		id: string,
+		config: ModelConfig,
+		thinkingLevel: NonNullable<ModelConfig["thinkingLevel"]>,
+	): void {
+		const settings = this.settingsFor(id);
+		const entries = settings.fastCycle();
+		if (!entries.some((entry) => sameModel(entry, config))) return;
+		const updated = entries.map((entry) =>
+			sameModel(entry, config) ? { ...entry, thinkingLevel } : entry,
+		);
+		settings.setFastCycle(updated);
+		this.publish(id, { type: "fast-cycle", entries: updated }, false);
+	}
+
+	private fastCycleEntry(
+		id: string,
+		config: ModelConfig,
+	): FastCycleEntry | undefined {
+		return this.settingsFor(id)
+			.fastCycle()
+			.find((entry) => sameModel(entry, config));
+	}
+
+	private available(config: ModelConfig): boolean {
+		try {
+			providerModels(config, this.credentials, this.models as Models);
+			return true;
+		} catch (error) {
+			log.debug({ error, config }, "fast-cycle model unavailable");
+			return false;
+		}
 	}
 
 	private handleQueuedSubmission(
@@ -617,6 +707,14 @@ export class HarnessServer {
 	}
 }
 
+function sameModel(a: ModelConfig, b: ModelConfig): boolean {
+	return (
+		a.provider === b.provider &&
+		a.model === b.model &&
+		(a.baseUrl ?? "") === (b.baseUrl ?? "")
+	);
+}
+
 function workspacePath(path: string): string {
 	const workspace = resolve(path);
 	try {
@@ -631,6 +729,7 @@ function isImmediateCommand(type: ClientCommand["type"]): boolean {
 		type === "list-models" ||
 		type === "list-skills" ||
 		type === "set-session-title" ||
+		type === "set-fast-cycle" ||
 		type === "set-disable-thinking-blocks" ||
 		type === "login" ||
 		type === "auth-answer" ||

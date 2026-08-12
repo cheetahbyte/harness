@@ -3,6 +3,7 @@ import type {
 	AuthNotifyEvent,
 	AuthPromptEvent,
 	ClientCommand,
+	FastCycleEntry,
 	ModelConfig,
 	ModelOption,
 	ProviderOption,
@@ -80,6 +81,7 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 			status: "ready",
 			activeTaskId: undefined,
 			blockedQueueId: undefined,
+			fastCycle: [],
 			disableThinkingBlocks: false,
 			wizard: { kind: "idle" },
 			apply(event) {
@@ -279,6 +281,8 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 				}
 				if (event.type === "model-config")
 					return set({ modelConfig: event.config });
+				if (event.type === "fast-cycle")
+					return set({ fastCycle: event.entries });
 				if (event.type === "ui-settings")
 					return set({
 						disableThinkingBlocks: event.disableThinkingBlocks,
@@ -325,6 +329,7 @@ export type TuiState = {
 	activeTaskId: string | undefined;
 	blockedQueueId: string | undefined;
 	modelConfig?: ModelConfig;
+	fastCycle: FastCycleEntry[];
 	disableThinkingBlocks: boolean;
 	wizard: WizardState;
 	apply: (event: ServerEvent) => void;

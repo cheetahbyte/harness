@@ -7,10 +7,11 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { ModelConfig } from "../../shared/src/protocol";
+import type { FastCycleEntry, ModelConfig } from "../../shared/src/protocol";
 
 type Settings = {
 	model?: ModelConfig;
+	fastCycle?: FastCycleEntry[];
 	disableThinkingBlocks?: boolean;
 	session?: { title?: { generated?: boolean; source?: string } };
 };
@@ -41,6 +42,15 @@ export class SettingsStore {
 
 	setModelConfig(model: ModelConfig): void {
 		this.save("model", model);
+	}
+
+	/** The `Ctrl+P` cycle, in the order it was picked; empty when unconfigured. */
+	fastCycle(): FastCycleEntry[] {
+		return this.project.fastCycle ?? this.global.fastCycle ?? [];
+	}
+
+	setFastCycle(entries: FastCycleEntry[]): void {
+		this.save("fastCycle", entries);
 	}
 
 	disableThinkingBlocks(): boolean {
@@ -77,11 +87,19 @@ export class SettingsStore {
 }
 
 function readSettings(path: string): Settings {
+	let contents: string;
 	try {
-		return JSON.parse(readFileSync(path, "utf8")) as Settings;
+		contents = readFileSync(path, "utf8");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		return {};
+	}
+	try {
+		return JSON.parse(contents) as Settings;
+	} catch (error) {
+		throw new Error(
+			`${path} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 }
 

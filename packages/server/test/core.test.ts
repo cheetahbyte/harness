@@ -43,27 +43,32 @@ function settings(dir: string) {
 	);
 }
 
-function fakeModels(modelOverrides: Record<string, unknown> = {}) {
+function fakeModels(
+	modelOverrides: Record<string, unknown> = {},
+	ids: string[] = ["model-1"],
+) {
 	const fakeProvider = {
 		id: "fake",
 		name: "Fake",
 		auth: { apiKey: { name: "Fake API key", login: async () => ({}) } },
 	};
-	const fakeModel = {
-		id: "model-1",
-		name: "Model 1",
+	const fakeModelList = ids.map((id, index) => ({
+		id,
+		name: `Model ${index + 1}`,
 		provider: "fake",
 		...modelOverrides,
-	};
+	}));
 	return {
 		getProviders: () => [fakeProvider],
 		getProvider: (provider: string) =>
 			provider === "fake" ? fakeProvider : undefined,
 		getModel: (provider: string, model: string) =>
-			provider === "fake" && model === "model-1" ? fakeModel : undefined,
+			provider === "fake"
+				? fakeModelList.find((candidate) => candidate.id === model)
+				: undefined,
 		checkAuth: async (provider: string) =>
 			provider === "fake" ? { type: "api_key" as const, source: "stored" } : undefined,
-		getAvailable: async () => [fakeModel],
+		getAvailable: async () => fakeModelList,
 		login: async (
 			_provider: string,
 			_type: AuthType,
@@ -595,6 +600,126 @@ function episodeId(
 			restartedEvents.push(event),
 		);
 		expect(restartedEvents).toContainEqual(persistedEvent);
+	});
+
+	test("persists the fast cycle and cycles through its available models", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const models = fakeModels({}, ["model-1", "model-2"]);
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			models,
+			settings(dir),
+		);
+		const id = server.createSession();
+		const events: ServerEvent[] = [];
+		server.subscribe(id, (event) => events.push(event));
+		await server.command(id, {
+			type: "configure",
+			provider: "fake",
+			model: "model-1",
+		});
+		await server.command(id, {
+			type: "set-fast-cycle",
+			entries: [
+				{ provider: "fake", model: "model-1" },
+				{ provider: "fake", model: "gone" },
+				{ provider: "fake", model: "model-2" },
+			],
+		});
+
+		expect(events).toContainEqual({
+			type: "fast-cycle",
+			entries: [
+				{ provider: "fake", model: "model-1" },
+				{ provider: "fake", model: "gone" },
+				{ provider: "fake", model: "model-2" },
+			],
+		});
+		expect(
+			JSON.parse(readFileSync(join(dir, "config/settings.json"), "utf8"))
+				.fastCycle,
+		).toEqual([
+			{ provider: "fake", model: "model-1" },
+			{ provider: "fake", model: "gone" },
+			{ provider: "fake", model: "model-2" },
+		]);
+
+		/** The removed model is skipped, and the cycle wraps back around. */
+		await server.command(id, { type: "cycle-model" });
+		expect(server.store.modelConfig(id)).toEqual({
+			provider: "fake",
+			model: "model-2",
+		});
+		await server.command(id, { type: "cycle-model" });
+		expect(server.store.modelConfig(id)).toEqual({
+			provider: "fake",
+			model: "model-1",
+		});
+	});
+
+	test("keeps a thinking level per fast-cycle model", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		const models = fakeModels(
+			{ reasoning: true, thinkingLevelMap: { high: null, xhigh: "xhigh", max: null } },
+			["model-1", "model-2"],
+		);
+		const server = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			models,
+			settings(dir),
+		);
+		const id = server.createSession();
+		await server.command(id, {
+			type: "set-fast-cycle",
+			entries: [
+				{ provider: "fake", model: "model-1" },
+				{ provider: "fake", model: "model-2" },
+			],
+		});
+		await server.command(id, {
+			type: "configure",
+			provider: "fake",
+			model: "model-1",
+		});
+
+		await server.command(id, { type: "cycle-thinking-level" });
+
+		expect(
+			JSON.parse(readFileSync(join(dir, "config/settings.json"), "utf8"))
+				.fastCycle,
+		).toEqual([
+			{ provider: "fake", model: "model-1", thinkingLevel: "xhigh" },
+			{ provider: "fake", model: "model-2" },
+		]);
+
+		/** Cycling models leaves the other entry alone and restores the level. */
+		await server.command(id, { type: "cycle-model" });
+		expect(server.store.modelConfig(id)).toEqual({
+			provider: "fake",
+			model: "model-2",
+		});
+		await server.command(id, { type: "cycle-model" });
+		expect(server.store.modelConfig(id)).toEqual({
+			provider: "fake",
+			model: "model-1",
+			thinkingLevel: "xhigh",
+		});
+
+		/** Reselecting the model with /model restores its remembered level too. */
+		await server.command(id, {
+			type: "configure",
+			provider: "fake",
+			model: "model-1",
+		});
+		expect(server.store.modelConfig(id)).toEqual({
+			provider: "fake",
+			model: "model-1",
+			thinkingLevel: "xhigh",
+		});
 	});
 
 	test("applies a thinking-level change made during a run to the next prompt", async () => {

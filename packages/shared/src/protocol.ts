@@ -25,6 +25,9 @@ export type ModelConfig = {
 	thinkingLevel?: ModelThinkingLevel;
 };
 
+/** One entry of the `Ctrl+P` fast cycle: a model plus its own reasoning level. */
+export type FastCycleEntry = ModelConfig;
+
 export type AuthPromptEvent =
 	| {
 			id: string;
@@ -71,7 +74,9 @@ export type ClientCommand =
 	| { type: "auth-answer"; promptId: string; value: string }
 	| { type: "auth-cancel" }
 	| { type: "abort"; taskId?: string }
-	| { type: "cycle-thinking-level" };
+	| { type: "cycle-thinking-level" }
+	| { type: "set-fast-cycle"; entries: FastCycleEntry[] }
+	| { type: "cycle-model" };
 
 export type ServerEvent =
 	| { type: "session"; sessionId: string }
@@ -107,6 +112,7 @@ export type ServerEvent =
 			status?: "completed" | "failed" | "cancelled" | "superseded";
 	  }
 	| { type: "model-config"; config: ModelConfig }
+	| { type: "fast-cycle"; entries: FastCycleEntry[] }
 	| { type: "ui-settings"; disableThinkingBlocks: boolean }
 	| { type: "status"; text: string }
 	| { type: "completed"; durationMs?: number }

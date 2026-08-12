@@ -769,6 +769,81 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("picks fast-cycle models with Space and cycles them with Ctrl+P", async () => {
+		const store = createTuiStore("session-1");
+		const sent: unknown[] = [];
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async (command) => {
+			sent.push(command);
+		});
+		try {
+			await view.renderOnce();
+			store.getState().apply({
+				type: "fast-cycle",
+				entries: [
+					{
+						provider: "openai-codex",
+						model: "gpt-5.6-sol",
+						thinkingLevel: "high",
+					},
+				],
+			});
+			await view.mockInput.typeText("/fast-cycle ");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent.at(-1)).toEqual({ type: "list-models" });
+			store.getState().apply({
+				type: "models",
+				models: [
+					{
+						provider: "openai-codex",
+						providerName: "OpenAI Codex",
+						id: "gpt-5.6-sol",
+						name: "GPT-5.6 Sol",
+					},
+					{
+						provider: "anthropic",
+						providerName: "Anthropic",
+						id: "opus",
+						name: "Opus",
+					},
+				],
+			});
+			await view.flush();
+			expect(view.captureCharFrame()).toContain(
+				"[x] GPT-5.6 Sol · OpenAI Codex · high",
+			);
+			expect(view.captureCharFrame()).toContain("[ ] Opus · Anthropic");
+			view.mockInput.pressArrow("down");
+			view.mockInput.pressKey(" ");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("[x] Opus · Anthropic");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent.at(-1)).toEqual({
+				type: "set-fast-cycle",
+				entries: [
+					{
+						provider: "openai-codex",
+						model: "gpt-5.6-sol",
+						thinkingLevel: "high",
+					},
+					{ provider: "anthropic", model: "opus" },
+				],
+			});
+			view.mockInput.pressKey("p", { ctrl: true });
+			await view.flush();
+			expect(sent.at(-1)).toEqual({ type: "cycle-model" });
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("renders queued follow-ups above the composer", async () => {
 		const store = createTuiStore("session-1");
 		const view = await createTestRenderer({

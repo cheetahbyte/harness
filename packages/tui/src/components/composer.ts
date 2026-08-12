@@ -50,6 +50,7 @@ export class ComposerView {
 			abort: () => void;
 			toggleThinking: () => void;
 			cycleThinkingLevel: () => void;
+			cycleModel: () => void;
 		},
 	) {
 		this.commands = commands;
@@ -189,6 +190,11 @@ export class ComposerView {
 		}
 		if (key.shift && key.name === "tab") {
 			this.actions.cycleThinkingLevel();
+			key.preventDefault();
+			return;
+		}
+		if (key.ctrl && key.name === "p") {
+			this.actions.cycleModel();
 			key.preventDefault();
 			return;
 		}
