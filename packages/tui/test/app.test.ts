@@ -304,6 +304,70 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("wraps composer text and grows the input box to fit it", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({
+			width: 40,
+			height: 30,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		const composer = (app as unknown as { composer: { root: { height: number } } })
+			.composer;
+		try {
+			await view.renderOnce();
+			expect(composer.root.height).toBe(3);
+			await view.mockInput.typeText("word ".repeat(30));
+			await view.flush();
+			/** Five wrapped rows between the top and bottom borders. */
+			expect(composer.root.height).toBe(7);
+			/** A wider terminal rewraps the same text into fewer rows. */
+			view.resize(100, 30);
+			await view.flush();
+			expect(composer.root.height).toBe(4);
+			/** Past the cap the textarea scrolls with the cursor instead of growing. */
+			view.resize(40, 30);
+			await view.mockInput.typeText("word ".repeat(70));
+			await view.flush();
+			expect(composer.root.height).toBe(12);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("Shift+Enter breaks the line instead of submitting", async () => {
+		const store = createTuiStore("session-1");
+		const sent: unknown[] = [];
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async (command) => {
+			sent.push(command);
+		});
+		try {
+			await view.renderOnce();
+			await view.mockInput.typeText("first");
+			view.mockInput.pressEnter({ shift: true });
+			await view.mockInput.typeText("second");
+			await view.flush();
+			expect(sent).toHaveLength(0);
+			expect(
+				(app as unknown as { composer: { value: string } }).composer.value,
+			).toBe("first\nsecond");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent).toEqual([
+				expect.objectContaining({ type: "steer", text: "first\nsecond" }),
+			]);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("clears the composer before an in-flight command resolves", async () => {
 		const store = createTuiStore("session-1");
 		let resolveSend!: () => void;

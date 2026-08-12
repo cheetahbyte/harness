@@ -1,10 +1,9 @@
 import {
 	BoxRenderable,
 	type CliRenderer,
-	InputRenderable,
-	InputRenderableEvents,
 	type KeyEvent,
 	SyntaxStyle,
+	TextareaRenderable,
 	TextRenderable,
 } from "@opentui/core";
 import {
@@ -16,15 +15,32 @@ import type { FollowUp } from "../store";
 
 const ACCENT = "#89b4fa";
 const SUGGESTION_WINDOW_SIZE = 5;
+/** How far the composer may grow before the text scrolls inside it instead. */
+const MAX_INPUT_ROWS = 10;
+const MAX_COMPACT_INPUT_ROWS = 2;
 export type CommandHint = {
 	name: string;
 	description: string;
 	kind: SlashCommandKind;
 };
 
+/**
+ * The textarea reflows on layout, so the wrapped line count is only correct
+ * once the new viewport width has landed. Surfacing that moment lets the
+ * composer resize itself to the text a terminal resize just rewrapped.
+ */
+class ComposerInput extends TextareaRenderable {
+	onResized: (() => void) | undefined;
+
+	protected override onResize(width: number, height: number) {
+		super.onResize(width, height);
+		this.onResized?.();
+	}
+}
+
 export class ComposerView {
 	readonly root: BoxRenderable;
-	private readonly input: InputRenderable;
+	private readonly input: ComposerInput;
 	private readonly highlightStyle = SyntaxStyle.fromStyles({
 		skill: { fg: ACCENT },
 	});
@@ -41,6 +57,7 @@ export class ComposerView {
 	private commands: readonly CommandHint[];
 	private hasFollowUps = false;
 	private compact = false;
+	private inputRows = 1;
 	private matches: CommandHint[] = [];
 	private selectedSuggestion = 0;
 	private suggestionOffset = 0;
@@ -105,7 +122,8 @@ export class ComposerView {
 			width: "100%",
 			height: 3,
 			flexDirection: "row",
-			alignItems: "center",
+			/** The prompt marker stays on the first row as the input grows. */
+			alignItems: "flex-start",
 			border: ["top", "bottom"],
 			borderColor: "#666873",
 			paddingLeft: 1,
@@ -118,19 +136,30 @@ export class ComposerView {
 				marginRight: 1,
 			}),
 		);
-		this.input = new InputRenderable(renderer, {
+		this.input = new ComposerInput(renderer, {
 			flexGrow: 1,
+			height: 1,
 			placeholder: "",
 			textColor: "#a6adc8",
 			backgroundColor: "transparent",
 			focusedBackgroundColor: "transparent",
 			syntaxStyle: this.highlightStyle,
+			wrapMode: "word",
+			/**
+			 * Textarea defaults to Enter inserting a newline; a chat composer wants
+			 * the inverse, with Shift+Enter kept for a deliberate line break.
+			 */
+			keyBindings: [
+				{ name: "return", action: "submit" },
+				{ name: "kpenter", action: "submit" },
+				{ name: "linefeed", action: "submit" },
+				{ name: "return", shift: true, action: "newline" },
+				{ name: "kpenter", shift: true, action: "newline" },
+			],
+			onSubmit: () => this.submit(false),
+			onContentChange: () => this.syncInput(),
 		});
-		this.input.on(InputRenderableEvents.ENTER, () => this.submit(false));
-		this.input.on(InputRenderableEvents.INPUT, (text: string) => {
-			this.highlightCommands(text);
-			this.syncSuggestions(text);
-		});
+		this.input.onResized = () => this.syncHeight();
 		this.inputRow.add(this.input);
 		this.root.add(this.queue);
 		this.root.add(this.suggestions);
@@ -140,7 +169,7 @@ export class ComposerView {
 	}
 
 	get value() {
-		return this.input.value;
+		return this.input.plainText;
 	}
 
 	setActive(active: boolean) {
@@ -151,8 +180,7 @@ export class ComposerView {
 
 	setCommands(commands: readonly CommandHint[]) {
 		this.commands = commands;
-		this.highlightCommands(this.input.value);
-		this.syncSuggestions(this.input.value);
+		this.syncInput();
 	}
 
 	update(followUps: FollowUp[]) {
@@ -169,11 +197,36 @@ export class ComposerView {
 	setCompact(compact: boolean) {
 		this.compact = compact;
 		this.syncQueueVisibility();
-		this.root.minHeight = compact ? 2 : 3;
 		this.root.marginTop = compact ? 0 : 1;
-		this.inputRow.height = compact ? 2 : 3;
 		this.inputRow.border = compact ? ["top"] : ["top", "bottom"];
-		this.syncSuggestions(this.input.value);
+		this.syncHeight();
+		this.syncSuggestions(this.input.plainText);
+	}
+
+	private syncInput() {
+		const text = this.input.plainText;
+		this.highlightCommands(text);
+		this.syncSuggestions(text);
+		this.syncHeight();
+	}
+
+	/**
+	 * The textarea has no intrinsic height, so the composer grows to whatever the
+	 * word wrap produced, up to the cap past which the textarea scrolls instead.
+	 */
+	private syncHeight() {
+		const wrapped = this.input.editorView.getTotalVirtualLineCount();
+		const rows = Math.min(
+			Math.max(wrapped, 1),
+			this.compact ? MAX_COMPACT_INPUT_ROWS : MAX_INPUT_ROWS,
+		);
+		const border = this.compact ? 1 : 2;
+		if (rows === this.inputRows && this.inputRow.height === rows + border)
+			return;
+		this.inputRows = rows;
+		this.input.height = rows;
+		this.inputRow.height = rows + border;
+		this.root.minHeight = rows + border;
 	}
 
 	private syncQueueVisibility() {
@@ -215,13 +268,12 @@ export class ComposerView {
 			}
 			if (key.name === "tab") {
 				this.replaceSuggestion(" ");
-				this.syncSuggestions(this.input.value);
 				key.preventDefault();
 				return;
 			}
-			if (key.name === "return") {
+			/** Shift+Enter is a line break, so it must not accept the suggestion. */
+			if (key.name === "return" && !key.shift) {
 				this.replaceSuggestion("");
-				this.syncSuggestions(this.input.value);
 				key.preventDefault();
 				this.submit(false);
 				return;
@@ -245,10 +297,16 @@ export class ComposerView {
 	};
 
 	private submit(followUp: boolean) {
-		const text = this.input.value;
+		const text = this.input.plainText;
 		if (!text.trim()) return;
-		this.input.value = "";
+		this.setValue("");
 		this.actions.submit(text, followUp);
+	}
+
+	private setValue(text: string) {
+		this.input.setText(text);
+		this.input.cursorOffset = text.length;
+		this.syncInput();
 	}
 
 	private syncSuggestions(text: string) {
@@ -272,7 +330,10 @@ export class ComposerView {
 	}
 
 	private replaceSuggestion(suffix: string) {
-		this.input.value = `${this.input.value.slice(0, this.suggestionStart)}${this.matches[this.selectedSuggestion]?.name ?? ""}${suffix}`;
+		const text = this.input.plainText;
+		this.setValue(
+			`${text.slice(0, this.suggestionStart)}${this.matches[this.selectedSuggestion]?.name ?? ""}${suffix}`,
+		);
 	}
 
 	private highlightCommands(text: string) {
