@@ -8,7 +8,7 @@ import {
 	ConfirmationRequiredError,
 	TaskRuntime,
 } from "../src/task-runtime";
-import { TaskScheduler } from "../src/task-scheduler";
+import { TaskScheduler } from "../src/sessions/scheduler";
 
 function snapshot(
 	confirmation: "none" | "confirm_once" | "confirm_each" = "none",

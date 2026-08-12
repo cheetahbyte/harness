@@ -9,7 +9,11 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ModelConfig } from "../../shared/src/protocol";
 
-type Settings = { model?: ModelConfig; disableThinkingBlocks?: boolean };
+type Settings = {
+	model?: ModelConfig;
+	disableThinkingBlocks?: boolean;
+	session?: { title?: { generated?: boolean; source?: string } };
+};
 
 export function globalHarnessPath(file: string): string {
 	return join(
@@ -45,6 +49,19 @@ export class SettingsStore {
 			this.global.disableThinkingBlocks ??
 			false
 		);
+	}
+
+	sessionTitle(): { generated: boolean; source: string } {
+		return {
+			generated:
+				this.project.session?.title?.generated ??
+				this.global.session?.title?.generated ??
+				true,
+			source:
+				this.project.session?.title?.source ??
+				this.global.session?.title?.source ??
+				"keywords/yake",
+		};
 	}
 
 	setDisableThinkingBlocks(disabled: boolean): void {

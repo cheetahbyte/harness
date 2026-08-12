@@ -253,6 +253,12 @@ export class WizardView {
 
 	private handleKey = (key: KeyEvent) => {
 		if (!this.root.visible || key.defaultPrevented) return;
+		if (key.name === "escape") {
+			key.preventDefault();
+			key.stopPropagation();
+			this.actions?.cancel();
+			return;
+		}
 		if (key.name === "o" && key.ctrl && this.actions?.open) {
 			key.preventDefault();
 			key.stopPropagation();
@@ -290,11 +296,6 @@ export class WizardView {
 				key.preventDefault();
 				return;
 			}
-		}
-		if (key.name === "escape") {
-			key.preventDefault();
-			key.stopPropagation();
-			this.actions?.cancel();
 		}
 	};
 

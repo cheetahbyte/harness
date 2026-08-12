@@ -6,7 +6,7 @@ import type {
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ServerEvent } from "../../../shared/src/protocol";
 import type { ContextManager } from "../context/manager";
-import type { SessionStore } from "../session-store";
+import type { SessionStore } from "../sessions/store";
 import type { TaskRuntime } from "../task-runtime";
 import { tokenCost } from "../token-cost";
 import type { CoreTools } from "../tools";

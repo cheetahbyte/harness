@@ -1,4 +1,3 @@
-import { EventEmitter } from "node:events";
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -28,28 +27,20 @@ import {
 	interactiveAuthTypes,
 	type ModelRegistry,
 	SessionAuthentication,
-} from "./session-auth";
-import { SessionStore } from "./session-store";
+} from "./sessions/authentication";
+import { promptTitle, SessionNamer } from "./sessions/naming";
+import type { QueuedTask, SchedulerDecision } from "./sessions/scheduler";
+import { Session } from "./sessions/session";
+import { SessionStore } from "./sessions/store";
 import {
 	type PendingSteer,
 	pendingCommandType,
 	type RunningTask,
 	SessionTaskRunner,
-	type TaskSession,
-} from "./session-task-runner";
+} from "./sessions/task-runner";
 import { globalHarnessPath, SettingsStore } from "./settings-store";
 import { availableSkills } from "./skills";
 import type { TaskRuntime } from "./task-runtime";
-import {
-	type QueuedTask,
-	type SchedulerDecision,
-	TaskScheduler,
-} from "./task-scheduler";
-
-type SessionEvents = { event: [event: ServerEvent, seq?: number] };
-type Session = TaskSession & {
-	events: EventEmitter<SessionEvents>;
-};
 
 export class HarnessServer {
 	private readonly sessions = new Map<string, Session>();
@@ -60,6 +51,8 @@ export class HarnessServer {
 	private readonly context: ContextManager;
 	private readonly taskRunner: SessionTaskRunner;
 	private readonly authentication: SessionAuthentication;
+	private readonly namer: SessionNamer;
+	private readonly manuallyNamedSessions = new Set<string>();
 
 	constructor(
 		readonly store = new SessionStore(),
@@ -80,6 +73,7 @@ export class HarnessServer {
 		this.defaultWorkspace = workspacePath(workspace);
 		this.credentials = new JsonCredentialStore(globalHarnessPath("auth.json"));
 		this.models = models ?? createHarnessModels(this.credentials);
+		this.namer = new SessionNamer(this.models as Models, this.credentials);
 		this.authentication = new SessionAuthentication(this.models, (id, event) =>
 			this.publish(id, event, false),
 		);
@@ -106,10 +100,7 @@ export class HarnessServer {
 
 	createSession(workspace = this.defaultWorkspace): string {
 		const id = this.store.create(workspacePath(workspace));
-		this.sessions.set(id, {
-			events: new EventEmitter(),
-			scheduler: new TaskScheduler(),
-		});
+		this.sessions.set(id, new Session());
 		log.info({ sessionId: id }, "session created");
 		return id;
 	}
@@ -158,6 +149,7 @@ export class HarnessServer {
 	async command(id: string, command: ClientCommand): Promise<void> {
 		const session = this.session(id);
 		log.debug({ sessionId: id, command: command.type }, "command received");
+		if (isUserSubmission(command)) this.store.markUserMessage(id);
 		if (isImmediateCommand(command.type)) {
 			await this.handleImmediateCommand(id, command);
 			return;
@@ -203,6 +195,17 @@ export class HarnessServer {
 			case "list-skills":
 				await this.listSkills(id);
 				return;
+			case "set-session-title": {
+				const title =
+					typeof command.title === "string"
+						? command.title.replace(/\s+/g, " ").trim()
+						: "";
+				if (!title) throw new Error("session name is required");
+				this.manuallyNamedSessions.add(id);
+				this.store.claimNamingPrompt(id);
+				this.store.setTitle(id, title);
+				return;
+			}
 			case "set-disable-thinking-blocks":
 				this.settingsFor(id).setDisableThinkingBlocks(command.disabled);
 				this.publish(
@@ -427,12 +430,20 @@ export class HarnessServer {
 			text: command.text,
 		};
 		if (!session.running) {
+			this.maybeTitleSession(id, command.text);
 			await this.run(id, pending);
 			return;
 		}
 		if (
 			this.runtime.steer(id, pending.text, {
-				onStarted: () => this.emitCommand(id, pending, "started"),
+				onStarted: () => {
+					this.publish(id, {
+						type: "user",
+						id: pending.id,
+						text: pending.text,
+					});
+					this.emitCommand(id, pending, "started");
+				},
 				onFinished: () => {},
 				onReplaced: () => this.emitCommand(id, pending, "replaced"),
 			})
@@ -450,6 +461,7 @@ export class HarnessServer {
 		session: Session,
 		text: string,
 	): Promise<void> {
+		this.maybeTitleSession(id, text);
 		if (!session.running) {
 			await this.run(id, text);
 			return;
@@ -459,6 +471,23 @@ export class HarnessServer {
 			this.store.contextSequence(id),
 		);
 		this.emitCommand(id, pending, "queued");
+	}
+
+	private maybeTitleSession(id: string, prompt: string): void {
+		if (!this.store.claimNamingPrompt(id)) return;
+		const config = this.settingsFor(id).sessionTitle();
+		if (!config.generated) return;
+		const fallback = promptTitle(prompt);
+		if (fallback) this.store.setTitle(id, fallback);
+		void this.namer
+			.generate(prompt, config.source, this.modelConfig(id))
+			.then((title) => {
+				if (title && !this.manuallyNamedSessions.has(id))
+					this.store.setTitle(id, title);
+			})
+			.catch((error) =>
+				log.debug({ error, sessionId: id }, "session title generation failed"),
+			);
 	}
 
 	private activeTask(session: Session, taskId: string): TaskRuntime {
@@ -576,10 +605,7 @@ export class HarnessServer {
 		if (!this.store.exists(id)) throw new Error("session not found");
 		let session = this.sessions.get(id);
 		if (!session) {
-			session = {
-				events: new EventEmitter(),
-				scheduler: new TaskScheduler(),
-			};
+			session = new Session();
 			this.sessions.set(id, session);
 		}
 		return session;
@@ -604,10 +630,24 @@ function isImmediateCommand(type: ClientCommand["type"]): boolean {
 		type === "list-providers" ||
 		type === "list-models" ||
 		type === "list-skills" ||
+		type === "set-session-title" ||
 		type === "set-disable-thinking-blocks" ||
 		type === "login" ||
 		type === "auth-answer" ||
 		type === "auth-cancel"
+	);
+}
+
+function isUserSubmission(command: ClientCommand): boolean {
+	return (
+		(command.type === "prompt" ||
+			command.type === "steer" ||
+			command.type === "follow-up" ||
+			command.type === "enqueue" ||
+			command.type === "supersede" ||
+			command.type === "replace-queued") &&
+		typeof command.text === "string" &&
+		command.text.trim().length > 0
 	);
 }
 

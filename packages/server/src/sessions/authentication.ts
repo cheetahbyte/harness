@@ -8,7 +8,7 @@ import type {
 	AuthPromptEvent,
 	AuthType,
 	ServerEvent,
-} from "../../shared/src/protocol";
+} from "../../../shared/src/protocol";
 
 type RegistryProvider = {
 	id: string;

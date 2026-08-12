@@ -15,7 +15,7 @@ import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
 import type { ContextManager } from "../context/manager";
 import { log } from "../logger";
 import { HarnessProviderError, providerModels } from "../provider";
-import type { SessionStore } from "../session-store";
+import type { SessionStore } from "../sessions/store";
 import type { SkillSnapshotEntry } from "../skills";
 import type { TaskRuntime } from "../task-runtime";
 import type { CoreTools } from "../tools";

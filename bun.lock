@@ -5,6 +5,7 @@
     "": {
       "name": "harness",
       "dependencies": {
+        "@ade_oshineye/yaket": "0.5.3",
         "@earendil-works/pi-agent-core": "^0.84.1",
         "@earendil-works/pi-ai": "^0.84.1",
         "@opentui/core": "^0.5.1",
@@ -21,6 +22,8 @@
     },
   },
   "packages": {
+    "@ade_oshineye/yaket": ["@ade_oshineye/yaket@0.5.3", "", { "bin": { "yaket": "dist/cli.js" } }, "sha512-SVhmTleoqHFNAuvneaPd6bzVA5gN+PrYrXU79jYjCQG/DvZiKrHWvvj0B9K6XBE6cYsn4h7wbPve/Tg3TFAkJg=="],
+
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.91.1", "", { "dependencies": { "json-schema-to-ts": "^3.1.1" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-LAmu761tSN9r66ixvmciswUj/ZC+1Q4iAfpedTfSVLeswRwnY3n2Nb6Tsk+cLPP28aLOPWeMgIuTuCcMC6W/iw=="],
 
     "@aws-crypto/sha256-browser": ["@aws-crypto/sha256-browser@5.2.0", "", { "dependencies": { "@aws-crypto/sha256-js": "^5.2.0", "@aws-crypto/supports-web-crypto": "^5.2.0", "@aws-crypto/util": "^5.2.0", "@aws-sdk/types": "^3.222.0", "@aws-sdk/util-locate-window": "^3.0.0", "@smithy/util-utf8": "^2.0.0", "tslib": "^2.6.2" } }, "sha512-AXfN/lGotSQwu6HNcEsIASo7kWXZ5HYWvfOmSNKDsEqC4OashTp8alTmaz+F7TC2L083SFv5RdB+qU3Vs1kZqw=="],

@@ -84,6 +84,53 @@ describe("HTTP event stream", () => {
 		}
 	});
 
+	test("lists only messaged sessions, newest first", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
+		paths.push(dir);
+		const server = serveHarness({
+			port: 0,
+			workspace: dir,
+			databasePath: join(dir, "state.sqlite"),
+		});
+		try {
+			const base = server.url.toString().replace(/\/$/, "");
+			const create = async () =>
+				((await (
+					await fetch(`${base}/sessions`, { method: "POST" })
+				).json()) as { sessionId: string }).sessionId;
+			const first = await create();
+			await Bun.sleep(2);
+			const second = await create();
+
+			expect(await (await fetch(`${base}/sessions`)).json()).toEqual([]);
+			for (const sessionId of [first, second])
+				await fetch(`${base}/sessions/${sessionId}/commands`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ type: "enqueue", text: "hello" }),
+				});
+
+			const response = await fetch(`${base}/sessions`);
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual([
+				{
+					id: second,
+					createdAt: expect.any(String),
+					workspace: dir,
+					title: null,
+				},
+				{
+					id: first,
+					createdAt: expect.any(String),
+					workspace: dir,
+					title: null,
+				},
+			]);
+		} finally {
+			server.stop(true);
+		}
+	});
+
 	test("responds before a command finishes", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "harness-http-test-"));
 		paths.push(dir);

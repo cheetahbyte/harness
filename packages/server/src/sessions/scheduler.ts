@@ -3,7 +3,7 @@ import type {
 	MessageId,
 	TaskId,
 	TaskRuntime,
-} from "./task-runtime";
+} from "../task-runtime";
 
 export type Message = { id: MessageId; text: string };
 export type QueuedTask = {

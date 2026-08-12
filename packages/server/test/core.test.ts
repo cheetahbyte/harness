@@ -12,7 +12,7 @@ import type { AuthType, ServerEvent } from "../../shared/src/protocol";
 import type { AuthInteraction } from "@earendil-works/pi-ai";
 import { JsonCredentialStore } from "../src/provider";
 import { HarnessServer } from "../src/server";
-import { SessionStore } from "../src/session-store";
+import { SessionStore } from "../src/sessions/store";
 import { SettingsStore } from "../src/settings-store";
 import { BashTool } from "../src/tools/bash";
 
@@ -89,6 +89,43 @@ async function until(assertion: () => void): Promise<void> {
 }
 
 describe("first milestone", () => {
+	test("does not list a session until a user submits a message", async () => {
+		const { server } = harness();
+		const id = server.createSession();
+
+		expect(server.store.list()).toEqual([]);
+		await server.command(id, {
+			type: "set-session-title",
+			title: "Setup only",
+		});
+		expect(server.store.list()).toEqual([]);
+
+		await server.command(id, { type: "steer", text: "First message" });
+		expect(server.store.list()).toContainEqual({
+			id,
+			createdAt: expect.any(String),
+			workspace: expect.any(String),
+			title: "Setup only",
+		});
+	});
+
+	test("persists user messages for session replay", async () => {
+		const { server } = harness();
+		const id = server.createSession();
+
+		await server.command(id, {
+			type: "steer",
+			id: "user-1",
+			text: "Remember this message",
+		});
+
+		expect(server.store.events(id)).toContainEqual({
+			type: "user",
+			id: "user-1",
+			text: "Remember this message",
+		});
+	});
+
 	test("keeps each session's workspace", () => {
 		const first = mkdtempSync(join(tmpdir(), "harness-workspace-test-"));
 		const second = mkdtempSync(join(tmpdir(), "harness-workspace-test-"));
@@ -148,6 +185,116 @@ describe("first milestone", () => {
 			type: "model-config",
 			config: { provider: "fake", model: "second-model" },
 		});
+	});
+
+	test("titles a session from only its first normal prompt", async () => {
+		const { server } = harness();
+		const id = server.createSession();
+
+		await server.command(id, {
+			type: "prompt",
+			text: "Fix the OAuth cancellation bug",
+		});
+		expect(server.store.list().find((session) => session.id === id)?.title).toBe(
+			"OAuth cancellation bug Fix",
+		);
+
+		await server.command(id, {
+			type: "prompt",
+			text: "This later prompt must not replace the title",
+		});
+		expect(server.store.list().find((session) => session.id === id)?.title).toBe(
+			"OAuth cancellation bug Fix",
+		);
+	});
+
+	test("titles the idle steer command used by the TUI for its first prompt", async () => {
+		const { server } = harness();
+		const id = server.createSession();
+
+		await server.command(id, {
+			type: "steer",
+			text: "Fix OAuth cancellation in the login flow",
+		});
+
+		expect(server.store.list().find((session) => session.id === id)?.title).toBe(
+			"Fix OAuth cancellation login flow",
+		);
+	});
+
+	test("manually names a session without an automatic rename race", async () => {
+		const { dir, server } = harness();
+		const id = server.createSession();
+		let finishNaming!: (title: string) => void;
+		(
+			server as unknown as {
+				namer: { generate: () => Promise<string> };
+			}
+		).namer.generate = () =>
+			new Promise((resolve) => {
+				finishNaming = resolve;
+			});
+
+		await server.command(id, { type: "prompt", text: "Automatic title" });
+		await server.command(id, {
+			type: "set-session-title",
+			title: "  My   session  ",
+		});
+		finishNaming("Late automatic title");
+		await Promise.resolve();
+
+		expect(server.store.list().find((session) => session.id === id)?.title).toBe(
+			"My session",
+		);
+		expect(server.store.claimNamingPrompt(id)).toBe(false);
+		const restarted = new HarnessServer(
+			new SessionStore(join(dir, "state.sqlite")),
+			dir,
+			fakeModels(),
+			settings(dir),
+		);
+		expect(restarted.store.list().find((session) => session.id === id)?.title).toBe(
+			"My session",
+		);
+		await expect(
+			restarted.command(id, { type: "set-session-title", title: "   " }),
+		).rejects.toThrow("session name is required");
+	});
+
+	test("consumes the first prompt while title generation is disabled", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harness-test-"));
+		paths.push(dir);
+		mkdirSync(join(dir, "config"), { recursive: true });
+		writeFileSync(
+			join(dir, "config/settings.json"),
+			JSON.stringify({ session: { title: { generated: false } } }),
+		);
+		const path = join(dir, "state.sqlite");
+		const server = new HarnessServer(
+			new SessionStore(path),
+			dir,
+			fakeModels(),
+			settings(dir),
+		);
+		const id = server.createSession();
+
+		await server.command(id, { type: "prompt", text: "first prompt" });
+		expect(server.store.list().find((session) => session.id === id)?.title).toBeNull();
+
+		writeFileSync(
+			join(dir, "config/settings.json"),
+			JSON.stringify({ session: { title: { generated: true } } }),
+		);
+		const restarted = new HarnessServer(
+			new SessionStore(path),
+			dir,
+			fakeModels(),
+			settings(dir),
+		);
+		await restarted.command(id, { type: "prompt", text: "second prompt" });
+		expect(
+			restarted.store.list().find((session) => session.id === id)?.title,
+		).toBeNull();
 	});
 
 function toolCallChunks(
@@ -937,6 +1084,18 @@ function episodeId(
 					)
 					.map((event) => event.id),
 			).toEqual(["steer-1", "follow-1"]);
+			expect(
+				events
+					.filter(
+						(event): event is Extract<ServerEvent, { type: "user" }> =>
+							event.type === "user",
+					)
+					.map((event) => [event.id, event.text]),
+			).toEqual([
+				[undefined, "first"],
+				["steer-1", "new direction"],
+				["follow-1", "afterwards"],
+			]);
 		} finally {
 			provider.stop(true);
 			delete process.env["HARNESS_OPENAI_API_KEY"];

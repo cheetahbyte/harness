@@ -17,6 +17,13 @@ export type StreamOptions = {
 	from?: number;
 };
 
+export type SessionSummary = {
+	id: string;
+	createdAt: string;
+	workspace: string | null;
+	title: string | null;
+};
+
 export class HarnessClient {
 	constructor(
 		readonly base = process.env["HARNEZ_URL"] ??
@@ -42,6 +49,30 @@ export class HarnessClient {
 		)
 			throw new Error("session creation returned an invalid response");
 		return body.sessionId;
+	}
+
+	async listSessions(): Promise<SessionSummary[]> {
+		const response = await fetch(`${this.base}/sessions`);
+		if (!response.ok)
+			throw new Error(`session listing failed (${response.status})`);
+		const body: unknown = await response.json();
+		if (
+			!Array.isArray(body) ||
+			body.some(
+				(session) =>
+					!session ||
+					typeof session !== "object" ||
+					typeof session.id !== "string" ||
+					!session.id ||
+					typeof session.createdAt !== "string" ||
+					!session.createdAt ||
+					(session.workspace !== null &&
+						typeof session.workspace !== "string") ||
+					(session.title !== null && typeof session.title !== "string"),
+			)
+		)
+			throw new Error("session listing returned an invalid response");
+		return body as SessionSummary[];
 	}
 
 	async send(sessionId: string, command: ClientCommand): Promise<void> {

@@ -110,3 +110,57 @@ test("creates sessions in the client working directory", async () => {
 		server.stop(true);
 	}
 });
+
+test("lists session summaries", async () => {
+	const sessions = [
+		{
+			id: "session-2",
+			createdAt: "2026-08-12T12:00:00.000Z",
+			workspace: "/tmp/project",
+			title: "Add session names",
+		},
+		{
+			id: "session-1",
+			createdAt: "2026-08-12T11:00:00.000Z",
+			workspace: null,
+			title: null,
+		},
+	];
+	const server = Bun.serve({
+		port: 0,
+		fetch: () => Response.json(sessions),
+	});
+	try {
+		await expect(
+			new HarnessClient(
+				server.url.toString().replace(/\/$/, ""),
+			).listSessions(),
+		).resolves.toEqual(sessions);
+	} finally {
+		server.stop(true);
+	}
+});
+
+test("rejects an invalid session listing", async () => {
+	const server = Bun.serve({
+		port: 0,
+		fetch: () =>
+			Response.json([
+				{
+					id: "session",
+					createdAt: "2026-08-12",
+					workspace: null,
+					title: 42,
+				},
+			]),
+	});
+	try {
+		await expect(
+			new HarnessClient(
+				server.url.toString().replace(/\/$/, ""),
+			).listSessions(),
+		).rejects.toThrow("session listing returned an invalid response");
+	} finally {
+		server.stop(true);
+	}
+});

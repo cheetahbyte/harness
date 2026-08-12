@@ -1,4 +1,4 @@
-import type { SessionStore } from "../session-store";
+import type { SessionStore } from "../sessions/store";
 import { tokenCost } from "../token-cost";
 import {
 	episodeStates,

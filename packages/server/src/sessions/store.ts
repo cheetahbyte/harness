@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ModelConfig, ServerEvent } from "../../shared/src/protocol";
+import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
 import type {
 	ContextEpisodeEvent,
 	ContextItem,
@@ -9,9 +9,17 @@ import type {
 	ContextProjection,
 	NewContextItem,
 	NewEpisodeEvent,
-} from "./context/types";
-import type { ExecutionLedgerEntry } from "./task-ledger";
-import type { TaskTerminalStatus } from "./task-runtime";
+} from "../context/types";
+import type { ExecutionLedgerEntry } from "../task-ledger";
+import type { TaskTerminalStatus } from "../task-runtime";
+import { migrate } from "./migrations";
+
+export interface SessionSummary {
+	id: string;
+	createdAt: string;
+	workspace: string | null;
+	title: string | null;
+}
 
 export class SessionStore {
 	readonly db: Database;
@@ -19,38 +27,7 @@ export class SessionStore {
 	constructor(path = ".harness/harness.sqlite") {
 		mkdirSync(dirname(path), { recursive: true });
 		this.db = new Database(path, { create: true });
-		this.db.run(
-			"CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, workspace TEXT)",
-		);
-		const columns = this.db.query("PRAGMA table_info(sessions)").all() as {
-			name: string;
-		}[];
-		if (!columns.some((column) => column.name === "workspace"))
-			this.db.run("ALTER TABLE sessions ADD COLUMN workspace TEXT");
-		this.db.run(
-			"CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL)",
-		);
-		this.db.run(
-			"CREATE TABLE IF NOT EXISTS session_settings (session_id TEXT PRIMARY KEY, model_config TEXT NOT NULL)",
-		);
-		this.db.run(
-			"CREATE TABLE IF NOT EXISTS context_items (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, compact_payload TEXT, token_cost INTEGER NOT NULL, compact_token_cost INTEGER, source TEXT, group_id TEXT, episode_id TEXT, created_at TEXT NOT NULL)",
-		);
-		this.db.run(
-			"CREATE TABLE IF NOT EXISTS context_lifecycle (item_id TEXT PRIMARY KEY, lifecycle TEXT NOT NULL, projection TEXT NOT NULL, reason TEXT NOT NULL, updated_at TEXT NOT NULL)",
-		);
-		this.db.run(
-			"CREATE TABLE IF NOT EXISTS context_episode_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL, episode_id TEXT NOT NULL, action TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, dependencies TEXT NOT NULL, conclusion TEXT, created_at TEXT NOT NULL)",
-		);
-		this.db.run(
-			"CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, state TEXT NOT NULL, status TEXT, started_at TEXT NOT NULL, finished_at TEXT)",
-		);
-		this.db.run(
-			"CREATE TABLE IF NOT EXISTS task_ledger (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, task_id TEXT NOT NULL, payload TEXT NOT NULL)",
-		);
-		this.db.run(
-			"CREATE INDEX IF NOT EXISTS context_items_session_sequence ON context_items(session_id, sequence)",
-		);
+		migrate(this.db);
 	}
 
 	create(workspace = process.cwd()): string {
@@ -61,6 +38,36 @@ export class SessionStore {
 			)
 			.run(id, new Date().toISOString(), workspace);
 		return id;
+	}
+
+	list(): SessionSummary[] {
+		return this.db
+			.query(
+				"SELECT id, created_at AS createdAt, workspace, title FROM sessions WHERE has_user_message = 1 ORDER BY created_at DESC",
+			)
+			.all() as SessionSummary[];
+	}
+
+	markUserMessage(sessionId: string): void {
+		this.db
+			.query("UPDATE sessions SET has_user_message = 1 WHERE id = ?")
+			.run(sessionId);
+	}
+
+	claimNamingPrompt(sessionId: string): boolean {
+		return (
+			this.db
+				.query(
+					"UPDATE sessions SET naming_prompt_consumed = 1 WHERE id = ? AND naming_prompt_consumed = 0",
+				)
+				.run(sessionId).changes > 0
+		);
+	}
+
+	setTitle(sessionId: string, title: string): void {
+		this.db
+			.query("UPDATE sessions SET title = ? WHERE id = ?")
+			.run(title, sessionId);
 	}
 
 	exists(id: string): boolean {

@@ -15,11 +15,13 @@ platforms are macOS (Apple Silicon and Intel) and Linux x64.
 
 ```sh
 harnez
+harnez --resume
 harnez --resume <session-id>
 ```
 
-`harnez` starts the local server when needed and opens a new TUI session.
-Use `--resume` to open an existing session.
+`harnez` starts the local server when needed and opens a new TUI session. Run
+`harnez --resume` to choose from saved sessions, or add a session ID to resume
+it directly.
 
 ```sh
 harnez server start

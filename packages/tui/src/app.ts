@@ -75,6 +75,15 @@ export class TuiApp {
 						: this.openModel(args || undefined),
 			},
 			{
+				name: "/session-name",
+				description: "Set the current session name",
+				kind: "command",
+				run: (title) => {
+					if (!title.trim()) throw new Error("session name is required");
+					return this.send({ type: "set-session-title", title });
+				},
+			},
+			{
 				name: "/ack-effects",
 				description: "Acknowledge unknown effects from the prior task",
 				kind: "command",

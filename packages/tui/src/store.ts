@@ -84,6 +84,33 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 			wizard: { kind: "idle" },
 			apply(event) {
 				if (event.type === "session") return;
+				if (event.type === "user")
+					return set((state) => {
+						const existing = event.id
+							? state.entries.findIndex(
+									(entry) => entry.kind === "user" && entry.id === event.id,
+								)
+							: -1;
+						const entries =
+							existing < 0
+								? [
+										...finishActive(state.entries),
+										{
+											kind: "user" as const,
+											text: event.text,
+											...(event.id ? { id: event.id } : {}),
+										},
+									]
+								: state.entries.map((entry, index) =>
+										index === existing
+											? { ...entry, text: event.text, pending: false }
+											: entry,
+									);
+						return {
+							entries,
+							...(event.id ? withoutFollowUp(state, event.id) : {}),
+						};
+					});
 				if (event.type === "task-state") {
 					const text = event.status ?? event.state;
 					set((state) => {

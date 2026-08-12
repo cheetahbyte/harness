@@ -16,10 +16,13 @@ Starts the server if one isn't already running and opens the TUI against it.
 ## Resuming a session
 
 ```text
+harnez --resume
 harnez --resume <session-id>
 ```
 
-Resumes the specified session.
+Run `harnez --resume` without an ID to open a searchable session picker. Add an
+ID to resume that session directly. See [Sessions](/docs/advanced/sessions) for
+details about workspaces, persistence, and automatic titles.
 
 ## Server commands
 
@@ -46,6 +49,7 @@ Typed directly into the TUI composer.
 | `/login [provider]` | Open the provider-authentication wizard. Omit the provider to pick from a list. |
 | `/model [provider]` | Open the model picker for a provider, or the current one if omitted. |
 | `/model <provider> <model> [base-url]` | Set the active provider, model, and optional custom endpoint directly, without the wizard. |
+| `/session-name <name>` | Set the current session name. Automatic naming will not replace a name you set. |
 | `/<skill-name>` | Invoke a skill loaded from `.harnez/skills` or `.agents/skills`. Available skills appear in autocomplete with their own description. |
 
 ## Keyboard shortcuts

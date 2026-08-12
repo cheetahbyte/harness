@@ -65,6 +65,7 @@ export type ClientCommand =
 	| { type: "list-providers"; authType?: AuthType }
 	| { type: "list-models"; provider?: string }
 	| { type: "list-skills" }
+	| { type: "set-session-title"; title: string }
 	| { type: "set-disable-thinking-blocks"; disabled: boolean }
 	| { type: "login"; provider: string; authType: AuthType }
 	| { type: "auth-answer"; promptId: string; value: string }
@@ -74,6 +75,7 @@ export type ClientCommand =
 
 export type ServerEvent =
 	| { type: "session"; sessionId: string }
+	| { type: "user"; text: string; id?: string }
 	| { type: "assistant-delta"; text: string }
 	| { type: "assistant-reasoning-delta"; text: string }
 	| { type: "tool-call"; id: string; name: string; input: unknown }

@@ -5,21 +5,20 @@ slug: configuration
 
 # Configuration
 
-Harnez stores credentials and settings outside of your project, in your user
-config directory.
+Harnez keeps credentials and global settings in your user config directory.
 
 ```text
-~/.config/harnez/auth.json
-~/.config/harnez/settings.json
+~/.config/harness/auth.json
+~/.config/harness/settings.json
 ```
 
-`$XDG_CONFIG_HOME/harnez` is used instead when that variable is set.
+`$XDG_CONFIG_HOME/harness` is used instead when that variable is set.
 
 ## `auth.json`
 
-A JSON map of provider ID to credential, either an OAuth token set or an API
-key, written with `0o600` permissions. `/login` populates it. Never commit
-this file.
+This file maps provider IDs to credentials. A credential is either an OAuth
+token set or an API key. Harnez writes the file with `0o600` permissions, and
+`/login` updates it. Never commit this file.
 
 ## `settings.json`
 
@@ -31,7 +30,13 @@ this file.
     "baseUrl": null,
     "thinkingLevel": "medium"
   },
-  "disableThinkingBlocks": false
+  "disableThinkingBlocks": false,
+  "session": {
+    "title": {
+      "generated": true,
+      "source": "keywords/yake"
+    }
+  }
 }
 ```
 
@@ -39,20 +44,34 @@ this file.
 selected with `Shift+Tab`; supported levels depend on the model. `baseUrl`
 only applies to the `openai-compatible` provider.
 
+New sessions are titled from their first prompt by default. Set
+`session.title.generated` to `false` to disable this. `session.title.source`
+supports:
+
+- `keywords/yake`: local, deterministic keyword extraction
+- `model/<provider>/<model>:<thinking-level>`: a configured model, for example
+  `model/openai-codex/gpt-5.1-codex:low`.
+
+The thinking suffix is optional. If the provider is unavailable or returns no
+usable title, Harnez keeps a cleaned excerpt of the first prompt. See
+[Sessions](/docs/advanced/sessions) for details about title generation and
+persistence.
+
 ## Project overrides
 
-A project-local `.harnez/settings.json` takes precedence over the global one
-for that project. It replaces the global file instead of being merged:
+A project-local `.harness/settings.json` takes precedence over the corresponding
+global values for that project. Nested session-title fields are merged
+independently, so a project may override only `generated` or only `source`:
 
 ```text
 <repo>/
-  .harnez/
-    settings.json      # overrides ~/.config/harnez/settings.json
-    harnez.sqlite      # session, event, and context storage
+  .harness/
+    settings.json      # overrides ~/.config/harness/settings.json
+    harness.sqlite     # session, event, and context storage
     skills/              # project-local skills, alongside .agents/skills
 ```
 
-User-level skills live in `~/.harnez/skills` and `~/.agents/skills`.
+User-level skills live in `~/.harness/skills` and `~/.agents/skills`.
 
 ## Environment variables
 

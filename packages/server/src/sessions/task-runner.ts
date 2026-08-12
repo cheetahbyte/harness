@@ -1,26 +1,23 @@
-import type { ModelConfig, ServerEvent } from "../../shared/src/protocol";
-import { slashCommandPattern } from "../../shared/src/slash-command";
-import type { HarnessAgentRuntime } from "./agent/runtime";
+import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
+import { slashCommandPattern } from "../../../shared/src/slash-command";
+import type { HarnessAgentRuntime } from "../agent/runtime";
 import {
 	CapabilityCatalog,
 	type CapabilitySnapshot,
-} from "./capabilities/catalog";
+} from "../capabilities/catalog";
 import {
 	CapabilityContext,
 	type TokenAccountant,
-} from "./capabilities/context";
-import type { ContextManager } from "./context/manager";
-import { log } from "./logger";
-import type { SessionStore } from "./session-store";
-import { activateSkill, type SkillSnapshotEntry, scanSkills } from "./skills";
-import { TaskRuntime, type TaskTerminalStatus } from "./task-runtime";
-import type {
-	QueuedTask,
-	SchedulerDecision,
-	TaskScheduler,
-} from "./task-scheduler";
-import { tokenCost } from "./token-cost";
-import { CoreTools } from "./tools";
+} from "../capabilities/context";
+import type { ContextManager } from "../context/manager";
+import { log } from "../logger";
+import { activateSkill, type SkillSnapshotEntry, scanSkills } from "../skills";
+import { TaskRuntime, type TaskTerminalStatus } from "../task-runtime";
+import { tokenCost } from "../token-cost";
+import { CoreTools } from "../tools";
+import type { QueuedTask, SchedulerDecision } from "./scheduler";
+import type { Session } from "./session";
+import type { SessionStore } from "./store";
 
 export type PendingSteer = {
 	id: string;
@@ -37,13 +34,6 @@ export type RunningTask = {
 	contextWatermark: number;
 };
 
-export type TaskSession = {
-	starting?: Promise<void>;
-	running?: RunningTask;
-	scheduler: TaskScheduler;
-	pendingSteer?: PendingSteer;
-};
-
 type RunnerOptions = {
 	runtime: HarnessAgentRuntime;
 	store: SessionStore;
@@ -56,7 +46,7 @@ type RunnerOptions = {
 
 type RunInput = {
 	id: string;
-	session: TaskSession;
+	session: Session;
 	command: string | QueuedTask | PendingSteer;
 	predecessor?: TaskRuntime;
 	resume?: RunningTask;
@@ -85,7 +75,7 @@ export class SessionTaskRunner {
 						? { submissionWatermark: pending.submissionWatermark }
 						: {}),
 				});
-		this.emitStart(id, running, pending, pendingType);
+		this.emitStart(id, running, pending, pendingType, text);
 		try {
 			await this.options.runtime.run({
 				sessionId: id,
@@ -112,7 +102,7 @@ export class SessionTaskRunner {
 
 	async advance(
 		id: string,
-		session: TaskSession,
+		session: Session,
 		decision: SchedulerDecision | undefined,
 	): Promise<void> {
 		const steer = session.pendingSteer;
@@ -136,7 +126,7 @@ export class SessionTaskRunner {
 	}
 
 	private resumeTask(
-		session: TaskSession,
+		session: Session,
 		resume: RunningTask,
 		controller: AbortController,
 		prompt: string,
@@ -174,7 +164,13 @@ export class SessionTaskRunner {
 		running: RunningTask,
 		pending: QueuedTask | PendingSteer | undefined,
 		pendingType: QueuedTask["kind"] | PendingSteer["type"] | undefined,
+		text: string,
 	): void {
+		this.options.emit(id, {
+			type: "user",
+			text,
+			...(pending ? { id: pending.id } : {}),
+		});
 		if (pending)
 			this.options.emit(id, {
 				type: "command",
@@ -202,7 +198,7 @@ export class SessionTaskRunner {
 
 	private async fail(
 		id: string,
-		session: TaskSession,
+		session: Session,
 		running: RunningTask,
 		pending: QueuedTask | PendingSteer | undefined,
 		error: unknown,
@@ -230,7 +226,7 @@ export class SessionTaskRunner {
 
 	private async abort(
 		id: string,
-		session: TaskSession,
+		session: Session,
 		running: RunningTask,
 		pending: QueuedTask | PendingSteer | undefined,
 		startedAt: number,

@@ -6,7 +6,7 @@ import type {
 import type { SubagentResult } from "./context/types";
 import { log } from "./logger";
 import { HarnessServer } from "./server";
-import { SessionStore } from "./session-store";
+import { SessionStore } from "./sessions/store";
 
 type ServeHarnessOptions = {
 	port?: number;
@@ -47,6 +47,8 @@ async function fetchHarness(
 	);
 	if (request.method === "GET" && url.pathname === "/health")
 		return Response.json({ name: "harnez", pid: process.pid });
+	if (request.method === "GET" && url.pathname === "/sessions")
+		return Response.json(harness.store.list());
 	if (request.method === "POST" && url.pathname === "/sessions")
 		return createSession(harness, request);
 	const match = url.pathname.match(

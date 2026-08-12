@@ -16,8 +16,8 @@ afterEach(() => {
 describe("CLI arguments", () => {
 	test("accepts only an optional resume id", () => {
 		expect(parseResume([])).toBeUndefined();
+		expect(parseResume(["--resume"])).toBe(true);
 		expect(parseResume(["--resume", "session-1"])).toBe("session-1");
-		expect(() => parseResume(["--resume"])).toThrow("Usage:");
 		expect(() => parseResume(["session-1"])).toThrow("Usage:");
 	});
 

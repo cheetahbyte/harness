@@ -357,6 +357,37 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("sets the current session name", async () => {
+		const store = createTuiStore("session-1");
+		const sent: unknown[] = [];
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async (command) => {
+			sent.push(command);
+		});
+		try {
+			await view.renderOnce();
+			await view.mockInput.typeText("/session-n");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain(
+				"/session-name  Set the current session name",
+			);
+			view.mockInput.pressTab();
+			await view.mockInput.typeText("My project");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent).toEqual([
+				{ type: "set-session-title", title: "My project" },
+			]);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("recovers a blocked queued task with its implicit id", async () => {
 		const store = createTuiStore("session-1");
 		const sent: unknown[] = [];
@@ -473,7 +504,7 @@ describe("OpenTUI app", () => {
 			expect(frame).toContain("/s1");
 			expect(frame).not.toContain("/s5");
 			expect(frame).not.toContain("suggestion row");
-			for (let index = 0; index < 5; index++) view.mockInput.pressArrow("down");
+			for (let index = 0; index < 6; index++) view.mockInput.pressArrow("down");
 			await view.flush();
 			expect(view.captureCharFrame()).toContain("/s5");
 		} finally {
