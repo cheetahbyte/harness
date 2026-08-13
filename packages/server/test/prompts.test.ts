@@ -95,6 +95,20 @@ test("reports invalid templates instead of exposing them", async () => {
 	expect(diagnostics.every(({ state }) => state === "invalid")).toBe(true);
 });
 
+test("reports unreadable roots and keeps scanning the rest", async () => {
+	const { project, home } = workspaces();
+	mkdirSync(join(project, ".harnez"), { recursive: true });
+	writeFileSync(join(project, ".harnez/prompts"), "not a directory");
+	prompt(join(home, ".harnez/prompts"), "plan.md", "User plan.");
+
+	const { templates, diagnostics } = await scanPrompts(project, home);
+
+	expect(templates.map(({ name }) => name)).toEqual(["plan"]);
+	expect(diagnostics.map(({ path, state }) => ({ path, state }))).toEqual([
+		{ path: join(project, ".harnez/prompts"), state: "unreadable" },
+	]);
+});
+
 test("expands only a leading invocation and appends trailing text", async () => {
 	const { project, home } = workspaces();
 	prompt(

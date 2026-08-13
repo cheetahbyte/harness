@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +11,7 @@ export type PromptTemplate = {
 };
 type PromptDiagnostic = {
 	path: string;
-	state: "invalid";
+	state: "invalid" | "unreadable";
 	error: string;
 };
 export type PromptScan = {
@@ -44,9 +45,20 @@ export async function scanPrompts(
 	const result: PromptScan = { templates: [], diagnostics: [] };
 	const seen = new Set<string>();
 	for (const root of promptRoots(workspace, home)) {
-		const entries = await readdir(root, { withFileTypes: true }).catch(
-			() => [],
-		);
+		let entries: Dirent[];
+		try {
+			entries = await readdir(root, { withFileTypes: true });
+		} catch (error) {
+			// An absent root is the normal case — few checkouts define all six.
+			// Anything else (permissions, I/O) is reported and the scan goes on.
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+				result.diagnostics.push({
+					path: root,
+					state: "unreadable",
+					error: error instanceof Error ? error.message : String(error),
+				});
+			continue;
+		}
 		for (const entry of entries
 			.filter(
 				(candidate) => candidate.isFile() && candidate.name.endsWith(".md"),
