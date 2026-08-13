@@ -92,6 +92,29 @@ test("rejects a successful session response without an id", async () => {
 	}
 });
 
+test("reports a non-JSON body as the operation that received it", async () => {
+	const server = Bun.serve({
+		port: 0,
+		fetch: () =>
+			new Response("<html>gateway</html>", {
+				headers: { "content-type": "text/html" },
+			}),
+	});
+	try {
+		const client = new HarnezClient(server.url.toString().replace(/\/$/, ""));
+		await expect(client.createSession()).rejects.toThrow(
+			"session creation returned a malformed response (200)",
+		);
+		await expect(client.listSessions()).rejects.toThrow(
+			"session listing returned a malformed response (200)",
+		);
+		const failure = await client.listSessions().catch((error) => error);
+		expect((failure as Error).cause).toBeInstanceOf(Error);
+	} finally {
+		server.stop(true);
+	}
+});
+
 test("creates sessions in the client working directory", async () => {
 	let cwd: unknown;
 	const server = Bun.serve({

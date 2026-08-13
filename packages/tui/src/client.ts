@@ -24,6 +24,25 @@ export type SessionSummary = {
 	title: string | null;
 };
 
+/**
+ * Reads a JSON body as the named operation. The server answers JSON on every
+ * success, so a parse failure means something else replied — a proxy, or a
+ * truncated body — and it reads as that rather than as a bare SyntaxError.
+ */
+async function readJson(
+	response: Response,
+	operation: string,
+): Promise<unknown> {
+	try {
+		return await response.json();
+	} catch (error) {
+		throw new Error(
+			`${operation} returned a malformed response (${response.status})`,
+			{ cause: error },
+		);
+	}
+}
+
 export class HarnezClient {
 	constructor(
 		readonly base = process.env["HARNEZ_URL"] ??
@@ -39,7 +58,7 @@ export class HarnezClient {
 		});
 		if (!response.ok)
 			throw new Error(`session creation failed (${response.status})`);
-		const body: unknown = await response.json();
+		const body: unknown = await readJson(response, "session creation");
 		if (
 			!body ||
 			typeof body !== "object" ||
@@ -55,7 +74,7 @@ export class HarnezClient {
 		const response = await fetch(`${this.base}/sessions`);
 		if (!response.ok)
 			throw new Error(`session listing failed (${response.status})`);
-		const body: unknown = await response.json();
+		const body: unknown = await readJson(response, "session listing");
 		if (
 			!Array.isArray(body) ||
 			body.some(
