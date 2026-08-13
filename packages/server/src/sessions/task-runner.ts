@@ -1,6 +1,7 @@
 import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
 import { slashCommandPattern } from "../../../shared/src/slash-command";
 import type { HarnezAgentRuntime } from "../agent/runtime";
+import { contextCapabilities } from "../agent/tools";
 import {
 	CapabilityCatalog,
 	type CapabilitySnapshot,
@@ -338,6 +339,7 @@ export class SessionTaskRunner {
 		const catalog = new CapabilityCatalog(
 			[
 				...tools.capabilities(bindingGeneration),
+				...contextCapabilities(bindingGeneration),
 				...skills.map(({ capability }) => capability),
 			],
 			bindingGeneration,

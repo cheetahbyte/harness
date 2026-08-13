@@ -1775,6 +1775,75 @@ function episodeId(
 		}
 	});
 
+	test("discovers the context tools and pages an observation by argument", async () => {
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
+		const bodies: { messages: { content?: string; tool_call_id?: string }[] }[] =
+			[];
+		let calls = 0;
+		const provider = Bun.serve({
+			port: 0,
+			fetch: async (request) => {
+				const body = (await request.json()) as {
+					messages: { content?: string; tool_call_id?: string }[];
+				};
+				bodies.push(body);
+				calls++;
+				const chunks =
+					calls === 1
+						? toolCallChunks("call-search", "capabilities_search", {
+								query: "recall observation",
+							})
+						: calls === 2
+							? toolCallChunks("call-read", "read", { path: "note.txt" })
+							: calls === 3
+								? toolCallChunks("call-recall", "recall_observation", {
+										reference: observationReference(body, "call-read"),
+										offset: 5,
+										limit: 5,
+									})
+								: doneChunks();
+				return sseResponse(chunks);
+			},
+		});
+		try {
+			const { dir, server } = harnez();
+			writeFileSync(
+				join(dir, "note.txt"),
+				`0123456789ABCDE${"x".repeat(20_000)}`,
+			);
+			const id = server.createSession();
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			await server.command(id, { type: "prompt", text: "find a way to recall" });
+
+			expect(calls).toBe(4);
+			/**
+			 * The registry has to answer for the tools the model is already holding;
+			 * an empty result here is what sends it reading the session database by
+			 * hand instead of calling `recall_observation`.
+			 */
+			const found = bodies[1]?.messages.find(
+				(message) => message.tool_call_id === "call-search",
+			)?.content;
+			expect(found).toContain("tool:recall_observation");
+			expect(found).toContain("Pages with offset and limit");
+			expect(
+				bodies[3]?.messages.find(
+					(message) => message.tool_call_id === "call-recall",
+				)?.content,
+			).toBe(
+				"56789\n\n[showing characters 5-10 of 20015; continue with offset=10]",
+			);
+		} finally {
+			provider.stop(true);
+			delete process.env["HARNESS_OPENAI_API_KEY"];
+		}
+	});
+
 	test("pins context and recalls an exact archived observation slice", async () => {
 		process.env["HARNESS_OPENAI_API_KEY"] = "test";
 		const bodies: { messages: { role: string; content?: string; tool_call_id?: string }[] }[] =
@@ -1823,11 +1892,14 @@ function episodeId(
 				(message) => message.tool_call_id === "call-read",
 			)?.content?.length,
 		).toBeLessThanOrEqual(16_000);
+			/** A five-character window on a 20k observation has to say so. */
 			expect(
 			bodies[3]!.messages.find(
 				(message) => message.tool_call_id === "call-recall",
 			)?.content,
-		).toBe("ABCDE");
+		).toBe(
+			"ABCDE\n\n[showing characters 10-15 of 20015; continue with offset=15]",
+		);
 			expect(
 			server.store.contextItems(id).some(
 				(item) =>

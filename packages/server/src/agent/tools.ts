@@ -1,7 +1,13 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type Api, type Model, Type } from "@earendil-works/pi-ai";
 import type { TokenAccountant } from "../capabilities/context";
+import type { EffectClass, ToolCapabilityInput } from "../capabilities/types";
 import type { ContextManager } from "../context/manager";
+import {
+	MAX_OBSERVATION_RECALL_LIMIT,
+	parseObservationUri,
+} from "../context/recall";
+import type { ObservationRecall } from "../context/types";
 import { activateSkill, type SkillSnapshotEntry } from "../skills";
 import type { TaskRuntime } from "../task-runtime";
 import { tokenCost } from "../token-cost";
@@ -9,10 +15,40 @@ import { CoreTools } from "../tools";
 import { detailsRecord } from "./message";
 
 const RECALL_DESCRIPTION =
-	"Read an exact slice from an archived observation:// reference.";
+	"Read an exact slice from an archived observation:// reference. Pages with offset and limit; the reply states its range when it is partial.";
 const PIN_DESCRIPTION = "Keep a short instruction for the current task.";
 const EPISODE_DESCRIPTION =
 	"Start or end one semantic work episode. Actions depend on completed exploration IDs.";
+
+/**
+ * The context tools every turn carries, described once so the token estimate,
+ * the tool definitions, and the capability catalog cannot drift apart.
+ */
+const CONTEXT_TOOLS = [
+	{
+		name: "recall_observation",
+		description: RECALL_DESCRIPTION,
+		parameters: recallSchema(),
+		effect: "read_only",
+	},
+	{
+		name: "pin_context",
+		description: PIN_DESCRIPTION,
+		parameters: pinSchema(),
+		effect: "mutating",
+	},
+	{
+		name: "episode",
+		description: EPISODE_DESCRIPTION,
+		parameters: episodeSchema(),
+		effect: "mutating",
+	},
+] as const satisfies readonly {
+	name: string;
+	description: string;
+	parameters: unknown;
+	effect: EffectClass;
+}[];
 
 export const TOOL_OVERHEAD_TOKENS = tokenCost({
 	tools: [
@@ -23,23 +59,35 @@ export const TOOL_OVERHEAD_TOKENS = tokenCost({
 				description,
 				parameters,
 			})),
-		{
-			name: "recall_observation",
-			description: RECALL_DESCRIPTION,
-			parameters: recallSchema(),
-		},
-		{
-			name: "pin_context",
-			description: PIN_DESCRIPTION,
-			parameters: pinSchema(),
-		},
-		{
-			name: "episode",
-			description: EPISODE_DESCRIPTION,
-			parameters: episodeSchema(),
-		},
+		...CONTEXT_TOOLS.map(({ name, description, parameters }) => ({
+			name,
+			description,
+			parameters,
+		})),
 	],
 });
+
+/**
+ * Catalog entries for the context tools. They are always in the model's tool
+ * list, but discovery answers from the catalog alone: omitting them let a model
+ * inspect its own capabilities, conclude it had no way to reach an archived
+ * observation, and reach for the session database by hand instead.
+ */
+export function contextCapabilities(
+	bindingGeneration: string,
+): ToolCapabilityInput[] {
+	return CONTEXT_TOOLS.map((tool) => ({
+		kind: "tool",
+		id: `tool:${tool.name}`,
+		name: tool.name,
+		description: tool.description,
+		providerDisplayName: "Harnez context",
+		metadataTrust: "harnez",
+		providerBinding: { providerId: "harnez", bindingGeneration },
+		schema: tool.parameters,
+		effect: tool.effect,
+	}));
+}
 
 type AgentToolsOptions = {
 	sessionId: string;
@@ -150,7 +198,8 @@ function listCapabilitiesTool(task: TaskRuntime): AgentTool {
 	return {
 		name: "capabilities_list",
 		label: "list capabilities",
-		description: "List permitted capabilities with bounded pagination.",
+		description:
+			"List the registry of permitted workspace tools, context tools and skills, with bounded pagination. Discovery tools themselves are always present and are not registry entries.",
 		parameters: capabilityListSchema(),
 		execute: async (_id, input) => ({
 			content: [
@@ -167,7 +216,8 @@ function searchCapabilitiesTool(task: TaskRuntime): AgentTool {
 	return {
 		name: "capabilities_search",
 		label: "search capabilities",
-		description: "Search permitted capability metadata lexically.",
+		description:
+			"Search the same registry as capabilities_list lexically. An empty result means nothing in the registry matched, not that the tool is unavailable.",
 		parameters: capabilitySearchSchema(),
 		execute: async (_id, input) => {
 			const { query, ...options } = input as {
@@ -285,16 +335,34 @@ function recallTool(sessionId: string, context: ContextManager): AgentTool {
 		description: RECALL_DESCRIPTION,
 		parameters: recallSchema(),
 		execute: async (_id, input) => {
-			const result = context.recall(
-				sessionId,
-				(input as { reference: string }).reference,
-			);
+			const { reference, offset, limit } = input as {
+				reference: string;
+				offset?: number;
+				limit?: number;
+			};
+			/** Explicit arguments win over anything already in the URI's query. */
+			const result = context.recall(sessionId, {
+				...parseObservationUri(reference),
+				...(offset === undefined ? {} : { offset }),
+				...(limit === undefined ? {} : { limit }),
+			});
 			return {
-				content: [{ type: "text", text: result.text }],
+				content: [{ type: "text", text: `${result.text}${extent(result)}` }],
 				details: result,
 			};
 		},
 	};
+}
+
+/**
+ * A slice that stops short of the payload looks exactly like a complete read,
+ * so the range is stated whenever it is one. Recalls default to 16k characters
+ * and observations are routinely far larger than that.
+ */
+function extent({ text, offset, totalLength }: ObservationRecall): string {
+	const end = offset + text.length;
+	if (offset === 0 && end >= totalLength) return "";
+	return `\n\n[showing characters ${offset}-${end} of ${totalLength}${end < totalLength ? `; continue with offset=${end}` : ""}]`;
 }
 function pinTool(
 	sessionId: string,
@@ -353,7 +421,13 @@ function episodeTool(sessionId: string, context: ContextManager): AgentTool {
 	};
 }
 function recallSchema() {
-	return Type.Object({ reference: Type.String({ minLength: 1 }) });
+	return Type.Object({
+		reference: Type.String({ minLength: 1 }),
+		offset: Type.Optional(Type.Number({ minimum: 0 })),
+		limit: Type.Optional(
+			Type.Number({ minimum: 1, maximum: MAX_OBSERVATION_RECALL_LIMIT }),
+		),
+	});
 }
 function idSchema() {
 	return Type.Object({ id: Type.String({ minLength: 1 }) });
