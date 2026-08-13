@@ -40,6 +40,7 @@ export class SessionStore {
 	constructor(path = defaultDatabasePath()) {
 		mkdirSync(dirname(path), { recursive: true });
 		this.db = new Database(path, { create: true });
+		this.db.run("PRAGMA busy_timeout = 5000");
 		migrate(this.db);
 	}
 

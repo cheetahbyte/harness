@@ -110,11 +110,13 @@ export class HarnezAgentRuntime {
 					emit,
 					context: this.context,
 					shrink: () => this.shrink(sessionId, created),
+					inspect: () => this.inspect(sessionId),
 				}),
 			);
 			this.agents.set(sessionId, created);
 			entry = created;
 		}
+		entry.emit = emit;
 		const message: AgentMessage = {
 			role: "user",
 			content: [{ type: "text", text }],
@@ -203,7 +205,7 @@ export class HarnezAgentRuntime {
 		const managed = (): AgentMessage[] => {
 			try {
 				entry.contextError = undefined;
-				return this.messages(sessionId, model, task);
+				return this.messages(sessionId, model, task, entry.emit);
 			} catch (error) {
 				entry.contextError = asError(error);
 				return [];
@@ -257,6 +259,7 @@ export class HarnezAgentRuntime {
 		sessionId: string,
 		model: Model<Api>,
 		task?: TaskRuntime,
+		emit?: ((event: ServerEvent) => void) | undefined,
 	): AgentMessage[] {
 		return managedMessages({
 			sessionId,
@@ -265,6 +268,7 @@ export class HarnezAgentRuntime {
 			store: this.store,
 			context: this.context,
 			contextOptions: this.contextOptions.bind(this),
+			...(emit ? { emit } : {}),
 		});
 	}
 	private contextOptions(model: Model<Api>): {
@@ -297,6 +301,7 @@ export class HarnezAgentRuntime {
 				sessionId,
 				entry.agent.state.model,
 				entry.task,
+				entry.emit,
 			);
 		} catch (error) {
 			entry.contextError = asError(error);
@@ -403,5 +408,6 @@ function newAgentEntry(
 		active: [],
 		steering: undefined,
 		task,
+		emit: undefined,
 	};
 }

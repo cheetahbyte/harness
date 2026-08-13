@@ -92,6 +92,10 @@ export type SubagentResult = {
 export type ContextInspection = {
 	sessionId: string;
 	estimatedTokens: number;
+	/** Raw token cost of every recorded item, including archived and observations. */
+	historyTokens: number;
+	/** Externalized observations retrievable via `recall_observation`. */
+	parkedObservations: number;
 	budget?: number;
 	target?: number;
 	overheadTokens: number;

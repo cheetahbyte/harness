@@ -21,6 +21,7 @@ type TranscriptKind =
 	| "error"
 	| "status"
 	| "usage"
+	| "compaction"
 	| "completed"
 	| "aborted";
 export type TranscriptEntry = {
@@ -37,6 +38,15 @@ export type FollowUp = {
 	text: string;
 	sending: boolean;
 	blocked?: boolean;
+};
+/**
+ * Leverage readout: how much recorded history the session commands
+ * (`historyTokens`) against what it costs to carry it (`liveTokens`).
+ */
+export type ContextStatus = {
+	liveTokens: number;
+	historyTokens: number;
+	parkedObservations: number;
 };
 export type WizardState =
 	| { kind: "idle" }
@@ -268,6 +278,33 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 						kind: "usage",
 						text: `in ${event.input} · out ${event.output} · total ${event.totalTokens}`,
 					});
+				if (event.type === "context-status")
+					return set({
+						contextStatus: {
+							liveTokens: event.liveTokens,
+							historyTokens: event.historyTokens,
+							parkedObservations: event.parkedObservations,
+						},
+					});
+				if (event.type === "context-compaction")
+					return append({
+						kind: "compaction",
+						text: `retired ${event.evictedCount} ${event.evictedCount === 1 ? "item" : "items"}${
+							event.episodesArchived
+								? ` and ${event.episodesArchived} ${event.episodesArchived === 1 ? "episode" : "episodes"}`
+								: ""
+						} · ${formatTokens(event.tokensBefore)} ↦ ${formatTokens(event.tokensAfter)} · all recallable`,
+					});
+				if (event.type === "context-budget-error") {
+					set({ running: false });
+					return append({
+						kind: "error",
+						error: true,
+						text: `Context budget exceeded: protected content alone needs ${formatTokens(
+							event.estimatedTokens,
+						)} but the budget is ${formatTokens(event.budget)}. Raise HARNEZ_CONTEXT_BUDGET or start a new session.`,
+					});
+				}
 				if (event.type === "completed") {
 					set({ running: false });
 					if (event.durationMs !== undefined)
@@ -335,6 +372,7 @@ export type TuiState = {
 	modelConfig?: ModelConfig;
 	fastCycle: FastCycleEntry[];
 	disableThinkingBlocks: boolean;
+	contextStatus?: ContextStatus;
 	wizard: WizardState;
 	apply: (event: ServerEvent) => void;
 	addUser: (text: string) => void;
@@ -367,6 +405,12 @@ function formatDuration(durationMs: number): string {
 	const seconds = Math.round(durationMs / 1000);
 	const minutes = Math.floor(seconds / 60);
 	return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+}
+
+export function formatTokens(tokens: number): string {
+	if (tokens < 1000) return String(tokens);
+	const thousands = tokens / 1000;
+	return `${thousands < 10 ? thousands.toFixed(1).replace(/\.0$/, "") : Math.round(thousands)}k`;
 }
 
 export function commandForInput(text: string): ClientCommand {

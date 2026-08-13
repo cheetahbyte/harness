@@ -51,6 +51,44 @@ const schemaTables = [
 ];
 
 describe("session schema migrations", () => {
+	test("waits for a concurrent writer instead of dropping context", async () => {
+		const path = databasePath();
+		const store = new SessionStore(path);
+		const sessionId = store.create();
+		const holder = Bun.spawn(
+			[
+				"bun",
+				"-e",
+				`import { Database } from "bun:sqlite";
+const db = new Database(process.argv[1]);
+db.run("BEGIN IMMEDIATE");
+console.log("locked");
+await Bun.sleep(250);
+db.run("COMMIT");`,
+				path,
+			],
+			{ stdout: "pipe" },
+		);
+		const lock = await holder.stdout.getReader().read();
+		expect(new TextDecoder().decode(lock.value)).toContain("locked");
+
+		expect(() =>
+			store.appendContextItem({
+				id: "context-1",
+				sessionId,
+				kind: "assistant",
+				payload: { role: "assistant", content: "keep me" },
+				tokenCost: 2,
+				lifecycle: "active",
+				projection: "full",
+				reason: "agent message",
+				createdAt: "2026-08-13T00:00:00.000Z",
+			}),
+		).not.toThrow();
+		expect(await holder.exited).toBe(0);
+		store.db.close();
+	});
+
 	test("creates the latest schema for a fresh database", () => {
 		const store = new SessionStore(databasePath());
 

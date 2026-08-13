@@ -160,6 +160,7 @@ function formatEntry(
 			error: "error: ",
 			status: "[",
 			usage: "usage: ",
+			compaction: "⋯ ",
 			completed: "",
 			aborted: "[",
 		} as const
@@ -226,6 +227,7 @@ function entryColor(entry: TranscriptEntry): string {
 	if (entry.error || entry.kind === "error") return "#f38ba8";
 	if (entry.kind === "reasoning") return "#a6adc8";
 	if (entry.kind === "completed") return "#8b8d98";
+	if (entry.kind === "compaction") return "#6c7086";
 	if (entry.kind.startsWith("tool")) return ACCENT;
 	return "#cdd6f4";
 }

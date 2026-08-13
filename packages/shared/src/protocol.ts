@@ -103,6 +103,22 @@ export type ServerEvent =
 			totalTokens: number;
 	  }
 	| {
+			type: "context-status";
+			liveTokens: number;
+			historyTokens: number;
+			parkedObservations: number;
+			budget: number;
+			target: number;
+	  }
+	| {
+			type: "context-compaction";
+			evictedCount: number;
+			tokensBefore: number;
+			tokensAfter: number;
+			episodesArchived: number;
+	  }
+	| { type: "context-budget-error"; estimatedTokens: number; budget: number }
+	| {
 			type: "command";
 			id: string;
 			command: "steer" | "follow-up" | "supersede";
