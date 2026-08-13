@@ -21,6 +21,16 @@ export type PromptScan = {
 
 const SUMMARY_LIMIT = 120;
 
+/** Narrow a caught value to a Node.js error that carries a `code` property. */
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		typeof (error as NodeJS.ErrnoException).code === "string"
+	);
+}
+
 /** `.harness` is the pre-rename spelling, still read so older checkouts keep working. */
 function promptRoots(workspace: string, home = homedir()): string[] {
 	return [
@@ -51,7 +61,7 @@ export async function scanPrompts(
 		} catch (error) {
 			// An absent root is the normal case — few checkouts define all six.
 			// Anything else (permissions, I/O) is reported and the scan goes on.
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+			if (!isErrnoException(error) || error.code !== "ENOENT")
 				result.diagnostics.push({
 					path: root,
 					state: "unreadable",
