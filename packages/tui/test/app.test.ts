@@ -909,16 +909,23 @@ describe("OpenTUI app", () => {
 						id: "gpt-5.6-sol",
 						name: "GPT-5.6 Sol",
 					},
+					{
+						provider: "ollama",
+						providerName: "ollama",
+						id: "qwen3-coder:30b",
+						name: "qwen3-coder:30b",
+					},
 				],
 			});
 			await view.flush();
 			expect(view.captureCharFrame()).toContain("GPT-5.6 Sol · OpenAI Codex");
+			view.mockInput.pressArrow("down");
 			view.mockInput.pressEnter();
 			await view.flush();
 			expect(sent.at(-1)).toEqual({
 				type: "configure",
-				provider: "openai-codex",
-				model: "gpt-5.6-sol",
+				provider: "ollama",
+				model: "qwen3-coder:30b",
 			});
 			await view.mockInput.typeText("/login ");
 			view.mockInput.pressEnter();

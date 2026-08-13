@@ -14,6 +14,7 @@ import sessions from "./sessions.md?raw";
 import skills from "./skills.md?raw";
 import taskRuntime from "./task-runtime.md?raw";
 import toolDiscovery from "./tool-discovery.md?raw";
+import unknownProviders from "./unknown-providers.md?raw";
 
 export interface DocPage {
 	slug: string;
@@ -98,6 +99,14 @@ export const docPages: DocPage[] = [
 			"Create and resume durable sessions, configure local or model-generated titles, and understand workspace and SQLite persistence.",
 		section: "Advanced",
 		source: sessions,
+	},
+	{
+		slug: getFrontmatterSlug(unknownProviders),
+		title: "Add an unknown provider",
+		description:
+			"Connect Harnez to a self-hosted or third-party OpenAI-compatible endpoint, authenticate it, and select its models.",
+		section: "Advanced",
+		source: unknownProviders,
 	},
 	{
 		slug: getFrontmatterSlug(promptTemplates),

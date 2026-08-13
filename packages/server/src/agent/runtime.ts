@@ -50,20 +50,20 @@ const DEFAULT_CONTEXT_BUDGET = 80_000;
 export class HarnezAgentRuntime {
 	private readonly agents = new Map<string, AgentEntry>();
 	private readonly credentials: CredentialStore;
-	private readonly models: Models;
+	private readonly modelsFor: (sessionId: string) => Models;
 	private readonly store: SessionStore;
 	private readonly context: ContextManager;
 	private readonly contextBudget: number;
 
 	constructor(options: {
 		credentials: CredentialStore;
-		models: Models;
+		modelsFor: (sessionId: string) => Models;
 		store: SessionStore;
 		context: ContextManager;
 		contextBudget?: number;
 	}) {
 		this.credentials = options.credentials;
-		this.models = options.models;
+		this.modelsFor = options.modelsFor;
 		this.store = options.store;
 		this.context = options.context;
 		this.contextBudget = options.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
@@ -90,7 +90,7 @@ export class HarnezAgentRuntime {
 			const { models, model } = providerModels(
 				config,
 				this.credentials,
-				this.models,
+				this.modelsFor(sessionId),
 			);
 			const created = this.createAgent({
 				sessionId,

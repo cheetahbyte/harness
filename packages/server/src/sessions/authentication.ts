@@ -37,6 +37,7 @@ export type ModelRegistry = {
 
 type Login = {
 	provider: string;
+	models: ModelRegistry;
 	controller: AbortController;
 	prompt?: {
 		id: string;
@@ -49,7 +50,7 @@ export class SessionAuthentication {
 	private readonly logins = new Map<string, Login>();
 
 	constructor(
-		private readonly models: ModelRegistry,
+		private readonly modelsFor: (sessionId: string) => ModelRegistry,
 		private readonly publish: (sessionId: string, event: ServerEvent) => void,
 	) {}
 
@@ -61,7 +62,8 @@ export class SessionAuthentication {
 			});
 			return;
 		}
-		const provider = this.models.getProvider(providerId);
+		const models = this.modelsFor(id);
+		const provider = models.getProvider(providerId);
 		if (!provider) {
 			this.publish(id, {
 				type: "error",
@@ -78,6 +80,7 @@ export class SessionAuthentication {
 		}
 		const login: Login = {
 			provider: providerId,
+			models,
 			controller: new AbortController(),
 		};
 		this.logins.set(id, login);
@@ -107,7 +110,7 @@ export class SessionAuthentication {
 		authType: AuthType,
 	): Promise<void> {
 		try {
-			await this.models.login(login.provider, authType, {
+			await login.models.login(login.provider, authType, {
 				signal: login.controller.signal,
 				prompt: (prompt) => this.prompt(id, login, prompt),
 				notify: (event) =>
@@ -118,7 +121,7 @@ export class SessionAuthentication {
 			});
 			if (login.controller.signal.aborted || this.logins.get(id) !== login)
 				return;
-			await this.models.refresh({ providers: [login.provider] });
+			await login.models.refresh({ providers: [login.provider] });
 			if (this.logins.get(id) === login)
 				this.publish(id, { type: "auth-completed", provider: login.provider });
 		} catch (error) {
