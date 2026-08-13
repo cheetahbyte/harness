@@ -1,4 +1,3 @@
-import { homedir } from "node:os";
 import {
 	BoxRenderable,
 	type CliRenderer,
@@ -10,15 +9,14 @@ import {
 import { formatTokens, formatUsd, type TuiState } from "../store";
 import { ModelView } from "./model";
 
-/** Blank columns the row's `gap` puts around the middle segment. */
-const SEGMENT_GAPS = 4;
+/** Blank columns the row's gap puts between model and metrics. */
+const SEGMENT_GAP = 2;
 const TEXT = "#cdd6f4";
 const DIM = "#6c7086";
 
 export class FooterView {
 	readonly root: BoxRenderable;
 	private readonly modelLabel: ModelView;
-	private readonly pwdLabel: TextRenderable;
 	private readonly leverageLabel: TextRenderable;
 
 	constructor(renderer: CliRenderer) {
@@ -28,10 +26,6 @@ export class FooterView {
 			gap: 2,
 		});
 		this.modelLabel = new ModelView(renderer);
-		this.pwdLabel = new TextRenderable(renderer, {
-			content: "",
-			fg: TEXT,
-		});
 		/**
 		 * Hidden rather than blanked when there is nothing to say: an empty
 		 * renderable still claims the row's `gap`, which would leave the path and
@@ -41,16 +35,13 @@ export class FooterView {
 			content: "",
 			visible: false,
 		});
-		this.root.add(this.pwdLabel);
-		this.root.add(this.leverageLabel);
 		this.root.add(this.modelLabel.box);
+		this.root.add(this.leverageLabel);
 	}
 
 	update(state: TuiState) {
 		this.modelLabel.update(state);
-		const pwd = shortenPath(state.pwd);
-		this.pwdLabel.content = pwd;
-		this.fitLeverage(state, pwd.length);
+		this.fitLeverage(state);
 	}
 
 	/**
@@ -59,7 +50,7 @@ export class FooterView {
 	 * since the leverage figure is ambient information — never worth corrupting
 	 * the working directory or the active model to keep.
 	 */
-	private fitLeverage(state: TuiState, pwdWidth: number) {
+	private fitLeverage(state: TuiState) {
 		const variants = leverageVariants(state);
 		/**
 		 * Measured against the terminal rather than the row's own width, which is
@@ -69,9 +60,8 @@ export class FooterView {
 		const available =
 			this.root.ctx.width -
 			2 * this.root.x -
-			pwdWidth -
 			this.modelLabel.width -
-			SEGMENT_GAPS;
+			SEGMENT_GAP;
 		const fitting = variants.find((variant) => width(variant) <= available);
 		this.leverageLabel.visible = fitting !== undefined;
 		if (fitting) this.leverageLabel.content = new StyledText(fitting);
@@ -114,13 +104,4 @@ function leverageVariants(state: TuiState): TextChunk[][] {
 
 function width(chunks: TextChunk[]) {
 	return chunks.reduce((total, chunk) => total + chunk.text.length, 0);
-}
-
-function shortenPath(path: string) {
-	const home = homedir();
-	return path === home
-		? "~"
-		: path.startsWith(`${home}/`)
-			? `~${path.slice(home.length)}`
-			: path;
 }

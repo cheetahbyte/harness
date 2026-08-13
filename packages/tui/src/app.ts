@@ -147,7 +147,7 @@ export class TuiApp {
 		});
 		this.wizard = new WizardView(renderer);
 		this.footer = new FooterView(renderer);
-		this.root.add(this.header.root);
+		this.transcript.root.add(this.header.root);
 		this.root.add(this.transcript.root);
 		this.root.add(this.composer.root);
 		this.root.add(this.wizard.root);

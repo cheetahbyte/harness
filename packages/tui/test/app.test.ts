@@ -39,8 +39,12 @@ describe("OpenTUI app", () => {
 		const app = new TuiApp(view.renderer, store, async () => {});
 		try {
 			await view.flush();
-			expect(view.captureCharFrame()).toContain("gpt-5.6-sol (openai-codex)");
-			expect(view.captureCharFrame()).toContain("~/project");
+			const frame = view.captureCharFrame();
+			expect(frame).toContain("gpt-5.6-sol (openai-codex)");
+			expect(frame.split("\n").find((line) => line.includes("Harnez"))).toContain(
+				"~/project",
+			);
+			expect(footerLine(frame)).not.toContain("~/project");
 			expect(view.captureCharFrame()).toContain("Read 1 file");
 			expect(view.captureCharFrame()).toContain(
 				`╰ hello ${"x".repeat(44)}...`,
@@ -135,6 +139,7 @@ describe("OpenTUI app", () => {
 		const app = new TuiApp(view.renderer, store, async () => {});
 		try {
 			await view.flush();
+			expect(view.captureCharFrame()).not.toContain("Harnez  session-1");
 			const transcript = (
 				app as unknown as {
 					transcript: { root: { scrollHeight: number; height: number } };
@@ -289,8 +294,9 @@ describe("OpenTUI app", () => {
 		const app = new TuiApp(view.renderer, store, async () => {});
 		try {
 			await view.flush();
-			expect(view.captureCharFrame()).toContain("≡ 120k ↦ 26k");
-			expect(view.captureCharFrame()).toContain("Σ 0.0042$");
+			const wide = footerLine(view.captureCharFrame());
+			expect(wide.indexOf("opus-5")).toBeLessThan(wide.indexOf("≡ 120k"));
+			expect(wide.indexOf("≡ 120k")).toBeLessThan(wide.indexOf("Σ 0.0042$"));
 			view.resize(46, 20);
 			await view.flush();
 			const narrow = footerLine(view.captureCharFrame());

@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { BoxRenderable, type CliRenderer, TextRenderable } from "@opentui/core";
 import type { TuiState } from "../store";
 
@@ -35,7 +36,7 @@ export class HeaderView {
 	}
 
 	update(state: TuiState) {
-		this.labelText = `Harnez  ${state.sessionId}    ${state.running ? "running" : "idle"}`;
+		this.labelText = `Harnez  ${state.sessionId}    ${state.running ? "running" : "idle"}    ${shortenPath(state.pwd)}`;
 		this.label.content = this.labelText;
 		this.fitNotice();
 	}
@@ -57,4 +58,13 @@ export class HeaderView {
 					? text.short
 					: "";
 	}
+}
+
+function shortenPath(path: string) {
+	const home = homedir();
+	return path === home
+		? "~"
+		: path.startsWith(`${home}/`)
+			? `~${path.slice(home.length)}`
+			: path;
 }
