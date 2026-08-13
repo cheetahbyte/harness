@@ -43,7 +43,7 @@ export type FollowUp = {
  * Leverage readout: how much recorded history the session commands
  * (`historyTokens`) against what it costs to carry it (`liveTokens`).
  */
-export type ContextStatus = {
+type ContextStatus = {
 	liveTokens: number;
 	historyTokens: number;
 	parkedObservations: number;
@@ -407,7 +407,7 @@ function formatDuration(durationMs: number): string {
 	return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
 }
 
-export function formatTokens(tokens: number): string {
+function formatTokens(tokens: number): string {
 	if (tokens < 1000) return String(tokens);
 	const thousands = tokens / 1000;
 	return `${thousands < 10 ? thousands.toFixed(1).replace(/\.0$/, "") : Math.round(thousands)}k`;
