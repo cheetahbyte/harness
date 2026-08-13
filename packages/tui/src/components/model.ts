@@ -1,5 +1,6 @@
 import { BoxRenderable, type CliRenderer, TextRenderable } from "@opentui/core";
 import type { TuiState } from "../store";
+import { DIM, TEXT } from "./theme";
 
 export class ModelView {
 	readonly box: BoxRenderable;
@@ -11,8 +12,8 @@ export class ModelView {
 		this.box = new BoxRenderable(renderer, {
 			flexDirection: "row",
 		});
-		this.modelNameLabel = new TextRenderable(renderer, { fg: "#cdd6f4" });
-		this.modelProviderLabel = new TextRenderable(renderer, { fg: "#6c7086" });
+		this.modelNameLabel = new TextRenderable(renderer, { fg: TEXT });
+		this.modelProviderLabel = new TextRenderable(renderer, { fg: DIM });
 		this.box.add(this.modelNameLabel);
 		this.box.add(this.modelProviderLabel);
 	}

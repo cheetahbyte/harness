@@ -9,8 +9,7 @@ import {
 	SelectRenderableEvents,
 	TextRenderable,
 } from "@opentui/core";
-
-const ACCENT = "#89b4fa";
+import { ACCENT, CYAN, DIM, TEXT } from "./theme";
 
 export type WizardScreen =
 	| {
@@ -81,11 +80,11 @@ export class WizardView {
 			visible: false,
 		});
 		this.title = new TextRenderable(renderer, {
-			fg: "#89dceb",
+			fg: CYAN,
 			marginBottom: 1,
 		});
 		this.message = new TextRenderable(renderer, {
-			fg: "#cdd6f4",
+			fg: TEXT,
 			marginBottom: 1,
 			visible: false,
 		});
@@ -99,8 +98,8 @@ export class WizardView {
 		this.input = new InputRenderable(renderer, {
 			width: "100%",
 			placeholder: "",
-			textColor: "#cdd6f4",
-			focusedTextColor: "#cdd6f4",
+			textColor: TEXT,
+			focusedTextColor: TEXT,
 			backgroundColor: "transparent",
 			focusedBackgroundColor: "transparent",
 		});
@@ -109,7 +108,7 @@ export class WizardView {
 			left: 0,
 			top: 0,
 			zIndex: 1,
-			fg: "#cdd6f4",
+			fg: TEXT,
 			visible: false,
 		});
 		this.inputRow.add(this.input);
@@ -120,10 +119,10 @@ export class WizardView {
 			backgroundColor: "transparent",
 			focusedBackgroundColor: "transparent",
 			selectedBackgroundColor: "transparent",
-			textColor: "#cdd6f4",
-			focusedTextColor: "#cdd6f4",
-			selectedTextColor: "#89dceb",
-			descriptionColor: "#6c7086",
+			textColor: TEXT,
+			focusedTextColor: TEXT,
+			selectedTextColor: CYAN,
+			descriptionColor: DIM,
 			selectedDescriptionColor: ACCENT,
 			showScrollIndicator: true,
 			visible: false,
@@ -152,7 +151,7 @@ export class WizardView {
 		});
 		this.footer = new TextRenderable(renderer, {
 			content: "↑↓ navigate  ·  Enter select  ·  Esc cancel",
-			fg: "#6c7086",
+			fg: DIM,
 			marginTop: 1,
 		});
 		this.root.add(this.title);
@@ -367,16 +366,16 @@ export class WizardView {
 			row.root.visible = !!option;
 			if (!option) continue;
 			row.indicator.content = selected ? "▶ " : "  ";
-			row.indicator.fg = selected ? "#89dceb" : "#cdd6f4";
+			row.indicator.fg = selected ? CYAN : TEXT;
 			row.name.content =
 				this.screen?.kind === "multiselect"
 					? `${this.checked.has(String(option.value)) ? "[x]" : "[ ]"} ${option.name}`
 					: option.name;
-			row.name.fg = selected ? "#89dceb" : "#cdd6f4";
+			row.name.fg = selected ? CYAN : TEXT;
 			row.description.content = option.description
 				? ` · ${option.description}`
 				: "";
-			row.description.fg = selected ? ACCENT : "#6c7086";
+			row.description.fg = selected ? ACCENT : DIM;
 		}
 	}
 }

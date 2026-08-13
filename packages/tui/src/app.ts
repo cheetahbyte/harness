@@ -239,6 +239,8 @@ export class TuiApp {
 		this.transcript.setDisableThinkingBlocks(state.disableThinkingBlocks);
 		this.transcript.update(state.entries);
 		this.composer.update(state.followUps);
+		this.composer.setRunning(state.running);
+		this.composer.setThinkingLevel(state.modelConfig?.thinkingLevel);
 		/**
 		 * One row per name, in the order a leading `/name` resolves: a built-in
 		 * command shadows a prompt template, which shadows a skill.

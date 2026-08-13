@@ -8,12 +8,10 @@ import {
 } from "@opentui/core";
 import { formatTokens, formatUsd, type TuiState } from "../store";
 import { ModelView } from "./model";
+import { DIM, TEXT } from "./theme";
 
 /** Blank columns the row's gap puts between model and metrics. */
 const SEGMENT_GAP = 2;
-const TEXT = "#cdd6f4";
-const DIM = "#6c7086";
-
 export class FooterView {
 	readonly root: BoxRenderable;
 	private readonly modelLabel: ModelView;

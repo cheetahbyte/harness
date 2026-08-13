@@ -13,8 +13,16 @@ import {
 	slashCommandPattern,
 } from "../../../shared/src/slash-command";
 import type { TranscriptEntry } from "../store";
+import {
+	ACCENT,
+	DIM,
+	ERROR,
+	TEXT,
+	USER_BACKGROUND,
+	USER_TEXT,
+	WARNING,
+} from "./theme";
 
-const ACCENT = "#89b4fa";
 type DisplayEntry =
 	| TranscriptEntry
 	| { kind: "tool-group"; tools: TranscriptEntry[] };
@@ -78,11 +86,13 @@ export class TranscriptView {
 					: formatEntry(entry, this.skillNames, this.promptNames),
 				fg: toolCall ? ACCENT : entryColor(entry),
 				flexGrow: 1,
+				...(entry.kind === "user" ? { marginTop: 1, marginBottom: 1 } : {}),
 			});
 			const row = new BoxRenderable(this.renderer, {
 				width: "100%",
 				marginBottom: 1,
 				flexDirection: toolCall ? "column" : "row",
+				...(entry.kind === "user" ? { backgroundColor: USER_BACKGROUND } : {}),
 			});
 			const detail = toolCall
 				? new TextRenderable(this.renderer, {
@@ -93,8 +103,9 @@ export class TranscriptView {
 			const gutter =
 				entry.kind === "user"
 					? new TextRenderable(this.renderer, {
-							content: "▎",
-							fg: entry.pending ? "#6c7086" : ACCENT,
+							content: "▌\n▌\n▌",
+							width: 1,
+							fg: entry.pending ? DIM : ACCENT,
 							marginRight: 1,
 						})
 					: undefined;
@@ -125,10 +136,12 @@ export class TranscriptView {
 				? formatToolTitle(entry.tools)
 				: formatEntry(entry, this.skillNames, this.promptNames);
 			rendered.text.fg = toolCall ? ACCENT : entryColor(entry);
+			rendered.row.backgroundColor =
+				entry.kind === "user" ? USER_BACKGROUND : undefined;
 			if (rendered.detail && toolCall)
 				rendered.detail.content = formatToolDetails(entry.tools);
 			if (rendered.gutter && entry.kind === "user")
-				rendered.gutter.fg = entry.pending ? "#6c7086" : ACCENT;
+				rendered.gutter.fg = entry.pending ? DIM : ACCENT;
 		});
 	}
 }
@@ -194,7 +207,7 @@ function formatToolTitle(entries: TranscriptEntry[]) {
 		[...counts].flatMap(([name, count], index) => {
 			const [verb, noun] = toolSummary(name, count);
 			const label = index ? verb : `${verb[0]?.toUpperCase()}${verb.slice(1)}`;
-			return t`${index ? ", " : ""}${fg(ACCENT)(label)} ${bold(fg("#f9e2af")(String(count)))} ${fg("#cdd6f4")(noun)}`
+			return t`${index ? ", " : ""}${fg(ACCENT)(label)} ${bold(fg(WARNING)(String(count)))} ${fg(TEXT)(noun)}`
 				.chunks;
 		}),
 	);
@@ -207,7 +220,7 @@ function formatToolDetails(entries: TranscriptEntry[]) {
 		details.flatMap((entry, index) => {
 			const output = entry.detail?.replace(/\s+/g, " ").trim() ?? "";
 			const preview = output.length > 50 ? `${output.slice(0, 50)}...` : output;
-			return t`${fg(entry.error ? "#f38ba8" : "#a6adc8")(`${index ? "\n" : ""}╰ ${preview}`)}`
+			return t`${fg(entry.error ? ERROR : DIM)(`${index ? "\n" : ""}╰ ${preview}`)}`
 				.chunks;
 		}),
 	);
@@ -223,11 +236,12 @@ function toolSummary(name: string, count: number): [string, string] {
 	}[name] ?? ["used", `${name}${plural}`]) as [string, string];
 }
 
-function entryColor(entry: TranscriptEntry): string {
-	if (entry.error || entry.kind === "error") return "#f38ba8";
-	if (entry.kind === "reasoning") return "#a6adc8";
-	if (entry.kind === "completed") return "#8b8d98";
-	if (entry.kind === "compaction") return "#6c7086";
+function entryColor(entry: TranscriptEntry) {
+	if (entry.error || entry.kind === "error") return ERROR;
+	if (entry.kind === "user") return USER_TEXT;
+	if (entry.kind === "reasoning") return DIM;
+	if (entry.kind === "completed") return DIM;
+	if (entry.kind === "compaction") return DIM;
 	if (entry.kind.startsWith("tool")) return ACCENT;
-	return "#cdd6f4";
+	return TEXT;
 }
