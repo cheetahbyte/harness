@@ -307,6 +307,11 @@ export class SessionTaskRunner {
 			scanPrompts(workspace),
 		]);
 		const skills = [...scanned.discoverable, ...scanned.operatorOnly];
+		for (const diagnostic of scanned.diagnostics)
+			log.warn(
+				{ sessionId: id, path: diagnostic.path, error: diagnostic.error },
+				"skill ignored",
+			);
 		/** A template expands before skills are selected, so it can invoke them. */
 		const { text: expanded, template } = expandPrompt(text, prompts.templates);
 		if (template)

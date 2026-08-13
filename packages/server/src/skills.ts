@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -27,7 +28,7 @@ export type SkillSnapshotEntry = {
 };
 type SkillDiagnostic = {
 	path: string;
-	state: "invalid";
+	state: "invalid" | "unreadable";
 	error: string;
 };
 export type SkillScan = {
@@ -61,9 +62,20 @@ export async function scanSkills(
 	};
 	const seen = new Set<string>();
 	for (const root of skillRoots(workspace, home)) {
-		const directories = await readdir(root, { withFileTypes: true }).catch(
-			() => [],
-		);
+		let directories: Dirent[];
+		try {
+			directories = await readdir(root, { withFileTypes: true });
+		} catch (error) {
+			// An absent root is the normal case — few checkouts define all six.
+			// Anything else (permissions, I/O) is reported and the scan goes on.
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+				result.diagnostics.push({
+					path: root,
+					state: "unreadable",
+					error: error instanceof Error ? error.message : String(error),
+				});
+			continue;
+		}
 		for (const directory of directories
 			.filter((entry) => entry.isDirectory())
 			.sort((a, b) => a.name.localeCompare(b.name))) {

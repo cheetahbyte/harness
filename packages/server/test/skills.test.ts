@@ -62,6 +62,24 @@ test("accepts name or id and honors disable-model-invocation", async () => {
 	);
 });
 
+test("reports unreadable roots and keeps scanning the rest", async () => {
+	const project = mkdtempSync(join(tmpdir(), "harnez-project-"));
+	const home = mkdtempSync(join(tmpdir(), "harnez-home-"));
+	paths.push(project, home);
+	mkdirSync(join(project, ".harnez"), { recursive: true });
+	writeFileSync(join(project, ".harnez/skills"), "not a directory");
+	skill(join(home, ".harnez/skills"), "review", "Review carefully.");
+
+	const scanned = await scanSkills(project, home, "catalog-1");
+
+	expect(scanned.discoverable.map((entry) => entry.ref.id)).toEqual([
+		"skill:review",
+	]);
+	expect(scanned.diagnostics.map(({ path, state }) => ({ path, state }))).toEqual(
+		[{ path: join(project, ".harnez/skills"), state: "unreadable" }],
+	);
+});
+
 test("activates from one verified buffer and rejects edited skills", async () => {
 	const project = mkdtempSync(join(tmpdir(), "harnez-project-"));
 	const home = mkdtempSync(join(tmpdir(), "harnez-home-"));
