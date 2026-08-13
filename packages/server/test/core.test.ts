@@ -1743,6 +1743,15 @@ function episodeId(
 			});
 
 			expect(calls).toBe(3);
+			const status = restarted.store
+				.events(id)
+				.findLast((event) => event.type === "context-status");
+			expect(status).toMatchObject({ type: "context-status", budget: 1_500 });
+			if (status?.type === "context-status") {
+				/** The externalized read output is history the prompt no longer pays for. */
+				expect(status.historyTokens).toBeGreaterThan(status.liveTokens);
+				expect(status.parkedObservations).toBeGreaterThan(0);
+			}
 			expect(JSON.stringify(bodies[2])).not.toContain(output);
 			expect(JSON.stringify(bodies[2])).not.toContain(
 				"Earlier read output was compacted",
@@ -1954,12 +1963,13 @@ function episodeId(
 				server.store.contextItems(id).filter((item) => item.kind === "user"),
 			).toHaveLength(0);
 			expect(
-				server.store.events(id).some(
-					(event) =>
-						event.type === "error" &&
-						event.message.includes("Context budget cannot be satisfied"),
-				),
-			).toBe(true);
+				server.store
+					.events(id)
+					.find((event) => event.type === "context-budget-error"),
+			).toMatchObject({ type: "context-budget-error", budget: 500 });
+			expect(
+				server.store.events(id).some((event) => event.type === "error"),
+			).toBe(false);
 		} finally {
 			provider.stop(true);
 			delete process.env["HARNESS_OPENAI_API_KEY"];
@@ -2003,6 +2013,14 @@ function episodeId(
 					.contextItems(id)
 					.filter((item) => item.kind === "user" && item.lifecycle === "pinned"),
 			).toHaveLength(5);
+			const compaction = server.store
+				.events(id)
+				.find((event) => event.type === "context-compaction");
+			expect(compaction).toMatchObject({ type: "context-compaction" });
+			if (compaction?.type === "context-compaction") {
+				expect(compaction.evictedCount).toBeGreaterThan(0);
+				expect(compaction.tokensAfter).toBeLessThan(compaction.tokensBefore);
+			}
 		} finally {
 			provider.stop(true);
 			delete process.env["HARNESS_OPENAI_API_KEY"];

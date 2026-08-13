@@ -125,7 +125,12 @@ export class HarnezAgentRuntime {
 		entry.promptGroupId = crypto.randomUUID();
 		recordAgentMessage({ sessionId, entry, message, context: this.context });
 		try {
-			this.messages(sessionId, entry.agent.state.model, entry.task);
+			/**
+			 * The first assembly of a turn is usually the one that crosses the
+			 * budget, so it has to carry the emitter too — otherwise the cleanup it
+			 * performs is silent and every later assembly finds nothing to report.
+			 */
+			this.messages(sessionId, entry.agent.state.model, entry.task, emit);
 		} catch (error) {
 			this.context.completeGroup(sessionId, entry.promptGroupId);
 			entry.promptGroupId = undefined;

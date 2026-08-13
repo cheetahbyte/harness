@@ -298,8 +298,13 @@ export class TuiApp {
 
 	private updateLayout = () => {
 		const compact = this.root.ctx.height < 9;
-		/** A narrower terminal may no longer have room for the header's notice. */
-		this.header.update(this.store.getState());
+		/**
+		 * A narrower terminal may no longer have room for the header's notice or
+		 * the footer's leverage readout; both pick their form from the width.
+		 */
+		const state = this.store.getState();
+		this.header.update(state);
+		this.footer.update(state);
 		this.header.root.visible = !compact;
 		this.footer.root.visible = !compact;
 		this.composer.setCompact(compact);

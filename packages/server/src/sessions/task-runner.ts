@@ -10,6 +10,7 @@ import {
 	type TokenAccountant,
 } from "../capabilities/context";
 import type { ContextManager } from "../context/manager";
+import { ContextBudgetError } from "../context/types";
 import { log } from "../logger";
 import { expandPrompt, scanPrompts } from "../prompts";
 import { activateSkill, type SkillSnapshotEntry, scanSkills } from "../skills";
@@ -206,7 +207,22 @@ export class SessionTaskRunner {
 	): Promise<void> {
 		log.error({ err: error, sessionId: id }, "run failed");
 		const message = error instanceof Error ? error.message : String(error);
-		this.options.emit(id, { type: "error", message });
+		/**
+		 * The budget cliff is the one failure the user can act on, and it is the
+		 * only place compaction cannot help: protected content alone overflows.
+		 * It gets its own event so clients can say that instead of showing it as
+		 * an indistinguishable provider error.
+		 */
+		this.options.emit(
+			id,
+			error instanceof ContextBudgetError
+				? {
+						type: "context-budget-error",
+						estimatedTokens: error.estimatedTokens,
+						budget: error.budget,
+					}
+				: { type: "error", message },
+		);
 		const terminalMessageIds = this.terminalMessages(id, running);
 		if (!running.task.result())
 			running.task.finish({

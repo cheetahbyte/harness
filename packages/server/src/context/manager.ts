@@ -423,6 +423,7 @@ export class ContextManager {
 		estimatedTokens: number;
 		evictedIds: string[];
 		tokensBefore: number;
+		tokensAfter: number;
 		episodesArchived: number;
 	} {
 		let state = this.assemblyState(sessionId, options.overheadTokens);
@@ -450,6 +451,7 @@ export class ContextManager {
 			estimatedTokens: state.estimatedTokens,
 			evictedIds,
 			tokensBefore,
+			tokensAfter: state.estimatedTokens,
 			episodesArchived: archivedEpisodeIds.length,
 		};
 	}
@@ -539,6 +541,7 @@ export class ContextManager {
 		estimatedTokens: number;
 		evictedIds: string[];
 		tokensBefore: number;
+		tokensAfter: number;
 		episodesArchived: number;
 	} {
 		const compaction = this.assemble(sessionId, options);
@@ -561,7 +564,13 @@ export class ContextManager {
 			payloads: projectedPayloads(items),
 			estimatedTokens,
 			evictedIds: compaction.evictedIds,
+			/**
+			 * The compaction figures, not this task's filtered projection: a
+			 * before/after pair only reads as cleanup if both sides measure the
+			 * same thing.
+			 */
 			tokensBefore: compaction.tokensBefore,
+			tokensAfter: compaction.tokensAfter,
 			episodesArchived: compaction.episodesArchived,
 		};
 	}

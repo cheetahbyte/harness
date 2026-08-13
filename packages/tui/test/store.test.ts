@@ -110,11 +110,31 @@ describe("TUI protocol store", () => {
 			cacheRead: 0,
 			cacheWrite: 0,
 			totalTokens: 187,
+			costUsd: 0.0012,
 		});
+		store.getState().apply({
+			type: "usage",
+			input: 200,
+			output: 20,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 220,
+			costUsd: 0.0023,
+		});
+		store.getState().apply({ type: "completed", durationMs: 12_000 });
 		expect(store.getState().entries.map((entry) => entry.kind)).toEqual([
 			"status",
 			"usage",
+			"usage",
+			"completed",
 		]);
+		expect(store.getState().entries.slice(-3).map((entry) => entry.text)).toEqual([
+			"in 176 · out 11 · total 187",
+			"in 200 · out 20 · total 220",
+			"✶ Noodled for 12s (0.0035$)",
+		]);
+		expect(store.getState().sessionCostUsd).toBeCloseTo(0.0035);
+		expect(store.getState().turnCostUsd).toBeUndefined();
 	});
 
 	test("tracks steering acceptance and follow-up lifecycle by command id", () => {
@@ -219,5 +239,66 @@ describe("TUI protocol store", () => {
 		expect(store.getState().wizard).toEqual({ kind: "cancelled" });
 		store.getState().clearWizard();
 		expect(store.getState().wizard).toEqual({ kind: "idle" });
+	});
+	test("keeps the leverage readout current and explains it exactly once", () => {
+		const store = createTuiStore("session");
+		const status = {
+			type: "context-status" as const,
+			liveTokens: 26_000,
+			historyTokens: 26_000,
+			parkedObservations: 0,
+			budget: 160_000,
+			target: 120_000,
+		};
+		store.getState().apply(status);
+		expect(store.getState().contextStatus).toEqual({
+			liveTokens: 26_000,
+			historyTokens: 26_000,
+			parkedObservations: 0,
+		});
+		expect(store.getState().entries).toEqual([]);
+		store
+			.getState()
+			.apply({ ...status, historyTokens: 120_000, parkedObservations: 95 });
+		store
+			.getState()
+			.apply({ ...status, historyTokens: 180_000, parkedObservations: 140 });
+		expect(store.getState().contextStatus).toEqual({
+			liveTokens: 26_000,
+			historyTokens: 180_000,
+			parkedObservations: 140,
+		});
+		expect(
+			store.getState().entries.filter((entry) => entry.kind === "compaction"),
+		).toHaveLength(1);
+	});
+
+	test("reports compaction as a transcript line and the budget cliff as an error", () => {
+		const store = createTuiStore("session");
+		store.getState().apply({
+			type: "context-compaction",
+			evictedCount: 12,
+			tokensBefore: 38_400,
+			tokensAfter: 4_100,
+			episodesArchived: 1,
+		});
+		expect(store.getState().entries).toEqual([
+			{
+				kind: "compaction",
+				text: "retired 12 items and 1 episode · 38k ↦ 4.1k · all recallable",
+			},
+		]);
+		store.getState().apply({ type: "status", text: "running" });
+		expect(store.getState().running).toBe(true);
+		store.getState().apply({
+			type: "context-budget-error",
+			estimatedTokens: 12_000,
+			budget: 4_000,
+		});
+		expect(store.getState().running).toBe(false);
+		const last = store.getState().entries.at(-1);
+		expect(last?.kind).toBe("error");
+		expect(last?.text).toContain("12k");
+		expect(last?.text).toContain("4k");
 	});
 });

@@ -882,6 +882,98 @@ describe("ContextManager", () => {
 		store.db.close();
 	});
 
+	test("reports history and parked observations alongside the working set", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "keep" },
+			tokenCost: 10,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+		const evicted = manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "large output" },
+			compactPayload: { role: "toolResult", content: "observation://old" },
+			tokenCost: 200,
+			compactTokenCost: 5,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "read" },
+		});
+		manager.record({
+			sessionId,
+			kind: "observation",
+			payload: { text: "the externalized output" },
+			tokenCost: 200,
+			lifecycle: "archived",
+			reason: "externalized tool output",
+			source: { observationId: "old" },
+		});
+
+		const assembly = manager.assemble(sessionId, {
+			budget: 100,
+			target: 50,
+			overheadTokens: 0,
+		});
+		const inspection = manager.inspect(sessionId, {
+			budget: 100,
+			target: 50,
+		});
+
+		expect(assembly.evictedIds).toEqual([evicted.id]);
+		expect(assembly.tokensBefore).toBe(210);
+		expect(assembly.tokensAfter).toBe(assembly.estimatedTokens);
+		/** Observations are free against the budget but still count as history. */
+		expect(inspection.estimatedTokens).toBe(15);
+		expect(inspection.historyTokens).toBe(410);
+		expect(inspection.parkedObservations).toBe(1);
+		store.db.close();
+	});
+
+	test("carries compaction results through a task assembly", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "keep" },
+			tokenCost: 10,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+		const evicted = manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "large output" },
+			compactPayload: { role: "toolResult", content: "observation://old" },
+			tokenCost: 200,
+			compactTokenCost: 5,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "read" },
+		});
+
+		const assembly = manager.assembleTask(sessionId, {
+			budget: 100,
+			target: 50,
+			overheadTokens: 0,
+			submissionWatermark: evicted.sequence,
+			taskStartSequence: evicted.sequence,
+			predecessorTerminalIds: [],
+		});
+
+		expect(assembly.evictedIds).toEqual([evicted.id]);
+		expect(assembly.tokensBefore).toBe(210);
+		expect(assembly.tokensAfter).toBe(15);
+		store.db.close();
+	});
+
 	test("stores structured subagent handoffs and exposes metadata-only inspection", () => {
 		const store = new SessionStore(storePath());
 		const sessionId = store.create();

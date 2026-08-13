@@ -101,6 +101,8 @@ export type ServerEvent =
 			cacheRead: number;
 			cacheWrite: number;
 			totalTokens: number;
+			/** Provider/model-list estimate in US dollars. Absent on legacy events. */
+			costUsd?: number;
 	  }
 	| {
 			type: "context-status";

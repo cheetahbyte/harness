@@ -5,6 +5,11 @@ import { createTestRenderer } from "@opentui/core/testing";
 import { TuiApp } from "../src/app";
 import { createTuiStore } from "../src/store";
 
+/** The footer is the last rendered row, below the composer's lower rule. */
+function footerLine(frame: string) {
+	return frame.split("\n").findLast((line) => line.includes("(")) ?? "";
+}
+
 describe("OpenTUI app", () => {
 	test("renders replayed transcript and updates the active streamed tail", async () => {
 		const store = createTuiStore("session-1", `${homedir()}/project`);
@@ -247,6 +252,56 @@ describe("OpenTUI app", () => {
 			expect(layout.header.root.visible).toBe(true);
 			expect(layout.footer.root.visible).toBe(true);
 			expect(layout.composer.root.height).toBe(3);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("shows the leverage readout and sheds detail as the footer narrows", async () => {
+		const store = createTuiStore("session-1", `${homedir()}/project`);
+		store.getState().apply({
+			type: "model-config",
+			config: { provider: "anthropic", model: "opus-5" },
+		});
+		store.getState().apply({
+			type: "context-status",
+			liveTokens: 26_000,
+			historyTokens: 120_000,
+			parkedObservations: 95,
+			budget: 160_000,
+			target: 120_000,
+		});
+		store.getState().apply({
+			type: "usage",
+			input: 1_000,
+			output: 100,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 1_100,
+			costUsd: 0.0042,
+		});
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("≡ 120k ↦ 26k");
+			expect(view.captureCharFrame()).toContain("Σ 0.0042$");
+			view.resize(46, 20);
+			await view.flush();
+			const narrow = footerLine(view.captureCharFrame());
+			expect(narrow).toContain("Σ 0.0042$");
+			expect(narrow).not.toContain("recallable");
+			expect(narrow).toContain("opus-5 (anthropic)");
+			view.resize(34, 20);
+			await view.flush();
+			const narrowest = footerLine(view.captureCharFrame());
+			expect(narrowest).not.toContain("↦");
+			expect(narrowest).toContain("opus-5 (anthropic)");
 		} finally {
 			app.destroy();
 			view.renderer.destroy();
