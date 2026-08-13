@@ -60,10 +60,8 @@ export async function checkLatestVersion(): Promise<string | undefined> {
 }
 
 /**
- * Two widths of the same message. The header shares one row with the session
- * label, so a notice that always spelled itself out would collide with it on a
- * narrow terminal; the short form keeps the signal visible where the long one
- * does not fit.
+ * Two widths of the same message so the header can keep the signal beside the
+ * installed version without overflowing on a narrow terminal.
  */
 export type UpdateNotice = { full: string; short: string };
 
@@ -80,7 +78,7 @@ export async function updateNotice(): Promise<UpdateNotice | undefined> {
 	]);
 	if (latest && compareVersions(latest, VERSION) > 0)
 		return {
-			full: `update available: ${VERSION} → ${latest} · run \`harnez update\``,
+			full: `update available: ${latest} · install via \`harnez update\``,
 			short: `update ${latest}`,
 		};
 	if (running?.version && compareVersions(running.version, VERSION) !== 0)

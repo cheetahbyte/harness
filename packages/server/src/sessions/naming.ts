@@ -74,6 +74,7 @@ export class SessionNamer {
 		prompt: string,
 		source: string,
 		activeModel?: ModelConfig,
+		registry = this.models,
 	): Promise<string | undefined> {
 		const parsed = parseTitleSource(source);
 		if (!parsed) {
@@ -97,7 +98,7 @@ export class SessionNamer {
 			const { model, models } = providerModels(
 				config,
 				this.credentials,
-				this.models,
+				registry,
 			);
 			const thinking =
 				parsed.thinkingLevel === "off" || !parsed.thinkingLevel

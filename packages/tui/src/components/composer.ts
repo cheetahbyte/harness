@@ -12,12 +12,21 @@ import {
 	slashCommandPattern,
 } from "../../../shared/src/slash-command";
 import type { FollowUp } from "../store";
+import { ACCENT, DIM, TEXT, thinkingColor } from "./theme";
 
-const ACCENT = "#89b4fa";
 const SUGGESTION_WINDOW_SIZE = 5;
 /** How far the composer may grow before the text scrolls inside it instead. */
 const MAX_INPUT_ROWS = 10;
 const MAX_COMPACT_INPUT_ROWS = 2;
+const RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"] as const;
+const RUNNING_PHRASES = [
+	"doing the minimum, professionally",
+	"asking the type checker to look away",
+	"walking the bug until it confesses",
+	"checking whether production noticed",
+	"box, box — the tests are cooked",
+] as const;
+const RUNNING_FRAME_MS = 120;
 export type CommandHint = {
 	name: string;
 	description: string;
@@ -46,6 +55,7 @@ export class ComposerView {
 	});
 	private readonly highlightStyleId = this.highlightStyle.getStyleId("skill");
 	private readonly queue: TextRenderable;
+	private readonly runningIndicator: TextRenderable;
 	private readonly suggestions: BoxRenderable;
 	private readonly suggestionRows: {
 		root: BoxRenderable;
@@ -58,6 +68,10 @@ export class ComposerView {
 	private hasFollowUps = false;
 	private compact = false;
 	private inputRows = 1;
+	private running = false;
+	private runningFrame = 0;
+	private runningPhrase = -1;
+	private runningAnimation: ReturnType<typeof setInterval> | undefined;
 	private matches: CommandHint[] = [];
 	private selectedSuggestion = 0;
 	private suggestionOffset = 0;
@@ -82,7 +96,7 @@ export class ComposerView {
 			flexDirection: "column",
 		});
 		this.queue = new TextRenderable(renderer, {
-			fg: "#8b8d98",
+			fg: DIM,
 			marginBottom: 1,
 		});
 		this.suggestions = new BoxRenderable(renderer, {
@@ -100,7 +114,7 @@ export class ComposerView {
 			});
 			const indicator = new TextRenderable(renderer, {
 				width: 2,
-				fg: "#8b8d98",
+				fg: DIM,
 			});
 			const name = new TextRenderable(renderer, {
 				fg: ACCENT,
@@ -109,7 +123,7 @@ export class ComposerView {
 			});
 			const description = new TextRenderable(renderer, {
 				flexGrow: 1,
-				fg: "#8b8d98",
+				fg: DIM,
 				truncate: true,
 			});
 			root.add(indicator);
@@ -118,6 +132,11 @@ export class ComposerView {
 			this.suggestions.add(root);
 			return { root, indicator, name, description };
 		});
+		this.runningIndicator = new TextRenderable(renderer, {
+			content: RUNNING_FRAMES[0],
+			fg: ACCENT,
+			visible: false,
+		});
 		this.inputRow = new BoxRenderable(renderer, {
 			width: "100%",
 			height: 3,
@@ -125,7 +144,7 @@ export class ComposerView {
 			/** The prompt marker stays on the first row as the input grows. */
 			alignItems: "flex-start",
 			border: ["top", "bottom"],
-			borderColor: "#666873",
+			borderColor: DIM,
 			paddingLeft: 1,
 			paddingRight: 1,
 		});
@@ -140,7 +159,9 @@ export class ComposerView {
 			flexGrow: 1,
 			height: 1,
 			placeholder: "",
-			textColor: "#a6adc8",
+			cursorStyle: { style: "line", blinking: true },
+			textColor: TEXT,
+			focusedTextColor: TEXT,
 			backgroundColor: "transparent",
 			focusedBackgroundColor: "transparent",
 			syntaxStyle: this.highlightStyle,
@@ -163,6 +184,7 @@ export class ComposerView {
 		this.inputRow.add(this.input);
 		this.root.add(this.queue);
 		this.root.add(this.suggestions);
+		this.root.add(this.runningIndicator);
 		this.root.add(this.inputRow);
 		renderer.keyInput.prependListener("keypress", this.handleKey);
 		this.input.focus();
@@ -194,6 +216,30 @@ export class ComposerView {
 		this.syncQueueVisibility();
 	}
 
+	setThinkingLevel(level?: Parameters<typeof thinkingColor>[0]) {
+		this.inputRow.borderColor = thinkingColor(level);
+	}
+
+	setRunning(running: boolean) {
+		if (running === this.running) return;
+		this.running = running;
+		this.runningIndicator.visible = running;
+		if (running) {
+			this.runningFrame = 0;
+			this.runningPhrase = (this.runningPhrase + 1) % RUNNING_PHRASES.length;
+			this.runningIndicator.content = this.runningContent();
+			this.runningAnimation = setInterval(
+				this.advanceRunning,
+				RUNNING_FRAME_MS,
+			);
+		} else if (this.runningAnimation) {
+			clearInterval(this.runningAnimation);
+			this.runningAnimation = undefined;
+		}
+		this.syncHeight();
+		this.renderer.requestRender();
+	}
+
 	setCompact(compact: boolean) {
 		this.compact = compact;
 		this.syncQueueVisibility();
@@ -220,13 +266,14 @@ export class ComposerView {
 			Math.max(wrapped, 1),
 			this.compact ? MAX_COMPACT_INPUT_ROWS : MAX_INPUT_ROWS,
 		);
-		const border = this.compact ? 1 : 2;
-		if (rows === this.inputRows && this.inputRow.height === rows + border)
+		const chrome = this.compact ? 1 : 2;
+		const minHeight = rows + chrome + Number(this.running);
+		this.root.minHeight = minHeight;
+		if (rows === this.inputRows && this.inputRow.height === rows + chrome)
 			return;
 		this.inputRows = rows;
 		this.input.height = rows;
-		this.inputRow.height = rows + border;
-		this.root.minHeight = rows + border;
+		this.inputRow.height = rows + chrome;
 	}
 
 	private syncQueueVisibility() {
@@ -234,12 +281,24 @@ export class ComposerView {
 	}
 
 	destroy() {
+		if (this.runningAnimation) clearInterval(this.runningAnimation);
 		this.renderer.keyInput.off("keypress", this.handleKey);
 		this.highlightStyle.destroy();
 	}
 
+	private advanceRunning = () => {
+		this.runningFrame = (this.runningFrame + 1) % RUNNING_FRAMES.length;
+		this.runningIndicator.content = this.runningContent();
+		this.renderer.requestRender();
+	};
+
+	private runningContent() {
+		return `${RUNNING_FRAMES[this.runningFrame]} ${RUNNING_PHRASES[this.runningPhrase]}`;
+	}
+
 	private handleKey = (key: KeyEvent) => {
 		if (key.defaultPrevented) return;
+		if (this.root.visible && !this.input.focused) this.input.focus();
 		if (key.ctrl && key.name === "t") {
 			this.actions.toggleThinking();
 			key.preventDefault();

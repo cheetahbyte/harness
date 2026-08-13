@@ -66,4 +66,21 @@ describe("model naming", () => {
 		const failing = new SessionNamer({ ...models, completeSimple: async () => ({ stopReason: "length", content: [] }) } as unknown as Models, {} as never);
 		expect(await failing.generate("Keep the prompt fallback", "model/fake/title-model")).toBe("Keep the prompt fallback");
 	});
+
+	test("uses the supplied session registry for a named provider title model", async () => {
+		const calls: unknown[] = [];
+		const registry = {
+			getModel: (provider: string, model: string) =>
+				provider === "local" && model === "title-model"
+					? { id: model, provider, reasoning: true }
+					: undefined,
+			completeSimple: async (model: unknown) => {
+				calls.push(model);
+				return { stopReason: "stop", content: [{ type: "text", text: "Local title" }] };
+			},
+		} as unknown as Models;
+		const namer = new SessionNamer({ getModel: () => undefined } as unknown as Models, {} as never);
+		expect(await namer.generate("Make a title", "model/local/title-model", undefined, registry)).toBe("Local title");
+		expect(calls).toEqual([expect.objectContaining({ provider: "local", id: "title-model" })]);
+	});
 });

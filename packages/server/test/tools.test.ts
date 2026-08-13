@@ -2,6 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { contextCapabilities } from "../src/agent/tools";
+import { CapabilityCatalog } from "../src/capabilities/catalog";
 import { CoreTools } from "../src/tools";
 
 async function execute(
@@ -88,4 +90,27 @@ test("serializes concurrent edits to the same file", async () => {
 	expect(readFileSync(join(workspace, "note.txt"), "utf8")).toBe(
 		Array.from({ length: 20 }, (_, index) => `done-${index};`).join(""),
 	);
+});
+
+test("registers every context tool as a discoverable capability", () => {
+	const capabilities = contextCapabilities("binding-1");
+	const snapshot = new CapabilityCatalog(capabilities, "binding-1").snapshot({
+		tool: { maxLevel: "execute", confirmation: "none" },
+		skill: { maxLevel: "activate" },
+	});
+
+	expect(snapshot.list().items.map((item) => item.ref.id)).toEqual([
+		"tool:episode",
+		"tool:pin_context",
+		"tool:recall_observation",
+	]);
+	const recall = snapshot.search("observation").items[0];
+	expect(recall?.ref.id).toBe("tool:recall_observation");
+	/** Paging belongs in the contract, not in folklore about the URI format. */
+	expect(
+		JSON.stringify(snapshot.inspect(recall!.ref).contract),
+	).toContain("offset");
+	expect(snapshot.inspect(recall!.ref).contract).toMatchObject({
+		effect: "read_only",
+	});
 });

@@ -50,20 +50,20 @@ const DEFAULT_CONTEXT_BUDGET = 80_000;
 export class HarnezAgentRuntime {
 	private readonly agents = new Map<string, AgentEntry>();
 	private readonly credentials: CredentialStore;
-	private readonly models: Models;
+	private readonly modelsFor: (sessionId: string) => Models;
 	private readonly store: SessionStore;
 	private readonly context: ContextManager;
 	private readonly contextBudget: number;
 
 	constructor(options: {
 		credentials: CredentialStore;
-		models: Models;
+		modelsFor: (sessionId: string) => Models;
 		store: SessionStore;
 		context: ContextManager;
 		contextBudget?: number;
 	}) {
 		this.credentials = options.credentials;
-		this.models = options.models;
+		this.modelsFor = options.modelsFor;
 		this.store = options.store;
 		this.context = options.context;
 		this.contextBudget = options.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
@@ -90,7 +90,7 @@ export class HarnezAgentRuntime {
 			const { models, model } = providerModels(
 				config,
 				this.credentials,
-				this.models,
+				this.modelsFor(sessionId),
 			);
 			const created = this.createAgent({
 				sessionId,
@@ -125,7 +125,12 @@ export class HarnezAgentRuntime {
 		entry.promptGroupId = crypto.randomUUID();
 		recordAgentMessage({ sessionId, entry, message, context: this.context });
 		try {
-			this.messages(sessionId, entry.agent.state.model, entry.task);
+			/**
+			 * The first assembly of a turn is usually the one that crosses the
+			 * budget, so it has to carry the emitter too — otherwise the cleanup it
+			 * performs is silent and every later assembly finds nothing to report.
+			 */
+			this.messages(sessionId, entry.agent.state.model, entry.task, emit);
 		} catch (error) {
 			this.context.completeGroup(sessionId, entry.promptGroupId);
 			entry.promptGroupId = undefined;

@@ -10,16 +10,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthType, ServerEvent } from "../../shared/src/protocol";
 import type { AuthInteraction } from "@earendil-works/pi-ai";
-import { JsonCredentialStore } from "../src/provider";
+import { createHarnezModels, JsonCredentialStore } from "../src/provider";
 import { HarnezServer } from "../src/server";
 import { SessionStore } from "../src/sessions/store";
 import { SettingsStore } from "../src/settings-store";
 import { BashTool } from "../src/tools/bash";
 
 const paths: string[] = [];
+const originalConfigHome = process.env["XDG_CONFIG_HOME"];
 afterEach(() => {
 	for (const path of paths.splice(0))
 		rmSync(path, { recursive: true, force: true });
+	if (originalConfigHome === undefined) delete process.env["XDG_CONFIG_HOME"];
+	else process.env["XDG_CONFIG_HOME"] = originalConfigHome;
 });
 function harnez(contextBudget?: number) {
 	const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
@@ -1743,6 +1746,15 @@ function episodeId(
 			});
 
 			expect(calls).toBe(3);
+			const status = restarted.store
+				.events(id)
+				.findLast((event) => event.type === "context-status");
+			expect(status).toMatchObject({ type: "context-status", budget: 1_500 });
+			if (status?.type === "context-status") {
+				/** The externalized read output is history the prompt no longer pays for. */
+				expect(status.historyTokens).toBeGreaterThan(status.liveTokens);
+				expect(status.parkedObservations).toBeGreaterThan(0);
+			}
 			expect(JSON.stringify(bodies[2])).not.toContain(output);
 			expect(JSON.stringify(bodies[2])).not.toContain(
 				"Earlier read output was compacted",
@@ -1760,6 +1772,75 @@ function episodeId(
 								(message as { tool_call_id?: string }).tool_call_id === call.id,
 						),
 					).toBe(true);
+		} finally {
+			provider.stop(true);
+			delete process.env["HARNESS_OPENAI_API_KEY"];
+		}
+	});
+
+	test("discovers the context tools and pages an observation by argument", async () => {
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
+		const bodies: { messages: { content?: string; tool_call_id?: string }[] }[] =
+			[];
+		let calls = 0;
+		const provider = Bun.serve({
+			port: 0,
+			fetch: async (request) => {
+				const body = (await request.json()) as {
+					messages: { content?: string; tool_call_id?: string }[];
+				};
+				bodies.push(body);
+				calls++;
+				const chunks =
+					calls === 1
+						? toolCallChunks("call-search", "capabilities_search", {
+								query: "recall observation",
+							})
+						: calls === 2
+							? toolCallChunks("call-read", "read", { path: "note.txt" })
+							: calls === 3
+								? toolCallChunks("call-recall", "recall_observation", {
+										reference: observationReference(body, "call-read"),
+										offset: 5,
+										limit: 5,
+									})
+								: doneChunks();
+				return sseResponse(chunks);
+			},
+		});
+		try {
+			const { dir, server } = harnez();
+			writeFileSync(
+				join(dir, "note.txt"),
+				`0123456789ABCDE${"x".repeat(20_000)}`,
+			);
+			const id = server.createSession();
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			await server.command(id, { type: "prompt", text: "find a way to recall" });
+
+			expect(calls).toBe(4);
+			/**
+			 * The registry has to answer for the tools the model is already holding;
+			 * an empty result here is what sends it reading the session database by
+			 * hand instead of calling `recall_observation`.
+			 */
+			const found = bodies[1]?.messages.find(
+				(message) => message.tool_call_id === "call-search",
+			)?.content;
+			expect(found).toContain("tool:recall_observation");
+			expect(found).toContain("Pages with offset and limit");
+			expect(
+				bodies[3]?.messages.find(
+					(message) => message.tool_call_id === "call-recall",
+				)?.content,
+			).toBe(
+				"56789\n\n[showing characters 5-10 of 20015; continue with offset=10]",
+			);
 		} finally {
 			provider.stop(true);
 			delete process.env["HARNESS_OPENAI_API_KEY"];
@@ -1814,11 +1895,14 @@ function episodeId(
 				(message) => message.tool_call_id === "call-read",
 			)?.content?.length,
 		).toBeLessThanOrEqual(16_000);
+			/** A five-character window on a 20k observation has to say so. */
 			expect(
 			bodies[3]!.messages.find(
 				(message) => message.tool_call_id === "call-recall",
 			)?.content,
-		).toBe("ABCDE");
+		).toBe(
+			"ABCDE\n\n[showing characters 10-15 of 20015; continue with offset=15]",
+		);
 			expect(
 			server.store.contextItems(id).some(
 				(item) =>
@@ -1954,12 +2038,13 @@ function episodeId(
 				server.store.contextItems(id).filter((item) => item.kind === "user"),
 			).toHaveLength(0);
 			expect(
-				server.store.events(id).some(
-					(event) =>
-						event.type === "error" &&
-						event.message.includes("Context budget cannot be satisfied"),
-				),
-			).toBe(true);
+				server.store
+					.events(id)
+					.find((event) => event.type === "context-budget-error"),
+			).toMatchObject({ type: "context-budget-error", budget: 500 });
+			expect(
+				server.store.events(id).some((event) => event.type === "error"),
+			).toBe(false);
 		} finally {
 			provider.stop(true);
 			delete process.env["HARNESS_OPENAI_API_KEY"];
@@ -2003,10 +2088,173 @@ function episodeId(
 					.contextItems(id)
 					.filter((item) => item.kind === "user" && item.lifecycle === "pinned"),
 			).toHaveLength(5);
+			const compaction = server.store
+				.events(id)
+				.find((event) => event.type === "context-compaction");
+			expect(compaction).toMatchObject({ type: "context-compaction" });
+			if (compaction?.type === "context-compaction") {
+				expect(compaction.evictedCount).toBeGreaterThan(0);
+				expect(compaction.tokensAfter).toBeLessThan(compaction.tokensBefore);
+			}
 		} finally {
 			provider.stop(true);
 			delete process.env["HARNESS_OPENAI_API_KEY"];
 		}
+	});
+
+	test("uses named keyless providers for catalogs, fast cycling, and streaming", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harnez-named-provider-"));
+		paths.push(dir);
+		let requestBody = "";
+		const provider = Bun.serve({
+			port: 0,
+			fetch: async (request) => {
+				requestBody = await request.text();
+				return sseResponse(textChunks("named done"));
+			},
+		});
+		try {
+			mkdirSync(join(dir, "config"));
+			writeFileSync(
+				join(dir, "config/settings.json"),
+				JSON.stringify({
+					providers: {
+						ollama: {
+							type: "openai-compatible",
+							baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+							auth: "none",
+							models: ["qwen3-coder:30b", "qwen3-coder:next"],
+						},
+					},
+				}),
+			);
+			const server = new HarnezServer(
+				new SessionStore(join(dir, "state.sqlite")),
+				dir,
+				undefined,
+				settings(dir),
+			);
+			const id = server.createSession();
+			const events: ServerEvent[] = [];
+			server.subscribe(id, (event) => events.push(event));
+			await server.command(id, { type: "list-models" });
+			expect(events).toContainEqual({
+				type: "models",
+				models: expect.arrayContaining([
+					expect.objectContaining({ provider: "ollama", id: "qwen3-coder:30b" }),
+				]),
+			});
+			await server.command(id, {
+				type: "configure",
+				provider: "ollama",
+				model: "qwen3-coder:30b",
+			});
+			await server.command(id, {
+				type: "set-fast-cycle",
+				entries: [
+					{ provider: "ollama", model: "qwen3-coder:30b" },
+					{ provider: "ollama", model: "qwen3-coder:next" },
+				],
+			});
+			await server.command(id, { type: "cycle-model" });
+			expect(server.store.modelConfig(id)).toEqual({
+				provider: "ollama",
+				model: "qwen3-coder:next",
+			});
+			await server.command(id, {
+				type: "configure",
+				provider: "ollama",
+				model: "qwen3-coder:30b",
+			});
+			await server.command(id, { type: "prompt", text: "hello" });
+			expect(requestBody).toContain('"model":"qwen3-coder:30b"');
+		} finally {
+			provider.stop(true);
+		}
+	});
+
+	test("isolates named API-key credentials and rejects unknown named models before persistence", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harnez-named-auth-"));
+		paths.push(dir);
+		process.env["XDG_CONFIG_HOME"] = join(dir, "xdg");
+		let authorization = "";
+		const provider = Bun.serve({
+			port: 0,
+			fetch: async (request) => {
+				authorization = request.headers.get("authorization") ?? "";
+				return sseResponse(textChunks("authenticated"));
+			},
+		});
+		try {
+			const global = join(dir, "settings.json");
+			writeFileSync(
+				global,
+				JSON.stringify({
+					providers: {
+						"company-llm": {
+							type: "openai-compatible",
+							baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+							auth: "api-key",
+							models: ["company-coder"],
+						},
+					},
+				}),
+			);
+			const auth = join(dir, "xdg/harnez/auth.json");
+			mkdirSync(join(dir, "xdg/harnez"), { recursive: true });
+			writeFileSync(auth, JSON.stringify({ "openai-compatible": { type: "api_key", key: "legacy" } }));
+			const server = new HarnezServer(
+				new SessionStore(join(dir, "state.sqlite")), dir, undefined,
+				new SettingsStore(global, join(dir, ".harnez/settings.json")),
+			);
+			const id = server.createSession();
+			const events: ServerEvent[] = [];
+			server.subscribe(id, (event) => events.push(event));
+			await server.command(id, { type: "login", provider: "company-llm", authType: "api_key" });
+			await until(() => expect(events.some((event) => event.type === "auth-prompt")).toBe(true));
+			const prompt = events.find((event) => event.type === "auth-prompt");
+			if (!prompt || prompt.type !== "auth-prompt") throw new Error("missing API-key prompt");
+			await server.command(id, { type: "auth-answer", promptId: prompt.prompt.id, value: "secret" });
+			await until(() => expect(events).toContainEqual({ type: "auth-completed", provider: "company-llm" }));
+			expect(JSON.parse(readFileSync(auth, "utf8"))).toEqual({
+				"openai-compatible": { type: "api_key", key: "legacy" },
+				"company-llm": { type: "api_key", key: "secret" },
+			});
+			await server.command(id, { type: "configure", provider: "company-llm", model: "company-coder" });
+			await server.command(id, { type: "prompt", text: "hello" });
+			expect(authorization).toBe("Bearer secret");
+			await expect(server.command(id, { type: "configure", provider: "company-llm", model: "missing" })).rejects.toThrow("unknown model company-llm/missing");
+			expect(server.store.modelConfig(id)).toEqual({ provider: "company-llm", model: "company-coder" });
+		} finally {
+			provider.stop(true);
+		}
+	});
+
+	test("resolves provider definitions per session workspace and rejects collisions", async () => {
+		const root = mkdtempSync(join(tmpdir(), "harnez-provider-workspaces-"));
+		const first = join(root, "first");
+		const second = join(root, "second");
+		paths.push(root);
+		process.env["XDG_CONFIG_HOME"] = join(root, "xdg");
+		for (const [workspace, model] of [[first, "first-model"], [second, "second-model"]] as const) {
+			mkdirSync(join(workspace, ".harnez"), { recursive: true });
+			writeFileSync(join(workspace, ".harnez/settings.json"), JSON.stringify({ providers: { local: { type: "openai-compatible", baseUrl: "http://localhost:11434/v1", auth: "none", models: [model] } } }));
+		}
+		const server = new HarnezServer(
+			new SessionStore(join(root, "state.sqlite")), first, undefined,
+			new SettingsStore(join(root, "xdg/harnez/settings.json"), join(first, ".harnez/settings.json")),
+		);
+		const firstId = server.createSession(first);
+		const secondId = server.createSession(second);
+		const firstEvents: ServerEvent[] = [];
+		const secondEvents: ServerEvent[] = [];
+		server.subscribe(firstId, (event) => firstEvents.push(event));
+		server.subscribe(secondId, (event) => secondEvents.push(event));
+		await Promise.all([server.command(firstId, { type: "list-models", provider: "local" }), server.command(secondId, { type: "list-models", provider: "local" })]);
+		expect(firstEvents).toContainEqual({ type: "models", models: [expect.objectContaining({ provider: "local", id: "first-model" })] });
+		expect(secondEvents).toContainEqual({ type: "models", models: [expect.objectContaining({ provider: "local", id: "second-model" })] });
+		for (const id of ["openai-compatible", "openai"])
+			expect(() => createHarnezModels(new JsonCredentialStore(join(root, `${id}.json`)), { [id]: { type: "openai-compatible", baseUrl: "http://localhost:11434/v1", auth: "none", models: ["model"] } })).toThrow(id);
 	});
 
 });

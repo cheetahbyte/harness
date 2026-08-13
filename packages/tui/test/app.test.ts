@@ -2,8 +2,22 @@ import { describe, expect, test } from "bun:test";
 import { homedir } from "node:os";
 import { RGBA } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
+import { VERSION } from "../../shared/src/version";
 import { TuiApp } from "../src/app";
+import {
+	ACCENT,
+	DIM,
+	TEXT,
+	USER_BACKGROUND,
+	USER_TEXT,
+	thinkingColor,
+} from "../src/components/theme";
 import { createTuiStore } from "../src/store";
+
+/** The footer is the last rendered row, below the composer's lower rule. */
+function footerLine(frame: string) {
+	return frame.split("\n").findLast((line) => line.includes("(")) ?? "";
+}
 
 describe("OpenTUI app", () => {
 	test("renders replayed transcript and updates the active streamed tail", async () => {
@@ -34,8 +48,13 @@ describe("OpenTUI app", () => {
 		const app = new TuiApp(view.renderer, store, async () => {});
 		try {
 			await view.flush();
-			expect(view.captureCharFrame()).toContain("gpt-5.6-sol (openai-codex)");
-			expect(view.captureCharFrame()).toContain("~/project");
+			const frame = view.captureCharFrame();
+			expect(frame).toContain("gpt-5.6-sol (openai-codex)");
+			expect(frame).toContain(`Harnez v${VERSION}`);
+			expect(frame).toContain("gpt-5.6-sol · openai-codex · idle");
+			expect(frame).toContain("~/project");
+			expect(frame).toContain("◆");
+			expect(footerLine(frame)).not.toContain("~/project");
 			expect(view.captureCharFrame()).toContain("Read 1 file");
 			expect(view.captureCharFrame()).toContain(
 				`╰ hello ${"x".repeat(44)}...`,
@@ -46,6 +65,61 @@ describe("OpenTUI app", () => {
 			store.getState().apply({ type: "assistant-delta", text: "ing" });
 			await view.flush();
 			expect(view.captureCharFrame()).toContain("streaming");
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("uses the terminal foreground for essential text on a light background", async () => {
+		const store = createTuiStore("session-1");
+		store.getState().apply({ type: "assistant-delta", text: "visible answer" });
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			backgroundColor: "#ffffff",
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			await view.flush();
+			const spans = view.captureSpans().lines.flatMap((line) => line.spans);
+			expect(spans.find((span) => span.text.includes("Harnez"))?.fg.equals(TEXT)).toBe(
+				true,
+			);
+			expect(
+				spans.find((span) => span.text.includes("visible answer"))?.fg.equals(TEXT),
+			).toBe(true);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("shows update notices beside the installed version", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({ width: 100, height: 20 });
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			app.setNotice({
+				full: "update available: 9.9.9 · install via `harnez update`",
+				short: "update 9.9.9",
+			});
+			await view.flush();
+			let title = view
+				.captureCharFrame()
+				.split("\n")
+				.find((line) => line.includes("Harnez"));
+			expect(title).toContain(
+				`Harnez v${VERSION} · update available: 9.9.9 · install via \`harnez update\``,
+			);
+
+			view.resize(40, 20);
+			await view.flush();
+			title = view
+				.captureCharFrame()
+				.split("\n")
+				.find((line) => line.includes("Harnez"));
+			expect(title).toContain(`Harnez v${VERSION} · update 9.9.9`);
 		} finally {
 			app.destroy();
 			view.renderer.destroy();
@@ -130,6 +204,7 @@ describe("OpenTUI app", () => {
 		const app = new TuiApp(view.renderer, store, async () => {});
 		try {
 			await view.flush();
+			expect(view.captureCharFrame()).not.toContain("Harnez  session-1");
 			const transcript = (
 				app as unknown as {
 					transcript: { root: { scrollHeight: number; height: number } };
@@ -198,6 +273,14 @@ describe("OpenTUI app", () => {
 		try {
 			await view.flush();
 			expect(view.captureCharFrame()).toContain("medium");
+			const composer = (
+				app as unknown as {
+					composer: { inputRow: { borderColor: RGBA } };
+				}
+			).composer;
+			expect(composer.inputRow.borderColor.equals(thinkingColor("medium"))).toBe(
+				true,
+			);
 			await view.mockInput.typeText("/");
 			await view.flush();
 			expect(view.captureCharFrame()).toContain("/model");
@@ -214,6 +297,9 @@ describe("OpenTUI app", () => {
 			});
 			await view.flush();
 			expect(view.captureCharFrame()).toContain("high");
+			expect(composer.inputRow.borderColor.equals(thinkingColor("high"))).toBe(
+				true,
+			);
 		} finally {
 			app.destroy();
 			view.renderer.destroy();
@@ -247,6 +333,105 @@ describe("OpenTUI app", () => {
 			expect(layout.header.root.visible).toBe(true);
 			expect(layout.footer.root.visible).toBe(true);
 			expect(layout.composer.root.height).toBe(3);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("animates a running indicator above the input", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({ width: 72, height: 20 });
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			store.getState().apply({
+				type: "task-state",
+				taskId: "task-1",
+				state: "running",
+			});
+			await view.renderOnce();
+			expect(view.captureCharFrame()).toContain(
+				"⠋ doing the minimum, professionally",
+			);
+			expect(view.captureCharFrame()).not.toContain("01001101");
+
+			const composer = (
+				app as unknown as { composer: { advanceRunning: () => void } }
+			).composer;
+			composer.advanceRunning();
+			await view.renderOnce();
+			expect(view.captureCharFrame()).toContain(
+				"⠙ doing the minimum, professionally",
+			);
+
+			store.getState().apply({
+				type: "task-state",
+				taskId: "task-1",
+				state: "terminal",
+			});
+			await view.renderOnce();
+			expect(view.captureCharFrame()).not.toContain("⠙");
+
+			store.getState().apply({
+				type: "task-state",
+				taskId: "task-2",
+				state: "running",
+			});
+			await view.renderOnce();
+			expect(view.captureCharFrame()).toContain(
+				"⠋ asking the type checker to look away",
+			);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("shows the leverage readout and sheds detail as the footer narrows", async () => {
+		const store = createTuiStore("session-1", `${homedir()}/project`);
+		store.getState().apply({
+			type: "model-config",
+			config: { provider: "anthropic", model: "opus-5" },
+		});
+		store.getState().apply({
+			type: "context-status",
+			liveTokens: 26_000,
+			historyTokens: 120_000,
+			parkedObservations: 95,
+			budget: 160_000,
+			target: 120_000,
+		});
+		store.getState().apply({
+			type: "usage",
+			input: 1_000,
+			output: 100,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 1_100,
+			costUsd: 0.0042,
+		});
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			await view.flush();
+			const wide = footerLine(view.captureCharFrame());
+			expect(wide.indexOf("opus-5")).toBeLessThan(wide.indexOf("≡ 120k"));
+			expect(wide.indexOf("≡ 120k")).toBeLessThan(wide.indexOf("Σ 0.0042$"));
+			view.resize(46, 20);
+			await view.flush();
+			const narrow = footerLine(view.captureCharFrame());
+			expect(narrow).toContain("Σ 0.0042$");
+			expect(narrow).not.toContain("recallable");
+			expect(narrow).toContain("opus-5 (anthropic)");
+			view.resize(34, 20);
+			await view.flush();
+			const narrowest = footerLine(view.captureCharFrame());
+			expect(narrowest).not.toContain("↦");
+			expect(narrowest).toContain("opus-5 (anthropic)");
 		} finally {
 			app.destroy();
 			view.renderer.destroy();
@@ -336,6 +521,29 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("refocuses the composer on the first keypress after focus is lost", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			await view.renderOnce();
+			expect(view.renderer.currentFocusedEditor?.cursorStyle.style).toBe("line");
+			view.renderer.currentFocusedEditor?.blur();
+			expect(view.renderer.currentFocusedEditor).toBeNull();
+			await view.mockInput.typeText("x");
+			expect(
+				(app as unknown as { composer: { value: string } }).composer.value,
+			).toBe("x");
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("Shift+Enter breaks the line instead of submitting", async () => {
 		const store = createTuiStore("session-1");
 		const sent: unknown[] = [];
@@ -349,10 +557,15 @@ describe("OpenTUI app", () => {
 		});
 		try {
 			await view.renderOnce();
+			const composer = (
+				app as unknown as { composer: { root: { height: number } } }
+			).composer;
+			expect(composer.root.height).toBe(3);
 			await view.mockInput.typeText("first");
 			view.mockInput.pressEnter({ shift: true });
 			await view.mockInput.typeText("second");
 			await view.flush();
+			expect(composer.root.height).toBe(4);
 			expect(sent).toHaveLength(0);
 			expect(
 				(app as unknown as { composer: { value: string } }).composer.value,
@@ -529,16 +742,24 @@ describe("OpenTUI app", () => {
 			store.getState().addUser("Use /codebase-design");
 			await view.flush();
 			const spans = view.captureSpans().lines.flatMap((line) => line.spans);
-			const accent = RGBA.fromHex("#89b4fa");
-			expect(spans.find((span) => span.text === "▎")?.fg.equals(accent)).toBe(true);
+			const gutter = spans.filter((span) => span.text === "▌");
+			expect(gutter).toHaveLength(3);
+			expect(gutter.every((span) => span.fg.equals(ACCENT))).toBe(true);
 			expect(
-				spans.find((span) => span.text === "/codebase-design")?.fg.equals(accent),
+				spans.find((span) => span.text === "/codebase-design")?.fg.equals(ACCENT),
 			).toBe(true);
-			expect(
-				spans.find((span) => span.text.includes("Use"))?.fg.equals(
-					RGBA.fromHex("#cdd6f4"),
-				),
-			).toBe(true);
+			const userText = spans.find((span) => span.text.includes("Use"));
+			expect(userText?.fg.equals(USER_TEXT)).toBe(true);
+			expect(userText?.bg.equals(USER_BACKGROUND)).toBe(true);
+			const messageLine = view
+				.captureSpans()
+				.lines.findIndex((line) =>
+					line.spans.some((span) => span.text.includes("Use")),
+				);
+			for (const line of view.captureSpans().lines.slice(messageLine - 1, messageLine + 2))
+				expect(line.spans.some((span) => span.bg.equals(USER_BACKGROUND))).toBe(
+					true,
+				);
 		} finally {
 			app.destroy();
 			view.renderer.destroy();
@@ -598,7 +819,7 @@ describe("OpenTUI app", () => {
 				.lines.flatMap((line) => line.spans)
 				.filter(
 					(span) =>
-						span.text === "/standup" && span.fg.equals(RGBA.fromHex("#89b4fa")),
+						span.text === "/standup" && span.fg.equals(ACCENT),
 				);
 			expect(accented).toHaveLength(1);
 		} finally {
@@ -848,16 +1069,23 @@ describe("OpenTUI app", () => {
 						id: "gpt-5.6-sol",
 						name: "GPT-5.6 Sol",
 					},
+					{
+						provider: "ollama",
+						providerName: "ollama",
+						id: "qwen3-coder:30b",
+						name: "qwen3-coder:30b",
+					},
 				],
 			});
 			await view.flush();
 			expect(view.captureCharFrame()).toContain("GPT-5.6 Sol · OpenAI Codex");
+			view.mockInput.pressArrow("down");
 			view.mockInput.pressEnter();
 			await view.flush();
 			expect(sent.at(-1)).toEqual({
 				type: "configure",
-				provider: "openai-codex",
-				model: "gpt-5.6-sol",
+				provider: "ollama",
+				model: "qwen3-coder:30b",
 			});
 			await view.mockInput.typeText("/login ");
 			view.mockInput.pressEnter();
@@ -1013,6 +1241,18 @@ describe("OpenTUI app", () => {
 				text: "new direction",
 				pending: true,
 			});
+			await view.flush();
+			let spans = view.captureSpans().lines.flatMap((line) => line.spans);
+			expect(
+				spans.find((span) => span.text === "▌")?.fg.equals(
+					DIM,
+				),
+			).toBe(true);
+			expect(
+				spans.find((span) => span.text.includes("new direction"))?.bg.equals(
+					USER_BACKGROUND,
+				),
+			).toBe(true);
 			store.getState().apply({
 				type: "command",
 				id: id!,
@@ -1020,6 +1260,13 @@ describe("OpenTUI app", () => {
 				state: "started",
 			});
 			expect(store.getState().entries.at(-1)).toMatchObject({ pending: false });
+			await view.flush();
+			spans = view.captureSpans().lines.flatMap((line) => line.spans);
+			expect(
+				spans.find((span) => span.text === "▌")?.fg.equals(
+					ACCENT,
+				),
+			).toBe(true);
 		} finally {
 			app.destroy();
 			view.renderer.destroy();

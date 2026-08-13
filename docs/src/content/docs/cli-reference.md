@@ -98,9 +98,9 @@ Typed directly into the TUI composer.
 
 | Command | Description |
 | --- | --- |
-| `/login [provider]` | Open the provider-authentication wizard. Omit the provider to pick from a list. |
-| `/model [provider]` | Open the model picker for a provider, or the current one if omitted. |
-| `/model <provider> <model> [base-url]` | Set the active provider, model, and optional custom endpoint directly, without the wizard. |
+| `/login [provider]` | Open the provider-authentication wizard. Omit the provider to pick from a list. For example, `/login company-llm` stores that named provider's API key. |
+| `/model [provider]` | Open the model picker for a provider, or the current one if omitted. A configured model can also be selected directly: `/model ollama qwen3-coder:30b`. |
+| `/model <provider> <model> [base-url]` | Set the active provider, model, and optional custom endpoint directly, without the wizard. The legacy one-off form remains `/model openai-compatible <model> <base-url>`. |
 | `/fast-cycle` | Open the fast-cycle picker. `Space` checks or unchecks a model, `Enter` saves the selection. |
 | `/session-name <name>` | Set the current session name. Automatic naming will not replace a name you set. |
 | `/<skill-name>` | Invoke a skill loaded from `.harnez/skills` or `.agents/skills`. Available skills appear in autocomplete with their own description. |

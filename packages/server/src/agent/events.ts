@@ -153,6 +153,7 @@ function handleMessageEnd(
 		cacheRead: message.usage.cacheRead,
 		cacheWrite: message.usage.cacheWrite,
 		totalTokens: message.usage.totalTokens,
+		costUsd: message.usage.cost.total,
 	});
 	emitContextStatus(inspect, emit);
 	if (message.errorMessage)
@@ -317,7 +318,7 @@ export function managedMessages({
 			type: "context-compaction",
 			evictedCount: assembly.evictedIds.length,
 			tokensBefore: assembly.tokensBefore,
-			tokensAfter: assembly.estimatedTokens,
+			tokensAfter: assembly.tokensAfter,
 			episodesArchived: assembly.episodesArchived,
 		});
 	const messages = assembly.payloads as AgentMessage[];

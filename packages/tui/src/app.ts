@@ -147,7 +147,7 @@ export class TuiApp {
 		});
 		this.wizard = new WizardView(renderer);
 		this.footer = new FooterView(renderer);
-		this.root.add(this.header.root);
+		this.transcript.root.add(this.header.root);
 		this.root.add(this.transcript.root);
 		this.root.add(this.composer.root);
 		this.root.add(this.wizard.root);
@@ -239,6 +239,8 @@ export class TuiApp {
 		this.transcript.setDisableThinkingBlocks(state.disableThinkingBlocks);
 		this.transcript.update(state.entries);
 		this.composer.update(state.followUps);
+		this.composer.setRunning(state.running);
+		this.composer.setThinkingLevel(state.modelConfig?.thinkingLevel);
 		/**
 		 * One row per name, in the order a leading `/name` resolves: a built-in
 		 * command shadows a prompt template, which shadows a skill.
@@ -298,8 +300,13 @@ export class TuiApp {
 
 	private updateLayout = () => {
 		const compact = this.root.ctx.height < 9;
-		/** A narrower terminal may no longer have room for the header's notice. */
-		this.header.update(this.store.getState());
+		/**
+		 * A narrower terminal may no longer have room for the header's notice or
+		 * the footer's leverage readout; both pick their form from the width.
+		 */
+		const state = this.store.getState();
+		this.header.update(state);
+		this.footer.update(state);
 		this.header.root.visible = !compact;
 		this.footer.root.visible = !compact;
 		this.composer.setCompact(compact);

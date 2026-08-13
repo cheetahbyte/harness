@@ -30,10 +30,23 @@ token set or an API key. Harnez writes the file with `0o600` permissions, and
 
 ```json
 {
+  "providers": {
+    "ollama": {
+      "type": "openai-compatible",
+      "baseUrl": "http://localhost:11434/v1",
+      "auth": "none",
+      "models": ["qwen3-coder:30b", "gpt-oss:20b"]
+    },
+    "company-llm": {
+      "type": "openai-compatible",
+      "baseUrl": "https://llm.example.com/v1",
+      "auth": "api-key",
+      "models": ["company-coder", "company-chat"]
+    }
+  },
   "model": {
-    "provider": "openai-codex",
-    "model": "gpt-5.1-codex",
-    "baseUrl": null,
+    "provider": "ollama",
+    "model": "qwen3-coder:30b",
     "thinkingLevel": "medium"
   },
   "fastCycle": [
@@ -49,6 +62,20 @@ token set or an API key. Harnez writes the file with `0o600` permissions, and
   }
 }
 ```
+
+`providers` defines named OpenAI-compatible endpoints. Provider IDs appear in
+`/login`, `/model`, and the model header. Each provider requires an absolute
+HTTP(S) `baseUrl`, `auth` set to `none` or `api-key`, and a non-empty list of
+unique, non-empty model IDs. IDs cannot collide with built-in providers or the
+legacy `openai-compatible` provider. Invalid definitions report the settings
+file and provider ID before a model request starts.
+
+Use `/login company-llm` to store an API key for an `api-key` provider. Keys
+are stored only in `auth.json` under that provider ID, with its existing
+`0o600` permissions; do not put keys in `settings.json`. An `auth: "none"`
+provider is immediately available. Harnez supplies its OpenAI client a fixed
+placeholder key, so compatible local servers must tolerate an
+`Authorization: Bearer unused` header.
 
 `model` is whatever `/model` last set. `thinkingLevel` is the last level
 selected with `Shift+Tab`; supported levels depend on the model. `baseUrl`
@@ -89,6 +116,16 @@ independently, so a project may override only `generated` or only `source`:
     harnez.sqlite     # session, event, and context storage
     skills/              # project-local skills, alongside .agents/skills
     prompts/             # project-local prompt templates, alongside .agents/prompts
+```
+
+Provider maps merge by provider ID. A project provider with the same ID
+replaces that complete global definition. Restart the server after editing
+either settings file; settings are not reloaded while it runs.
+
+The legacy one-off endpoint command remains available:
+
+```text
+/model openai-compatible <model> <base-url>
 ```
 
 User-level skills live in `~/.harnez/skills` and `~/.agents/skills`, and

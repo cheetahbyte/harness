@@ -55,6 +55,8 @@ export class HarnezServer {
 	private readonly runtime: HarnezAgentRuntime;
 	private readonly credentials: CredentialStore;
 	private readonly models: ModelRegistry;
+	private readonly injectedModels: boolean;
+	private readonly workspaceModels = new Map<string, ModelRegistry>();
 	private readonly defaultWorkspace: string;
 	private readonly context: ContextManager;
 	private readonly taskRunner: SessionTaskRunner;
@@ -80,15 +82,20 @@ export class HarnezServer {
 			throw new Error("context budget must be a positive number");
 		this.defaultWorkspace = workspacePath(workspace);
 		this.credentials = new JsonCredentialStore(globalHarnezPath("auth.json"));
-		this.models = models ?? createHarnezModels(this.credentials);
+		this.injectedModels = !!models;
+		this.models =
+			models ??
+			createHarnezModels(this.credentials, this.defaultSettings.providers());
+		this.workspaceModels.set(this.defaultWorkspace, this.models);
 		this.namer = new SessionNamer(this.models as Models, this.credentials);
-		this.authentication = new SessionAuthentication(this.models, (id, event) =>
-			this.publish(id, event, false),
+		this.authentication = new SessionAuthentication(
+			(id) => this.modelsFor(id),
+			(id, event) => this.publish(id, event, false),
 		);
 		this.context = new ContextManager(this.store);
 		this.runtime = new HarnezAgentRuntime({
 			credentials: this.credentials,
-			models: this.models as Models,
+			modelsFor: (id) => this.modelsFor(id) as Models,
 			store: this.store,
 			context: this.context,
 			...(options.contextBudget === undefined
@@ -334,7 +341,7 @@ export class HarnezServer {
 		const { model } = providerModels(
 			selected,
 			this.credentials,
-			this.models as Models,
+			this.modelsFor(id) as Models,
 		);
 		/** An unset level falls back to the one this model last cycled to. */
 		const thinkingLevel =
@@ -360,7 +367,7 @@ export class HarnezServer {
 		const { model } = providerModels(
 			config,
 			this.credentials,
-			this.models as Models,
+			this.modelsFor(id) as Models,
 		);
 		const levels = getSupportedThinkingLevels(model);
 		const current = clampThinkingLevel(model, config.thinkingLevel ?? "medium");
@@ -390,7 +397,7 @@ export class HarnezServer {
 			: -1;
 		for (let offset = 1; offset <= entries.length; offset++) {
 			const entry = entries[(from + offset + entries.length) % entries.length];
-			if (!entry || !this.available(entry)) continue;
+			if (!entry || !this.available(id, entry)) continue;
 			this.handleConfigure(id, session, { type: "configure", ...entry }, true);
 			return;
 		}
@@ -443,9 +450,9 @@ export class HarnezServer {
 			.find((entry) => sameModel(entry, config));
 	}
 
-	private available(config: ModelConfig): boolean {
+	private available(id: string, config: ModelConfig): boolean {
 		try {
-			providerModels(config, this.credentials, this.models as Models);
+			providerModels(config, this.credentials, this.modelsFor(id) as Models);
 			return true;
 		} catch (error) {
 			log.debug({ error, config }, "fast-cycle model unavailable");
@@ -579,7 +586,12 @@ export class HarnezServer {
 		const fallback = promptTitle(prompt);
 		if (fallback) this.store.setTitle(id, fallback);
 		void this.namer
-			.generate(prompt, config.source, this.modelConfig(id))
+			.generate(
+				prompt,
+				config.source,
+				this.modelConfig(id),
+				this.modelsFor(id) as Models,
+			)
 			.then((title) => {
 				if (title && !this.manuallyNamedSessions.has(id))
 					this.store.setTitle(id, title);
@@ -609,14 +621,15 @@ export class HarnezServer {
 	}
 
 	private async listProviders(id: string, authType?: AuthType): Promise<void> {
+		const models = this.modelsFor(id);
 		const providers = await Promise.all(
-			this.models
+			models
 				.getProviders()
 				.map(async (provider): Promise<ProviderOption | undefined> => {
 					const authTypes = interactiveAuthTypes(provider.auth);
 					if (!authTypes.length || (authType && !authTypes.includes(authType)))
 						return undefined;
-					const configured = await this.models
+					const configured = await models
 						.checkAuth(provider.id)
 						.then(Boolean)
 						.catch(() => false);
@@ -641,11 +654,12 @@ export class HarnezServer {
 	}
 
 	private async listModels(id: string, provider?: string): Promise<void> {
-		const models = await this.models.getAvailable(provider);
+		const registry = this.modelsFor(id);
+		const models = await registry.getAvailable(provider);
 		const options: ModelOption[] = models.map((model) => ({
 			provider: model.provider,
 			providerName:
-				this.models.getProvider(model.provider)?.name ?? model.provider,
+				registry.getProvider(model.provider)?.name ?? model.provider,
 			id: model.id,
 			name: model.name,
 		}));
@@ -712,6 +726,20 @@ export class HarnezServer {
 					globalHarnezPath("settings.json"),
 					projectHarnezPath("settings.json", resolve(workspace)),
 				);
+	}
+
+	private modelsFor(id: string): ModelRegistry {
+		if (this.injectedModels) return this.models;
+		const workspace = this.workspace(id);
+		let models = this.workspaceModels.get(workspace);
+		if (!models) {
+			models = createHarnezModels(
+				this.credentials,
+				this.settingsFor(id).providers(),
+			);
+			this.workspaceModels.set(workspace, models);
+		}
+		return models;
 	}
 
 	private session(id: string): Session {

@@ -62,7 +62,8 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 	const showStatus =
 		(process.env["HARNEZ_SHOW_STATUS"] ??
 			process.env["HARNESS_SHOW_STATUS"]) === "1";
-	return createStore<TuiState>((set) => {
+	return createStore<TuiState>((set, get) => {
+		let legendShown = false;
 		const append = (entry: TranscriptEntry) =>
 			set((state) => ({ entries: [...finishActive(state.entries), entry] }));
 		const delta = (kind: "assistant" | "reasoning", text: string) =>
@@ -95,6 +96,8 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 			blockedQueueId: undefined,
 			fastCycle: [],
 			disableThinkingBlocks: false,
+			sessionCostUsd: undefined,
+			turnCostUsd: undefined,
 			wizard: { kind: "idle" },
 			apply(event) {
 				if (event.type === "session") return;
@@ -266,6 +269,7 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 				if (event.type === "error") {
 					set((state) => ({
 						running: false,
+						turnCostUsd: undefined,
 						wizard:
 							state.wizard.kind === "idle"
 								? state.wizard
@@ -273,19 +277,42 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 					}));
 					return append({ kind: "error", text: event.message, error: true });
 				}
-				if (event.type === "usage" && showStatus)
-					return append({
-						kind: "usage",
-						text: `in ${event.input} · out ${event.output} · total ${event.totalTokens}`,
-					});
-				if (event.type === "context-status")
-					return set({
+				if (event.type === "usage") {
+					const costUsd = event.costUsd;
+					if (costUsd !== undefined)
+						set((state) => ({
+							sessionCostUsd: (state.sessionCostUsd ?? 0) + costUsd,
+							turnCostUsd: (state.turnCostUsd ?? 0) + costUsd,
+						}));
+					if (showStatus)
+						return append({
+							kind: "usage",
+							text: `in ${event.input} · out ${event.output} · total ${event.totalTokens}`,
+						});
+					return;
+				}
+				if (event.type === "context-status") {
+					set({
 						contextStatus: {
 							liveTokens: event.liveTokens,
 							historyTokens: event.historyTokens,
 							parkedObservations: event.parkedObservations,
 						},
 					});
+					/**
+					 * `↦` does not explain itself, so the readout gets one sentence the
+					 * first time it has something to show — after that the footer speaks
+					 * for itself and repeating this would just be noise.
+					 */
+					if (!legendShown && event.historyTokens > event.liveTokens) {
+						legendShown = true;
+						append({
+							kind: "compaction",
+							text: "context: ≡ history recorded ↦ tokens carried per turn · the difference stays recallable",
+						});
+					}
+					return;
+				}
 				if (event.type === "context-compaction")
 					return append({
 						kind: "compaction",
@@ -306,16 +333,17 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 					});
 				}
 				if (event.type === "completed") {
-					set({ running: false });
+					const turnCostUsd = get().turnCostUsd;
+					set({ running: false, turnCostUsd: undefined });
 					if (event.durationMs !== undefined)
 						return append({
 							kind: event.type,
-							text: `✶ Noodled for ${formatDuration(event.durationMs)}`,
+							text: `✶ Noodled for ${formatDuration(event.durationMs)}${turnCostUsd === undefined ? "" : ` (${formatUsd(turnCostUsd)})`}`,
 						});
 					return;
 				}
 				if (event.type === "aborted") {
-					set({ running: false });
+					set({ running: false, turnCostUsd: undefined });
 					if (showStatus) return append({ kind: event.type, text: event.type });
 					return;
 				}
@@ -372,6 +400,8 @@ export type TuiState = {
 	modelConfig?: ModelConfig;
 	fastCycle: FastCycleEntry[];
 	disableThinkingBlocks: boolean;
+	sessionCostUsd: number | undefined;
+	turnCostUsd: number | undefined;
 	contextStatus?: ContextStatus;
 	wizard: WizardState;
 	apply: (event: ServerEvent) => void;
@@ -407,10 +437,14 @@ function formatDuration(durationMs: number): string {
 	return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
 }
 
-function formatTokens(tokens: number): string {
+export function formatTokens(tokens: number): string {
 	if (tokens < 1000) return String(tokens);
 	const thousands = tokens / 1000;
 	return `${thousands < 10 ? thousands.toFixed(1).replace(/\.0$/, "") : Math.round(thousands)}k`;
+}
+
+export function formatUsd(cost: number): string {
+	return `${cost.toFixed(4)}$`;
 }
 
 export function commandForInput(text: string): ClientCommand {
