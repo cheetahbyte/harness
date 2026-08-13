@@ -27,10 +27,10 @@ function skill(root: string, name: string, instructions: string) {
 }
 
 test("accepts name or id and honors disable-model-invocation", async () => {
-	const project = mkdtempSync(join(tmpdir(), "harness-project-"));
-	const home = mkdtempSync(join(tmpdir(), "harness-home-"));
+	const project = mkdtempSync(join(tmpdir(), "harnez-project-"));
+	const home = mkdtempSync(join(tmpdir(), "harnez-home-"));
 	paths.push(project, home);
-	const root = join(project, ".harness/skills");
+	const root = join(project, ".harnez/skills");
 	skill(root, "review", "--- marker in body is harmless");
 	mkdirSync(join(root, "id-only"), { recursive: true });
 	writeFileSync(
@@ -62,11 +62,29 @@ test("accepts name or id and honors disable-model-invocation", async () => {
 	);
 });
 
-test("activates from one verified buffer and rejects edited skills", async () => {
-	const project = mkdtempSync(join(tmpdir(), "harness-project-"));
-	const home = mkdtempSync(join(tmpdir(), "harness-home-"));
+test("reports unreadable roots and keeps scanning the rest", async () => {
+	const project = mkdtempSync(join(tmpdir(), "harnez-project-"));
+	const home = mkdtempSync(join(tmpdir(), "harnez-home-"));
 	paths.push(project, home);
-	const root = join(project, ".harness/skills/review");
+	mkdirSync(join(project, ".harnez"), { recursive: true });
+	writeFileSync(join(project, ".harnez/skills"), "not a directory");
+	skill(join(home, ".harnez/skills"), "review", "Review carefully.");
+
+	const scanned = await scanSkills(project, home, "catalog-1");
+
+	expect(scanned.discoverable.map((entry) => entry.ref.id)).toEqual([
+		"skill:review",
+	]);
+	expect(scanned.diagnostics.map(({ path, state }) => ({ path, state }))).toEqual(
+		[{ path: join(project, ".harnez/skills"), state: "unreadable" }],
+	);
+});
+
+test("activates from one verified buffer and rejects edited skills", async () => {
+	const project = mkdtempSync(join(tmpdir(), "harnez-project-"));
+	const home = mkdtempSync(join(tmpdir(), "harnez-home-"));
+	paths.push(project, home);
+	const root = join(project, ".harnez/skills/review");
 	mkdirSync(root, { recursive: true });
 	const path = join(root, "SKILL.md");
 	writeFileSync(

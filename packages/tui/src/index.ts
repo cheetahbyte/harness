@@ -1,23 +1,44 @@
-import { createCliRenderer } from "@opentui/core";
+import {
+	type CliRenderer,
+	createCliRenderer,
+	type SelectOption,
+} from "@opentui/core";
 import { abortableSleep } from "../../shared/src/abortable-sleep";
 import { TuiApp } from "./app";
-import { HarnessClient } from "./client";
+import { HarnezClient, type SessionSummary } from "./client";
+import { WizardView } from "./components/wizard";
 import { createTuiStore } from "./store";
 
 const RECONNECT_BASE_DELAY_MS = 250;
 const RECONNECT_MAX_DELAY_MS = 5_000;
 
 export async function runTui(
-	options: { sessionId?: string } = {},
+	options: {
+		sessionId?: string;
+		pickSession?: boolean;
+		/** Resolved off the startup path; see the caller in the CLI entry point. */
+		notice?: Promise<{ full: string; short: string } | undefined>;
+	} = {},
 ): Promise<void> {
-	const client = new HarnessClient();
-	const sessionId = options.sessionId ?? (await client.createSession());
-	const store = createTuiStore(sessionId);
-	const controller = new AbortController();
+	const client = new HarnezClient();
 	const renderer = await createCliRenderer({
 		exitOnCtrlC: true,
 		targetFps: 30,
 	});
+	let sessionId: string;
+	try {
+		sessionId =
+			options.sessionId ??
+			(options.pickSession
+				? await pickSession(renderer, await client.listSessions())
+				: undefined) ??
+			(await client.createSession());
+	} catch (error) {
+		renderer.destroy();
+		throw error;
+	}
+	const store = createTuiStore(sessionId);
+	const controller = new AbortController();
 	const app = new TuiApp(renderer, store, (command) =>
 		client.send(sessionId, command),
 	);
@@ -40,9 +61,11 @@ export async function runTui(
 					},
 					onConnected: () => {
 						attempt = 0;
-						void client
-							.send(sessionId, { type: "list-skills" })
-							.catch(() => undefined);
+						for (const command of [
+							{ type: "list-skills" },
+							{ type: "list-prompts" },
+						] as const)
+							void client.send(sessionId, command).catch(() => undefined);
 					},
 					from: cursor,
 				});
@@ -69,9 +92,50 @@ export async function runTui(
 	}
 
 	void streamWithReconnect();
+	/** Guarded on the signal so a late answer never touches a torn-down renderer. */
+	void options.notice
+		?.then((text) => {
+			if (text && !controller.signal.aborted) app.setNotice(text);
+		})
+		.catch(() => undefined);
 	await new Promise<void>((resolve) => renderer.once("destroy", resolve));
 	app.destroy();
 	controller.abort();
+}
+
+export function pickSession(
+	renderer: CliRenderer,
+	sessions: SessionSummary[],
+): Promise<string | undefined> {
+	const wizard = new WizardView(renderer);
+	renderer.root.add(wizard.root);
+	return new Promise((resolve) => {
+		const finish = (sessionId?: string) => {
+			wizard.hide();
+			wizard.destroy();
+			renderer.root.remove(wizard.root);
+			resolve(sessionId);
+		};
+		wizard.show(
+			{
+				kind: "select",
+				title: "Resume session",
+				options: sessions.map(
+					(session): SelectOption => ({
+						name: session.title ?? session.workspace ?? "Unknown workspace",
+						description: `${session.title !== null ? `${session.workspace ?? "Unknown workspace"} · ` : ""}${new Date(session.createdAt).toLocaleString()} · ${session.id}`,
+						value: session.id,
+					}),
+				),
+				searchable: true,
+				descriptionLayout: "inline",
+			},
+			{
+				select: (option) => finish(option.value as string),
+				cancel: () => finish(),
+			},
+		);
+	});
 }
 
 if (import.meta.main)

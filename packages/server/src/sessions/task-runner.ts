@@ -1,26 +1,24 @@
-import type { ModelConfig, ServerEvent } from "../../shared/src/protocol";
-import { slashCommandPattern } from "../../shared/src/slash-command";
-import type { HarnessAgentRuntime } from "./agent/runtime";
+import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
+import { slashCommandPattern } from "../../../shared/src/slash-command";
+import type { HarnezAgentRuntime } from "../agent/runtime";
 import {
 	CapabilityCatalog,
 	type CapabilitySnapshot,
-} from "./capabilities/catalog";
+} from "../capabilities/catalog";
 import {
 	CapabilityContext,
 	type TokenAccountant,
-} from "./capabilities/context";
-import type { ContextManager } from "./context/manager";
-import { log } from "./logger";
-import type { SessionStore } from "./session-store";
-import { activateSkill, type SkillSnapshotEntry, scanSkills } from "./skills";
-import { TaskRuntime, type TaskTerminalStatus } from "./task-runtime";
-import type {
-	QueuedTask,
-	SchedulerDecision,
-	TaskScheduler,
-} from "./task-scheduler";
-import { tokenCost } from "./token-cost";
-import { CoreTools } from "./tools";
+} from "../capabilities/context";
+import type { ContextManager } from "../context/manager";
+import { log } from "../logger";
+import { expandPrompt, scanPrompts } from "../prompts";
+import { activateSkill, type SkillSnapshotEntry, scanSkills } from "../skills";
+import { TaskRuntime, type TaskTerminalStatus } from "../task-runtime";
+import { tokenCost } from "../token-cost";
+import { CoreTools } from "../tools";
+import type { QueuedTask, SchedulerDecision } from "./scheduler";
+import type { Session } from "./session";
+import type { SessionStore } from "./store";
 
 export type PendingSteer = {
 	id: string;
@@ -37,15 +35,8 @@ export type RunningTask = {
 	contextWatermark: number;
 };
 
-export type TaskSession = {
-	starting?: Promise<void>;
-	running?: RunningTask;
-	scheduler: TaskScheduler;
-	pendingSteer?: PendingSteer;
-};
-
 type RunnerOptions = {
-	runtime: HarnessAgentRuntime;
+	runtime: HarnezAgentRuntime;
 	store: SessionStore;
 	context: ContextManager;
 	capabilityBudget: number;
@@ -56,7 +47,7 @@ type RunnerOptions = {
 
 type RunInput = {
 	id: string;
-	session: TaskSession;
+	session: Session;
 	command: string | QueuedTask | PendingSteer;
 	predecessor?: TaskRuntime;
 	resume?: RunningTask;
@@ -85,7 +76,7 @@ export class SessionTaskRunner {
 						? { submissionWatermark: pending.submissionWatermark }
 						: {}),
 				});
-		this.emitStart(id, running, pending, pendingType);
+		this.emitStart(id, running, pending, pendingType, text);
 		try {
 			await this.options.runtime.run({
 				sessionId: id,
@@ -112,7 +103,7 @@ export class SessionTaskRunner {
 
 	async advance(
 		id: string,
-		session: TaskSession,
+		session: Session,
 		decision: SchedulerDecision | undefined,
 	): Promise<void> {
 		const steer = session.pendingSteer;
@@ -136,7 +127,7 @@ export class SessionTaskRunner {
 	}
 
 	private resumeTask(
-		session: TaskSession,
+		session: Session,
 		resume: RunningTask,
 		controller: AbortController,
 		prompt: string,
@@ -174,7 +165,13 @@ export class SessionTaskRunner {
 		running: RunningTask,
 		pending: QueuedTask | PendingSteer | undefined,
 		pendingType: QueuedTask["kind"] | PendingSteer["type"] | undefined,
+		text: string,
 	): void {
+		this.options.emit(id, {
+			type: "user",
+			text,
+			...(pending ? { id: pending.id } : {}),
+		});
 		if (pending)
 			this.options.emit(id, {
 				type: "command",
@@ -202,7 +199,7 @@ export class SessionTaskRunner {
 
 	private async fail(
 		id: string,
-		session: TaskSession,
+		session: Session,
 		running: RunningTask,
 		pending: QueuedTask | PendingSteer | undefined,
 		error: unknown,
@@ -230,7 +227,7 @@ export class SessionTaskRunner {
 
 	private async abort(
 		id: string,
-		session: TaskSession,
+		session: Session,
 		running: RunningTask,
 		pending: QueuedTask | PendingSteer | undefined,
 		startedAt: number,
@@ -303,13 +300,25 @@ export class SessionTaskRunner {
 	}): Promise<RunningTask> {
 		const bindingGeneration = crypto.randomUUID();
 		const contextWatermark = this.options.store.contextSequence(id);
-		const tools = new CoreTools(this.options.workspace(id));
-		const scanned = await scanSkills(
-			this.options.workspace(id),
-			undefined,
-			bindingGeneration,
-		);
+		const workspace = this.options.workspace(id);
+		const tools = new CoreTools(workspace);
+		const [scanned, prompts] = await Promise.all([
+			scanSkills(workspace, undefined, bindingGeneration),
+			scanPrompts(workspace),
+		]);
 		const skills = [...scanned.discoverable, ...scanned.operatorOnly];
+		for (const diagnostic of scanned.diagnostics)
+			log.warn(
+				{ sessionId: id, path: diagnostic.path, error: diagnostic.error },
+				"skill ignored",
+			);
+		/** A template expands before skills are selected, so it can invoke them. */
+		const { text: expanded, template } = expandPrompt(text, prompts.templates);
+		if (template)
+			log.info(
+				{ sessionId: id, prompt: template.name, path: template.path },
+				"prompt template expanded",
+			);
 		const catalog = new CapabilityCatalog(
 			[
 				...tools.capabilities(bindingGeneration),
@@ -323,14 +332,14 @@ export class SessionTaskRunner {
 		});
 		const { task, context, accountant } = this.createRuntime({
 			id,
-			text,
+			text: expanded,
 			snapshot,
 			contextWatermark,
 			...(predecessor ? { predecessor } : {}),
 			...(submissionWatermark === undefined ? {} : { submissionWatermark }),
 		});
 		this.loadTools(task, snapshot, context, accountant);
-		const { prompt, selected } = selectedSkills(text, skills);
+		const { prompt, selected } = selectedSkills(expanded, skills);
 		await this.activateSkills(selected, snapshot, context, accountant);
 		return {
 			controller,

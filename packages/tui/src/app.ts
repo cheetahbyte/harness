@@ -10,9 +10,11 @@ import type {
 	AuthPromptEvent,
 	AuthType,
 	ClientCommand,
+	FastCycleEntry,
+	ModelOption,
 	ProviderOption,
 } from "../../shared/src/protocol";
-import { ComposerView } from "./components/composer";
+import { type CommandHint, ComposerView } from "./components/composer";
 import { FooterView } from "./components/footer";
 import { HeaderView } from "./components/header";
 import { TranscriptView } from "./components/transcript";
@@ -23,10 +25,9 @@ type WizardFlow =
 	| { kind: "login-method"; provider?: string }
 	| { kind: "login-provider"; authType: AuthType }
 	| { kind: "login-active" }
-	| { kind: "model"; provider?: string };
-type AppCommand = {
-	name: string;
-	description: string;
+	| { kind: "model"; provider?: string }
+	| { kind: "fast-cycle" };
+type AppCommand = CommandHint & {
 	kind: "command";
 	run: (args: string) => void | Promise<void>;
 };
@@ -73,6 +74,21 @@ export class TuiApp {
 					/^\S+\s+\S+(?:\s+\S+)?\s*$/.test(args)
 						? this.send(commandForInput(`/model ${args}`))
 						: this.openModel(args || undefined),
+			},
+			{
+				name: "/fast-cycle",
+				description: "Pick the models Ctrl+P cycles through",
+				kind: "command",
+				run: () => this.openFastCycle(),
+			},
+			{
+				name: "/session-name",
+				description: "Set the current session name",
+				kind: "command",
+				run: (title) => {
+					if (!title.trim()) throw new Error("session name is required");
+					return this.send({ type: "set-session-title", title });
+				},
 			},
 			{
 				name: "/ack-effects",
@@ -127,6 +143,7 @@ export class TuiApp {
 			abort: () => this.escape(),
 			toggleThinking: () => this.toggleThinking(),
 			cycleThinkingLevel: () => this.cycleThinkingLevel(),
+			cycleModel: () => this.cycleModel(),
 		});
 		this.wizard = new WizardView(renderer);
 		this.footer = new FooterView(renderer);
@@ -140,6 +157,11 @@ export class TuiApp {
 		this.unsubscribe = store.subscribe(() => this.sync());
 		this.updateLayout();
 		this.sync();
+	}
+
+	setNotice(text: { full: string; short: string }) {
+		this.header.setNotice(text);
+		this.renderer.requestRender();
 	}
 
 	destroy() {
@@ -213,17 +235,30 @@ export class TuiApp {
 		const state = this.store.getState();
 		this.header.update(state);
 		this.transcript.setSkills(state.skills.map((skill) => skill.name));
+		this.transcript.setPrompts(state.prompts.map((prompt) => prompt.name));
 		this.transcript.setDisableThinkingBlocks(state.disableThinkingBlocks);
 		this.transcript.update(state.entries);
 		this.composer.update(state.followUps);
-		this.composer.setCommands([
+		/**
+		 * One row per name, in the order a leading `/name` resolves: a built-in
+		 * command shadows a prompt template, which shadows a skill.
+		 */
+		const named = new Map<string, CommandHint>();
+		for (const command of [
 			...this.commands,
+			...state.prompts.map((prompt) => ({
+				name: `/${prompt.name}`,
+				description: prompt.description,
+				kind: "prompt" as const,
+			})),
 			...state.skills.map((skill) => ({
 				name: `/${skill.name}`,
 				description: skill.description,
 				kind: "skill" as const,
 			})),
-		]);
+		])
+			if (!named.has(command.name)) named.set(command.name, command);
+		this.composer.setCommands([...named.values()]);
 		this.footer.update(state);
 		if (state.wizard !== this.renderedWizard) {
 			this.renderedWizard = state.wizard;
@@ -255,8 +290,16 @@ export class TuiApp {
 		});
 	}
 
+	private cycleModel() {
+		void this.send({ type: "cycle-model" }).catch((error) => {
+			this.reportError(error);
+		});
+	}
+
 	private updateLayout = () => {
 		const compact = this.root.ctx.height < 9;
+		/** A narrower terminal may no longer have room for the header's notice. */
+		this.header.update(this.store.getState());
 		this.header.root.visible = !compact;
 		this.footer.root.visible = !compact;
 		this.composer.setCompact(compact);
@@ -278,6 +321,12 @@ export class TuiApp {
 			type: "list-models",
 			...(provider ? { provider } : {}),
 		});
+	}
+
+	private openFastCycle() {
+		this.flow = { kind: "fast-cycle" };
+		this.showNoticeText("Fast cycle", "Loading configured models…");
+		void this.sendWizard({ type: "list-models" });
 	}
 
 	private renderWizard(wizard: WizardState) {
@@ -355,6 +404,7 @@ export class TuiApp {
 
 	private showModels(wizard: Extract<WizardState, { kind: "models" }>) {
 		const flow = this.flow;
+		if (flow?.kind === "fast-cycle") return this.showFastCycle(wizard.models);
 		if (flow?.kind !== "model") return;
 		const models = wizard.models.filter(
 			(model) => !flow.provider || model.provider === flow.provider,
@@ -382,6 +432,61 @@ export class TuiApp {
 			},
 			true,
 			"inline",
+		);
+	}
+
+	/** Space-toggled picker over every configured model; the check marks are the cycle. */
+	private showFastCycle(models: ModelOption[]) {
+		if (!models.length)
+			return this.showNoticeText(
+				"Fast cycle",
+				"No configured models. Run /login first.",
+			);
+		const { fastCycle } = this.store.getState();
+		const levels = new Map(
+			fastCycle.map((entry) => [modelKey(entry), entry.thinkingLevel]),
+		);
+		this.composer.setActive(false);
+		this.wizard.show(
+			{
+				kind: "multiselect",
+				title: "Select the models Ctrl+P cycles through",
+				options: models.map((model) => {
+					const key = modelKey({ provider: model.provider, model: model.id });
+					const level = levels.get(key);
+					return {
+						name: model.name,
+						description: level
+							? `${model.providerName} · ${level}`
+							: model.providerName,
+						value: key,
+					};
+				}),
+				selected: fastCycle.map(modelKey),
+				searchable: true,
+			},
+			{
+				confirm: (values) => {
+					const selected = new Set(values);
+					const entries: FastCycleEntry[] = models
+						.map((model) => ({
+							key: modelKey({ provider: model.provider, model: model.id }),
+							model,
+						}))
+						.filter(({ key }) => selected.has(key))
+						.map(({ key, model }) => {
+							const level = levels.get(key);
+							return {
+								provider: model.provider,
+								model: model.id,
+								...(level ? { thinkingLevel: level } : {}),
+							};
+						});
+					this.closeWizard();
+					void this.sendWizard({ type: "set-fast-cycle", entries });
+				},
+				cancel: () => this.escape(),
+			},
 		);
 	}
 
@@ -496,6 +601,10 @@ export class TuiApp {
 			this.reportError(error);
 		}
 	}
+}
+
+function modelKey(config: { provider: string; model: string }): string {
+	return `${config.provider}/${config.model}`;
 }
 
 function noticeText(notification: AuthNotifyEvent): string {

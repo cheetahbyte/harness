@@ -3,22 +3,23 @@ import type {
 	ServerEvent,
 	StreamLine,
 } from "../../shared/src/protocol";
+import { VERSION } from "../../shared/src/version";
 import type { SubagentResult } from "./context/types";
 import { log } from "./logger";
-import { HarnessServer } from "./server";
-import { SessionStore } from "./session-store";
+import { HarnezServer } from "./server";
+import { SessionStore } from "./sessions/store";
 
-type ServeHarnessOptions = {
+type ServeHarnezOptions = {
 	port?: number;
 	workspace?: string;
 	databasePath?: string;
 	contextBudget?: number;
 };
 
-export function serveHarness(
-	options: ServeHarnessOptions = {},
+export function serveHarnez(
+	options: ServeHarnezOptions = {},
 ): ReturnType<typeof Bun.serve> {
-	const harness = new HarnessServer(
+	const harnez = new HarnezServer(
 		new SessionStore(options.databasePath),
 		options.workspace,
 		undefined,
@@ -31,12 +32,12 @@ export function serveHarness(
 		hostname: "127.0.0.1",
 		port: options.port ?? 7432,
 		idleTimeout: 0,
-		fetch: (request) => fetchHarness(harness, request),
+		fetch: (request) => fetchHarnez(harnez, request),
 	});
 }
 
-async function fetchHarness(
-	harness: HarnessServer,
+async function fetchHarnez(
+	harnez: HarnezServer,
 	request: Request,
 ): Promise<Response> {
 	const url = new URL(request.url);
@@ -46,9 +47,15 @@ async function fetchHarness(
 		"http request",
 	);
 	if (request.method === "GET" && url.pathname === "/health")
-		return Response.json({ name: "harnez", pid: process.pid });
+		return Response.json({
+			name: "harnez",
+			pid: process.pid,
+			version: VERSION,
+		});
+	if (request.method === "GET" && url.pathname === "/sessions")
+		return Response.json(harnez.store.list());
 	if (request.method === "POST" && url.pathname === "/sessions")
-		return createSession(harness, request);
+		return createSession(harnez, request);
 	const match = url.pathname.match(
 		/^\/sessions\/([^/]+)(?:\/(events|commands|context|subagent-results))?$/,
 	);
@@ -56,23 +63,23 @@ async function fetchHarness(
 	if (!id) return new Response("not found", { status: 404 });
 	try {
 		if (request.method === "POST" && action === "subagent-results")
-			return await acceptSubagentResult(harness, id, request);
+			return await acceptSubagentResult(harnez, id, request);
 		if (request.method === "GET" && action === "context")
-			return Response.json(harness.contextStatus(id));
+			return Response.json(harnez.contextStatus(id));
 		if (request.method === "GET" && action === "events")
 			return eventStream(
-				harness,
+				harnez,
 				id,
 				request,
 				requestId,
 				Math.max(0, Number(url.searchParams.get("from")) || 0),
 			);
 		if (request.method === "POST" && action === "commands")
-			return await acceptCommand(harness, id, request, requestId);
+			return await acceptCommand(harnez, id, request, requestId);
 		if (request.method === "GET" && !action)
 			return Response.json({
 				sessionId: id,
-				events: harness.store.events(id),
+				events: harnez.store.events(id),
 			});
 	} catch (error) {
 		log.error({ err: error, requestId, sessionId: id }, "http request failed");
@@ -82,12 +89,12 @@ async function fetchHarness(
 }
 
 async function createSession(
-	harness: HarnessServer,
+	harnez: HarnezServer,
 	request: Request,
 ): Promise<Response> {
 	try {
 		return Response.json({
-			sessionId: harness.createSession(await sessionWorkspace(request)),
+			sessionId: harnez.createSession(await sessionWorkspace(request)),
 		});
 	} catch (error) {
 		return errorResponse(error, 400);
@@ -95,35 +102,35 @@ async function createSession(
 }
 
 async function acceptSubagentResult(
-	harness: HarnessServer,
+	harnez: HarnezServer,
 	id: string,
 	request: Request,
 ): Promise<Response> {
 	const handoff = parseSubagentHandoff(await request.json());
 	return Response.json(
-		harness.acceptSubagentResult(id, handoff.result, handoff.subagentId),
+		harnez.acceptSubagentResult(id, handoff.result, handoff.subagentId),
 		{ status: 201 },
 	);
 }
 
 async function acceptCommand(
-	harness: HarnessServer,
+	harnez: HarnezServer,
 	id: string,
 	request: Request,
 	requestId: string,
 ): Promise<Response> {
-	harness.workspace(id); // Validate before detaching the command.
-	void harness
+	harnez.workspace(id); // Validate before detaching the command.
+	void harnez
 		.command(id, (await request.json()) as ClientCommand)
 		.catch((error) => {
 			log.error({ err: error, requestId, sessionId: id }, "command failed");
-			harness.reportError(id, error);
+			harnez.reportError(id, error);
 		});
 	return new Response(null, { status: 202 });
 }
 
 function eventStream(
-	harness: HarnessServer,
+	harnez: HarnezServer,
 	id: string,
 	request: Request,
 	requestId: string,
@@ -144,7 +151,7 @@ function eventStream(
 					),
 				);
 			write({ type: "session", sessionId: id });
-			const unsubscribe = harness.subscribe(id, write, from);
+			const unsubscribe = harnez.subscribe(id, write, from);
 			const heartbeat = setInterval(() => {
 				try {
 					controller.enqueue(encoder.encode("\n"));
@@ -155,14 +162,7 @@ function eventStream(
 			request.signal.addEventListener(
 				"abort",
 				() =>
-					disconnect(
-						harness,
-						id,
-						requestId,
-						controller,
-						unsubscribe,
-						heartbeat,
-					),
+					disconnect(harnez, id, requestId, controller, unsubscribe, heartbeat),
 				{ once: true },
 			);
 		},
@@ -176,7 +176,7 @@ function eventStream(
 }
 
 function disconnect(
-	harness: HarnessServer,
+	harnez: HarnezServer,
 	id: string,
 	requestId: string,
 	controller: ReadableStreamDefaultController<Uint8Array>,
@@ -187,7 +187,7 @@ function disconnect(
 	clearInterval(heartbeat);
 	unsubscribe();
 	// Reconnects make disconnects routine, so cancellation must not escape.
-	void harness
+	void harnez
 		.command(id, { type: "auth-cancel" })
 		.catch((error) =>
 			log.error(

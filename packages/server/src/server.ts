@@ -1,4 +1,3 @@
-import { EventEmitter } from "node:events";
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -10,17 +9,21 @@ import {
 import type {
 	AuthType,
 	ClientCommand,
+	FastCycleEntry,
+	ModelConfig,
 	ModelOption,
+	PromptOption,
 	ProviderOption,
 	ServerEvent,
 	SkillOption,
 } from "../../shared/src/protocol";
-import { HarnessAgentRuntime } from "./agent/runtime";
+import { HarnezAgentRuntime } from "./agent/runtime";
 import { ContextManager } from "./context/manager";
 import type { SubagentResult } from "./context/types";
 import { log } from "./logger";
+import { scanPrompts } from "./prompts";
 import {
-	createHarnessModels,
+	createHarnezModels,
 	JsonCredentialStore,
 	providerModels,
 } from "./provider";
@@ -28,46 +31,44 @@ import {
 	interactiveAuthTypes,
 	type ModelRegistry,
 	SessionAuthentication,
-} from "./session-auth";
-import { SessionStore } from "./session-store";
+} from "./sessions/authentication";
+import { promptTitle, SessionNamer } from "./sessions/naming";
+import type { QueuedTask, SchedulerDecision } from "./sessions/scheduler";
+import { Session } from "./sessions/session";
+import { SessionStore } from "./sessions/store";
 import {
 	type PendingSteer,
 	pendingCommandType,
 	type RunningTask,
 	SessionTaskRunner,
-	type TaskSession,
-} from "./session-task-runner";
-import { globalHarnessPath, SettingsStore } from "./settings-store";
+} from "./sessions/task-runner";
+import {
+	globalHarnezPath,
+	projectHarnezPath,
+	SettingsStore,
+} from "./settings-store";
 import { availableSkills } from "./skills";
 import type { TaskRuntime } from "./task-runtime";
-import {
-	type QueuedTask,
-	type SchedulerDecision,
-	TaskScheduler,
-} from "./task-scheduler";
 
-type SessionEvents = { event: [event: ServerEvent, seq?: number] };
-type Session = TaskSession & {
-	events: EventEmitter<SessionEvents>;
-};
-
-export class HarnessServer {
+export class HarnezServer {
 	private readonly sessions = new Map<string, Session>();
-	private readonly runtime: HarnessAgentRuntime;
+	private readonly runtime: HarnezAgentRuntime;
 	private readonly credentials: CredentialStore;
 	private readonly models: ModelRegistry;
 	private readonly defaultWorkspace: string;
 	private readonly context: ContextManager;
 	private readonly taskRunner: SessionTaskRunner;
 	private readonly authentication: SessionAuthentication;
+	private readonly namer: SessionNamer;
+	private readonly manuallyNamedSessions = new Set<string>();
 
 	constructor(
 		readonly store = new SessionStore(),
 		workspace = process.cwd(),
 		models?: ModelRegistry,
 		private readonly defaultSettings = new SettingsStore(
-			globalHarnessPath("settings.json"),
-			resolve(workspace, ".harness/settings.json"),
+			globalHarnezPath("settings.json"),
+			projectHarnezPath("settings.json", resolve(workspace)),
 		),
 		options: { contextBudget?: number } = {},
 	) {
@@ -78,13 +79,14 @@ export class HarnessServer {
 		)
 			throw new Error("context budget must be a positive number");
 		this.defaultWorkspace = workspacePath(workspace);
-		this.credentials = new JsonCredentialStore(globalHarnessPath("auth.json"));
-		this.models = models ?? createHarnessModels(this.credentials);
+		this.credentials = new JsonCredentialStore(globalHarnezPath("auth.json"));
+		this.models = models ?? createHarnezModels(this.credentials);
+		this.namer = new SessionNamer(this.models as Models, this.credentials);
 		this.authentication = new SessionAuthentication(this.models, (id, event) =>
 			this.publish(id, event, false),
 		);
 		this.context = new ContextManager(this.store);
-		this.runtime = new HarnessAgentRuntime({
+		this.runtime = new HarnezAgentRuntime({
 			credentials: this.credentials,
 			models: this.models as Models,
 			store: this.store,
@@ -106,10 +108,7 @@ export class HarnessServer {
 
 	createSession(workspace = this.defaultWorkspace): string {
 		const id = this.store.create(workspacePath(workspace));
-		this.sessions.set(id, {
-			events: new EventEmitter(),
-			scheduler: new TaskScheduler(),
-		});
+		this.sessions.set(id, new Session());
 		log.info({ sessionId: id }, "session created");
 		return id;
 	}
@@ -141,6 +140,7 @@ export class HarnessServer {
 			listener(event, seq);
 		const model = this.modelConfig(id);
 		if (model) listener({ type: "model-config", config: model });
+		listener({ type: "fast-cycle", entries: this.settingsFor(id).fastCycle() });
 		listener({
 			type: "ui-settings",
 			disableThinkingBlocks: this.settingsFor(id).disableThinkingBlocks(),
@@ -158,6 +158,7 @@ export class HarnessServer {
 	async command(id: string, command: ClientCommand): Promise<void> {
 		const session = this.session(id);
 		log.debug({ sessionId: id, command: command.type }, "command received");
+		if (isUserSubmission(command)) this.store.markUserMessage(id);
 		if (isImmediateCommand(command.type)) {
 			await this.handleImmediateCommand(id, command);
 			return;
@@ -173,6 +174,10 @@ export class HarnessServer {
 		}
 		if (command.type === "cycle-thinking-level") {
 			this.cycleThinkingLevel(id, session);
+			return;
+		}
+		if (command.type === "cycle-model") {
+			this.cycleModel(id, session);
 			return;
 		}
 		if (this.handleConfigure(id, session, command)) return;
@@ -202,6 +207,23 @@ export class HarnessServer {
 				return;
 			case "list-skills":
 				await this.listSkills(id);
+				return;
+			case "list-prompts":
+				await this.listPrompts(id);
+				return;
+			case "set-session-title": {
+				const title =
+					typeof command.title === "string"
+						? command.title.replace(/\s+/g, " ").trim()
+						: "";
+				if (!title) throw new Error("session name is required");
+				this.manuallyNamedSessions.add(id);
+				this.store.claimNamingPrompt(id);
+				this.store.setTitle(id, title);
+				return;
+			}
+			case "set-fast-cycle":
+				this.setFastCycle(id, command.entries);
 				return;
 			case "set-disable-thinking-blocks":
 				this.settingsFor(id).setDisableThinkingBlocks(command.disabled);
@@ -314,10 +336,15 @@ export class HarnessServer {
 			this.credentials,
 			this.models as Models,
 		);
+		/** An unset level falls back to the one this model last cycled to. */
+		const thinkingLevel =
+			command.thinkingLevel ??
+			this.fastCycleEntry(id, selected)?.thinkingLevel ??
+			undefined;
 		const config = {
 			...selected,
-			...(command.thinkingLevel
-				? { thinkingLevel: clampThinkingLevel(model, command.thinkingLevel) }
+			...(thinkingLevel
+				? { thinkingLevel: clampThinkingLevel(model, thinkingLevel) }
 				: {}),
 		};
 		this.store.setModelConfig(id, config);
@@ -349,6 +376,81 @@ export class HarnessServer {
 			},
 			true,
 		);
+		this.rememberThinkingLevel(id, config, next);
+	}
+
+	/** Cycles to the next available `/fast-cycle` entry, each with its own level. */
+	private cycleModel(id: string, session: Session): void {
+		const entries = this.settingsFor(id).fastCycle();
+		if (!entries.length)
+			throw new Error("no fast-cycle models; pick some with /fast-cycle");
+		const current = this.modelConfig(id);
+		const from = current
+			? entries.findIndex((entry) => sameModel(entry, current))
+			: -1;
+		for (let offset = 1; offset <= entries.length; offset++) {
+			const entry = entries[(from + offset + entries.length) % entries.length];
+			if (!entry || !this.available(entry)) continue;
+			this.handleConfigure(id, session, { type: "configure", ...entry }, true);
+			return;
+		}
+		throw new Error("no fast-cycle model is available");
+	}
+
+	private setFastCycle(id: string, entries: FastCycleEntry[]): void {
+		if (!Array.isArray(entries)) throw new Error("fast-cycle entries required");
+		const settings = this.settingsFor(id);
+		const normalized: FastCycleEntry[] = [];
+		for (const entry of entries) {
+			if (!entry?.provider || !entry.model)
+				throw new Error("fast-cycle entries need a provider and a model");
+			if (normalized.some((existing) => sameModel(existing, entry))) continue;
+			/** Keep the level the entry already had unless the picker sent one. */
+			const thinkingLevel =
+				entry.thinkingLevel ?? this.fastCycleEntry(id, entry)?.thinkingLevel;
+			normalized.push({
+				provider: entry.provider,
+				model: entry.model,
+				...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}),
+				...(thinkingLevel ? { thinkingLevel } : {}),
+			});
+		}
+		settings.setFastCycle(normalized);
+		this.publish(id, { type: "fast-cycle", entries: normalized }, false);
+	}
+
+	private rememberThinkingLevel(
+		id: string,
+		config: ModelConfig,
+		thinkingLevel: NonNullable<ModelConfig["thinkingLevel"]>,
+	): void {
+		const settings = this.settingsFor(id);
+		const entries = settings.fastCycle();
+		if (!entries.some((entry) => sameModel(entry, config))) return;
+		const updated = entries.map((entry) =>
+			sameModel(entry, config) ? { ...entry, thinkingLevel } : entry,
+		);
+		settings.setFastCycle(updated);
+		this.publish(id, { type: "fast-cycle", entries: updated }, false);
+	}
+
+	private fastCycleEntry(
+		id: string,
+		config: ModelConfig,
+	): FastCycleEntry | undefined {
+		return this.settingsFor(id)
+			.fastCycle()
+			.find((entry) => sameModel(entry, config));
+	}
+
+	private available(config: ModelConfig): boolean {
+		try {
+			providerModels(config, this.credentials, this.models as Models);
+			return true;
+		} catch (error) {
+			log.debug({ error, config }, "fast-cycle model unavailable");
+			return false;
+		}
 	}
 
 	private handleQueuedSubmission(
@@ -427,12 +529,20 @@ export class HarnessServer {
 			text: command.text,
 		};
 		if (!session.running) {
+			this.maybeTitleSession(id, command.text);
 			await this.run(id, pending);
 			return;
 		}
 		if (
 			this.runtime.steer(id, pending.text, {
-				onStarted: () => this.emitCommand(id, pending, "started"),
+				onStarted: () => {
+					this.publish(id, {
+						type: "user",
+						id: pending.id,
+						text: pending.text,
+					});
+					this.emitCommand(id, pending, "started");
+				},
 				onFinished: () => {},
 				onReplaced: () => this.emitCommand(id, pending, "replaced"),
 			})
@@ -450,6 +560,7 @@ export class HarnessServer {
 		session: Session,
 		text: string,
 	): Promise<void> {
+		this.maybeTitleSession(id, text);
 		if (!session.running) {
 			await this.run(id, text);
 			return;
@@ -459,6 +570,23 @@ export class HarnessServer {
 			this.store.contextSequence(id),
 		);
 		this.emitCommand(id, pending, "queued");
+	}
+
+	private maybeTitleSession(id: string, prompt: string): void {
+		if (!this.store.claimNamingPrompt(id)) return;
+		const config = this.settingsFor(id).sessionTitle();
+		if (!config.generated) return;
+		const fallback = promptTitle(prompt);
+		if (fallback) this.store.setTitle(id, fallback);
+		void this.namer
+			.generate(prompt, config.source, this.modelConfig(id))
+			.then((title) => {
+				if (title && !this.manuallyNamedSessions.has(id))
+					this.store.setTitle(id, title);
+			})
+			.catch((error) =>
+				log.debug({ error, sessionId: id }, "session title generation failed"),
+			);
 	}
 
 	private activeTask(session: Session, taskId: string): TaskRuntime {
@@ -536,6 +664,20 @@ export class HarnessServer {
 		this.publish(id, { type: "skills", skills }, false);
 	}
 
+	private async listPrompts(id: string): Promise<void> {
+		const { templates, diagnostics } = await scanPrompts(this.workspace(id));
+		for (const diagnostic of diagnostics)
+			log.warn(
+				{ sessionId: id, path: diagnostic.path, error: diagnostic.error },
+				"prompt template ignored",
+			);
+		const prompts: PromptOption[] = templates.map(({ name, description }) => ({
+			name,
+			description,
+		}));
+		this.publish(id, { type: "prompts", prompts }, false);
+	}
+
 	private run(
 		id: string,
 		command: string | QueuedTask | PendingSteer,
@@ -567,8 +709,8 @@ export class HarnessServer {
 		return workspace === this.defaultWorkspace
 			? this.defaultSettings
 			: new SettingsStore(
-					globalHarnessPath("settings.json"),
-					resolve(workspace, ".harness/settings.json"),
+					globalHarnezPath("settings.json"),
+					projectHarnezPath("settings.json", resolve(workspace)),
 				);
 	}
 
@@ -576,10 +718,7 @@ export class HarnessServer {
 		if (!this.store.exists(id)) throw new Error("session not found");
 		let session = this.sessions.get(id);
 		if (!session) {
-			session = {
-				events: new EventEmitter(),
-				scheduler: new TaskScheduler(),
-			};
+			session = new Session();
 			this.sessions.set(id, session);
 		}
 		return session;
@@ -589,6 +728,14 @@ export class HarnessServer {
 		const seq = persist ? this.store.append(id, event) : undefined;
 		this.session(id).events.emit("event", event, seq);
 	}
+}
+
+function sameModel(a: ModelConfig, b: ModelConfig): boolean {
+	return (
+		a.provider === b.provider &&
+		a.model === b.model &&
+		(a.baseUrl ?? "") === (b.baseUrl ?? "")
+	);
 }
 
 function workspacePath(path: string): string {
@@ -604,10 +751,26 @@ function isImmediateCommand(type: ClientCommand["type"]): boolean {
 		type === "list-providers" ||
 		type === "list-models" ||
 		type === "list-skills" ||
+		type === "list-prompts" ||
+		type === "set-session-title" ||
+		type === "set-fast-cycle" ||
 		type === "set-disable-thinking-blocks" ||
 		type === "login" ||
 		type === "auth-answer" ||
 		type === "auth-cancel"
+	);
+}
+
+function isUserSubmission(command: ClientCommand): boolean {
+	return (
+		(command.type === "prompt" ||
+			command.type === "steer" ||
+			command.type === "follow-up" ||
+			command.type === "enqueue" ||
+			command.type === "supersede" ||
+			command.type === "replace-queued") &&
+		typeof command.text === "string" &&
+		command.text.trim().length > 0
 	);
 }
 

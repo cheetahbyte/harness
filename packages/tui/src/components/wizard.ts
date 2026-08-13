@@ -21,6 +21,14 @@ export type WizardScreen =
 			descriptionLayout?: "inline" | "two-line";
 	  }
 	| {
+			kind: "multiselect";
+			title: string;
+			options: SelectOption[];
+			/** Option values that start out checked. */
+			selected: string[];
+			searchable?: boolean;
+	  }
+	| {
 			kind: "input";
 			title: string;
 			placeholder?: string;
@@ -31,6 +39,7 @@ export type WizardScreen =
 
 type WizardActions = {
 	select?: (option: SelectOption) => void;
+	confirm?: (values: string[]) => void;
 	submit?: (value: string) => void;
 	open?: () => void;
 	cancel: () => void;
@@ -58,6 +67,7 @@ export class WizardView {
 	private allOptions: SelectOption[] = [];
 	private inlineOptions: SelectOption[] = [];
 	private inlineSelected = 0;
+	private checked = new Set<string>();
 
 	constructor(private readonly renderer: CliRenderer) {
 		this.root = new BoxRenderable(renderer, {
@@ -177,13 +187,15 @@ export class WizardView {
 				: screen.kind === "input"
 					? (screen.url ?? "")
 					: "";
-		this.inputRow.visible =
-			screen.kind === "input" ||
-			(screen.kind === "select" && !!screen.searchable);
+		const searchable =
+			(screen.kind === "select" || screen.kind === "multiselect") &&
+			!!screen.searchable;
+		this.inputRow.visible = screen.kind === "input" || searchable;
 		const inlineDescriptions =
-			screen.kind === "select" && screen.descriptionLayout === "inline";
+			screen.kind === "multiselect" ||
+			(screen.kind === "select" && screen.descriptionLayout === "inline");
 		this.select.visible = screen.kind === "select" && !inlineDescriptions;
-		this.inlineSelect.visible = screen.kind === "select" && inlineDescriptions;
+		this.inlineSelect.visible = inlineDescriptions;
 		this.select.showDescription = !inlineDescriptions;
 		this.footer.content =
 			screen.kind === "notice"
@@ -194,7 +206,9 @@ export class WizardView {
 					? actions.open
 						? "Enter submit  ·  Ctrl+O open browser  ·  Esc cancel"
 						: "Enter submit  ·  Esc cancel"
-					: "↑↓ navigate  ·  Enter select  ·  Esc cancel";
+					: screen.kind === "multiselect"
+						? "↑↓ navigate  ·  Space toggle  ·  Enter save  ·  Esc cancel"
+						: "↑↓ navigate  ·  Enter select  ·  Esc cancel";
 		this.input.value = "";
 		this.secretMask.content = "";
 		this.secretMask.visible = screen.kind === "input" && !!screen.secret;
@@ -202,20 +216,21 @@ export class WizardView {
 		this.input.placeholder =
 			screen.kind === "input"
 				? (screen.placeholder ?? "")
-				: screen.kind === "select" && screen.searchable
+				: searchable
 					? "Type to filter"
 					: "";
-		this.allOptions = screen.kind === "select" ? screen.options : [];
+		this.allOptions =
+			screen.kind === "select" || screen.kind === "multiselect"
+				? screen.options
+				: [];
+		this.checked =
+			screen.kind === "multiselect" ? new Set(screen.selected) : new Set();
 		this.select.options = this.allOptions;
 		this.select.selectedIndex = 0;
 		this.inlineOptions = this.allOptions;
 		this.inlineSelected = 0;
 		this.renderInlineOptions();
-		if (
-			screen.kind === "input" ||
-			(screen.kind === "select" && screen.searchable)
-		)
-			this.input.focus();
+		if (screen.kind === "input" || searchable) this.input.focus();
 		else if (screen.kind === "select" && !inlineDescriptions)
 			this.select.focus();
 	}
@@ -236,12 +251,19 @@ export class WizardView {
 			this.secretMask.content = "•".repeat(this.input.value.length);
 			return;
 		}
-		if (this.screen?.kind !== "select" || !this.screen.searchable) return;
+		if (
+			(this.screen?.kind !== "select" && this.screen?.kind !== "multiselect") ||
+			!this.screen.searchable
+		)
+			return;
 		const query = this.input.value.toLowerCase();
 		const options = this.allOptions.filter(({ name, description }) =>
 			`${name} ${description}`.toLowerCase().includes(query),
 		);
-		if (this.screen.descriptionLayout === "inline") {
+		if (
+			this.screen.kind === "multiselect" ||
+			this.screen.descriptionLayout === "inline"
+		) {
 			this.inlineOptions = options;
 			this.inlineSelected = 0;
 			this.renderInlineOptions();
@@ -253,10 +275,36 @@ export class WizardView {
 
 	private handleKey = (key: KeyEvent) => {
 		if (!this.root.visible || key.defaultPrevented) return;
+		if (key.name === "escape") {
+			key.preventDefault();
+			key.stopPropagation();
+			this.actions?.cancel();
+			return;
+		}
 		if (key.name === "o" && key.ctrl && this.actions?.open) {
 			key.preventDefault();
 			key.stopPropagation();
 			this.actions.open();
+			return;
+		}
+		if (this.screen?.kind === "multiselect") {
+			if (key.name === "up") this.inlineSelected--;
+			else if (key.name === "down") this.inlineSelected++;
+			else if (key.name === "space") {
+				this.toggleChecked();
+				key.preventDefault();
+				return;
+			} else if (key.name === "return") {
+				key.preventDefault();
+				this.actions?.confirm?.(
+					this.allOptions
+						.map((option) => String(option.value))
+						.filter((value) => this.checked.has(value)),
+				);
+				return;
+			} else return;
+			this.moveInline();
+			key.preventDefault();
 			return;
 		}
 		if (
@@ -271,11 +319,7 @@ export class WizardView {
 				key.preventDefault();
 				return;
 			} else return;
-			this.inlineSelected = Math.max(
-				0,
-				Math.min(this.inlineSelected, this.inlineOptions.length - 1),
-			);
-			this.renderInlineOptions();
+			this.moveInline();
 			key.preventDefault();
 			return;
 		}
@@ -291,12 +335,23 @@ export class WizardView {
 				return;
 			}
 		}
-		if (key.name === "escape") {
-			key.preventDefault();
-			key.stopPropagation();
-			this.actions?.cancel();
-		}
 	};
+
+	private moveInline() {
+		this.inlineSelected = Math.max(
+			0,
+			Math.min(this.inlineSelected, this.inlineOptions.length - 1),
+		);
+		this.renderInlineOptions();
+	}
+
+	private toggleChecked() {
+		const value = this.inlineOptions[this.inlineSelected]?.value;
+		if (value === undefined) return;
+		const key = String(value);
+		if (!this.checked.delete(key)) this.checked.add(key);
+		this.renderInlineOptions();
+	}
 
 	private renderInlineOptions() {
 		const start = Math.max(
@@ -313,7 +368,10 @@ export class WizardView {
 			if (!option) continue;
 			row.indicator.content = selected ? "▶ " : "  ";
 			row.indicator.fg = selected ? "#89dceb" : "#cdd6f4";
-			row.name.content = option.name;
+			row.name.content =
+				this.screen?.kind === "multiselect"
+					? `${this.checked.has(String(option.value)) ? "[x]" : "[ ]"} ${option.name}`
+					: option.name;
 			row.name.fg = selected ? "#89dceb" : "#cdd6f4";
 			row.description.content = option.description
 				? ` · ${option.description}`

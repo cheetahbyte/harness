@@ -16,17 +16,17 @@ import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { ModelConfig } from "../../shared/src/protocol";
 
-export class HarnessProviderError extends Error {
+export class HarnezProviderError extends Error {
 	constructor(
 		message: string,
 		readonly kind: "configuration" | "authentication" | "runtime" = "runtime",
 	) {
 		super(message);
-		this.name = "HarnessProviderError";
+		this.name = "HarnezProviderError";
 	}
 }
 
-/** Harness owns credential persistence; Pi receives this narrow store only. */
+/** Harnez owns credential persistence; Pi receives this narrow store only. */
 export class JsonCredentialStore implements CredentialStore {
 	private chain = Promise.resolve();
 	constructor(private readonly path: string) {}
@@ -103,7 +103,7 @@ export class JsonCredentialStore implements CredentialStore {
 }
 
 /** One shared Pi registry powers catalogs, login, and built-in runtime models. */
-export function createHarnessModels(
+export function createHarnezModels(
 	credentials: CredentialStore,
 ): MutableModels {
 	registerBunOAuthFlows();
@@ -116,13 +116,13 @@ export function providerModels(
 	models: Models,
 ) {
 	if (!config.model)
-		throw new HarnessProviderError(
+		throw new HarnezProviderError(
 			"select a model with /model",
 			"configuration",
 		);
 	if (config.provider === "openai-compatible") {
 		if (!config.baseUrl)
-			throw new HarnessProviderError(
+			throw new HarnezProviderError(
 				"openai-compatible requires a base URL",
 				"configuration",
 			);
@@ -166,12 +166,12 @@ export function providerModels(
 			config.model,
 		);
 		if (!configuredModel)
-			throw new HarnessProviderError("unknown OpenAI-compatible model");
+			throw new HarnezProviderError("unknown OpenAI-compatible model");
 		return { models: customModels, model: configuredModel };
 	}
 	const model = models.getModel(config.provider, config.model);
 	if (!model)
-		throw new HarnessProviderError(
+		throw new HarnezProviderError(
 			`unknown model ${config.provider}/${config.model}; use /model`,
 			"configuration",
 		);

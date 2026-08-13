@@ -32,7 +32,7 @@ afterEach(() => {
 });
 
 test("registers class-backed tools and runs their file operations", async () => {
-	const workspace = mkdtempSync(join(tmpdir(), "harness-tools-"));
+	const workspace = mkdtempSync(join(tmpdir(), "harnez-tools-"));
 	paths.push(workspace);
 	const tools = new CoreTools(workspace);
 	const signal = new AbortController().signal;
@@ -68,7 +68,7 @@ test("registers class-backed tools and runs their file operations", async () => 
 });
 
 test("serializes concurrent edits to the same file", async () => {
-	const workspace = mkdtempSync(join(tmpdir(), "harness-tools-"));
+	const workspace = mkdtempSync(join(tmpdir(), "harnez-tools-"));
 	paths.push(workspace);
 	const signal = new AbortController().signal;
 	const source = Array.from({ length: 20 }, (_, index) => `item-${index};`).join("");

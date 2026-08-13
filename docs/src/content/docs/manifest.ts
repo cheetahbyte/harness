@@ -9,6 +9,8 @@ import contextCompaction from "./context-compaction.md?raw";
 import { getFrontmatterSlug } from "./frontmatter";
 import installation from "./installation.md?raw";
 import introduction from "./introduction.md?raw";
+import promptTemplates from "./prompt-templates.md?raw";
+import sessions from "./sessions.md?raw";
 import skills from "./skills.md?raw";
 import taskRuntime from "./task-runtime.md?raw";
 import toolDiscovery from "./tool-discovery.md?raw";
@@ -88,6 +90,22 @@ export const docPages: DocPage[] = [
 			"Learn how each task lists, searches, inspects, and loads trusted capabilities from an immutable catalog snapshot.",
 		section: "Architecture",
 		source: toolDiscovery,
+	},
+	{
+		slug: getFrontmatterSlug(sessions),
+		title: "Sessions",
+		description:
+			"Create and resume durable sessions, configure local or model-generated titles, and understand workspace and SQLite persistence.",
+		section: "Advanced",
+		source: sessions,
+	},
+	{
+		slug: getFrontmatterSlug(promptTemplates),
+		title: "Prompt templates",
+		description:
+			"Store reusable prompts as Markdown files, invoke them as slash commands, and control how names resolve against skills and built-in commands.",
+		section: "Advanced",
+		source: promptTemplates,
 	},
 	{
 		slug: getFrontmatterSlug(skills),

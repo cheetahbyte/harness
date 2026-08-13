@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ServerEvent } from "../../shared/src/protocol";
-import { HarnessClient } from "../src/client";
+import { HarnezClient } from "../src/client";
 
 test("resumes the event stream after the last applied cursor", async () => {
 	const requested: (string | null)[] = [];
@@ -21,7 +21,7 @@ test("resumes the event stream after the last applied cursor", async () => {
 		},
 	});
 	try {
-		const client = new HarnessClient(server.url.toString().replace(/\/$/, ""));
+		const client = new HarnezClient(server.url.toString().replace(/\/$/, ""));
 		const controller = new AbortController();
 		const events: ServerEvent[] = [];
 		let cursor = 0;
@@ -53,7 +53,7 @@ test("surfaces a rejected server command", async () => {
 	});
 	try {
 		await expect(
-			new HarnessClient(server.url.toString().replace(/\/$/, "")).send("session", {
+			new HarnezClient(server.url.toString().replace(/\/$/, "")).send("session", {
 				type: "configure",
 				provider: "fake",
 				model: "model-1",
@@ -71,7 +71,7 @@ test("surfaces a rejected session creation", async () => {
 	});
 	try {
 		await expect(
-			new HarnessClient(server.url.toString().replace(/\/$/, "")).createSession(),
+			new HarnezClient(server.url.toString().replace(/\/$/, "")).createSession(),
 		).rejects.toThrow("session creation failed (503)");
 	} finally {
 		server.stop(true);
@@ -85,8 +85,31 @@ test("rejects a successful session response without an id", async () => {
 	});
 	try {
 		await expect(
-			new HarnessClient(server.url.toString().replace(/\/$/, "")).createSession(),
+			new HarnezClient(server.url.toString().replace(/\/$/, "")).createSession(),
 		).rejects.toThrow("session creation returned an invalid response");
+	} finally {
+		server.stop(true);
+	}
+});
+
+test("reports a non-JSON body as the operation that received it", async () => {
+	const server = Bun.serve({
+		port: 0,
+		fetch: () =>
+			new Response("<html>gateway</html>", {
+				headers: { "content-type": "text/html" },
+			}),
+	});
+	try {
+		const client = new HarnezClient(server.url.toString().replace(/\/$/, ""));
+		await expect(client.createSession()).rejects.toThrow(
+			"session creation returned a malformed response (200)",
+		);
+		await expect(client.listSessions()).rejects.toThrow(
+			"session listing returned a malformed response (200)",
+		);
+		const failure = await client.listSessions().catch((error) => error);
+		expect((failure as Error).cause).toBeInstanceOf(Error);
 	} finally {
 		server.stop(true);
 	}
@@ -103,9 +126,63 @@ test("creates sessions in the client working directory", async () => {
 	});
 	try {
 		expect(
-			await new HarnessClient(server.url.toString().replace(/\/$/, "")).createSession(),
+			await new HarnezClient(server.url.toString().replace(/\/$/, "")).createSession(),
 		).toBe("session");
 		expect(cwd).toBe(process.cwd());
+	} finally {
+		server.stop(true);
+	}
+});
+
+test("lists session summaries", async () => {
+	const sessions = [
+		{
+			id: "session-2",
+			createdAt: "2026-08-12T12:00:00.000Z",
+			workspace: "/tmp/project",
+			title: "Add session names",
+		},
+		{
+			id: "session-1",
+			createdAt: "2026-08-12T11:00:00.000Z",
+			workspace: null,
+			title: null,
+		},
+	];
+	const server = Bun.serve({
+		port: 0,
+		fetch: () => Response.json(sessions),
+	});
+	try {
+		await expect(
+			new HarnezClient(
+				server.url.toString().replace(/\/$/, ""),
+			).listSessions(),
+		).resolves.toEqual(sessions);
+	} finally {
+		server.stop(true);
+	}
+});
+
+test("rejects an invalid session listing", async () => {
+	const server = Bun.serve({
+		port: 0,
+		fetch: () =>
+			Response.json([
+				{
+					id: "session",
+					createdAt: "2026-08-12",
+					workspace: null,
+					title: 42,
+				},
+			]),
+	});
+	try {
+		await expect(
+			new HarnezClient(
+				server.url.toString().replace(/\/$/, ""),
+			).listSessions(),
+		).rejects.toThrow("session listing returned an invalid response");
 	} finally {
 		server.stop(true);
 	}

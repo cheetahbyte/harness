@@ -6,7 +6,8 @@ import type {
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ServerEvent } from "../../../shared/src/protocol";
 import type { ContextManager } from "../context/manager";
-import type { SessionStore } from "../session-store";
+import { ContextBudgetError, type ContextInspection } from "../context/types";
+import type { SessionStore } from "../sessions/store";
 import type { TaskRuntime } from "../task-runtime";
 import { tokenCost } from "../token-cost";
 import type { CoreTools } from "../tools";
@@ -30,6 +31,8 @@ export type AgentEntry = {
 	queued: WeakMap<object, QueuedMessage>;
 	active: QueuedMessage[];
 	task: TaskRuntime;
+	/** Emitter for the in-flight run; context assembly reports compaction through it. */
+	emit: ((event: ServerEvent) => void) | undefined;
 };
 
 export function translateAgentEvent({
@@ -39,6 +42,7 @@ export function translateAgentEvent({
 	emit,
 	context,
 	shrink,
+	inspect,
 }: {
 	sessionId: string;
 	entry: AgentEntry;
@@ -46,6 +50,7 @@ export function translateAgentEvent({
 	emit: (event: ServerEvent) => void;
 	context: ContextManager;
 	shrink: () => void;
+	inspect: () => ContextInspection;
 }): void {
 	switch (event.type) {
 		case "message_start":
@@ -63,7 +68,7 @@ export function translateAgentEvent({
 			emitMessageUpdate(event, emit);
 			return;
 		case "message_end":
-			handleMessageEnd(sessionId, entry, event.message, context, emit);
+			handleMessageEnd(sessionId, entry, event.message, context, inspect, emit);
 			return;
 		case "agent_end":
 			handleAgentEnd(sessionId, entry, context, shrink, emit);
@@ -85,7 +90,7 @@ export function translateAgentEvent({
 				isError: event.isError,
 			});
 			return;
-		// Pi lifecycle events Harness does not surface.
+		// Pi lifecycle events Harnez does not surface.
 		case "agent_start":
 		case "turn_start":
 		case "tool_execution_update":
@@ -135,6 +140,7 @@ function handleMessageEnd(
 	entry: AgentEntry,
 	message: AgentMessage,
 	context: ContextManager,
+	inspect: () => ContextInspection,
 	emit: (event: ServerEvent) => void,
 ): void {
 	if (!entry.preRecorded.delete(messageKey(message)))
@@ -148,8 +154,31 @@ function handleMessageEnd(
 		cacheWrite: message.usage.cacheWrite,
 		totalTokens: message.usage.totalTokens,
 	});
+	emitContextStatus(inspect, emit);
 	if (message.errorMessage)
 		emit({ type: "error", message: message.errorMessage });
+}
+
+/**
+ * Reports the working set against the whole recorded history. Both figures come
+ * from `tokenCost`'s chars/4 estimate, so the ratio is internally consistent
+ * even though neither number matches provider-reported usage.
+ */
+function emitContextStatus(
+	inspect: () => ContextInspection,
+	emit: (event: ServerEvent) => void,
+): void {
+	const inspection = inspect();
+	if (inspection.budget === undefined || inspection.target === undefined)
+		return;
+	emit({
+		type: "context-status",
+		liveTokens: inspection.estimatedTokens,
+		historyTokens: inspection.historyTokens,
+		parkedObservations: inspection.parkedObservations,
+		budget: inspection.budget,
+		target: inspection.target,
+	});
 }
 function handleAgentEnd(
 	sessionId: string,
@@ -162,8 +191,16 @@ function handleAgentEnd(
 		context.completeGroup(sessionId, entry.promptGroupId);
 	shrink();
 	entry.promptGroupId = undefined;
-	if (entry.contextError)
-		emit({ type: "error", message: entry.contextError.message });
+	if (!entry.contextError) return;
+	emit(
+		entry.contextError instanceof ContextBudgetError
+			? {
+					type: "context-budget-error",
+					estimatedTokens: entry.contextError.estimatedTokens,
+					budget: entry.contextError.budget,
+				}
+			: { type: "error", message: entry.contextError.message },
+	);
 }
 
 export function recordAgentMessage({
@@ -246,6 +283,7 @@ export function managedMessages({
 	store,
 	context,
 	contextOptions,
+	emit,
 }: {
 	sessionId: string;
 	model: Model<Api>;
@@ -257,6 +295,7 @@ export function managedMessages({
 		target: number;
 		overheadTokens: number;
 	};
+	emit?: ((event: ServerEvent) => void) | undefined;
 }): AgentMessage[] {
 	if (
 		store.contextItems(sessionId).length === 0 &&
@@ -273,6 +312,14 @@ export function managedMessages({
 					predecessorTerminalIds: task.predecessorTerminalMessageIds,
 				})
 			: context.assemble(sessionId, contextOptions(model));
+	if (emit && assembly.evictedIds.length)
+		emit({
+			type: "context-compaction",
+			evictedCount: assembly.evictedIds.length,
+			tokensBefore: assembly.tokensBefore,
+			tokensAfter: assembly.estimatedTokens,
+			episodesArchived: assembly.episodesArchived,
+		});
 	const messages = assembly.payloads as AgentMessage[];
 	const dynamic: AgentMessage[] = [
 		...(task?.predecessorDigest
@@ -327,7 +374,7 @@ export function ensureSystem({
 		payload: systemPrompt,
 		tokenCost: tokenCost(systemPrompt, 1),
 		lifecycle: "pinned",
-		reason: "Harness system prompt",
+		reason: "Harnez system prompt",
 	});
 }
 

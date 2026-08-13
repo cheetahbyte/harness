@@ -304,6 +304,70 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("wraps composer text and grows the input box to fit it", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({
+			width: 40,
+			height: 30,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		const composer = (app as unknown as { composer: { root: { height: number } } })
+			.composer;
+		try {
+			await view.renderOnce();
+			expect(composer.root.height).toBe(3);
+			await view.mockInput.typeText("word ".repeat(30));
+			await view.flush();
+			/** Five wrapped rows between the top and bottom borders. */
+			expect(composer.root.height).toBe(7);
+			/** A wider terminal rewraps the same text into fewer rows. */
+			view.resize(100, 30);
+			await view.flush();
+			expect(composer.root.height).toBe(4);
+			/** Past the cap the textarea scrolls with the cursor instead of growing. */
+			view.resize(40, 30);
+			await view.mockInput.typeText("word ".repeat(70));
+			await view.flush();
+			expect(composer.root.height).toBe(12);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("Shift+Enter breaks the line instead of submitting", async () => {
+		const store = createTuiStore("session-1");
+		const sent: unknown[] = [];
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async (command) => {
+			sent.push(command);
+		});
+		try {
+			await view.renderOnce();
+			await view.mockInput.typeText("first");
+			view.mockInput.pressEnter({ shift: true });
+			await view.mockInput.typeText("second");
+			await view.flush();
+			expect(sent).toHaveLength(0);
+			expect(
+				(app as unknown as { composer: { value: string } }).composer.value,
+			).toBe("first\nsecond");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent).toEqual([
+				expect.objectContaining({ type: "steer", text: "first\nsecond" }),
+			]);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("clears the composer before an in-flight command resolves", async () => {
 		const store = createTuiStore("session-1");
 		let resolveSend!: () => void;
@@ -351,6 +415,37 @@ describe("OpenTUI app", () => {
 			expect((app as unknown as { composer: { value: string } }).composer.value).toBe(
 				"/model ",
 			);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("sets the current session name", async () => {
+		const store = createTuiStore("session-1");
+		const sent: unknown[] = [];
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async (command) => {
+			sent.push(command);
+		});
+		try {
+			await view.renderOnce();
+			await view.mockInput.typeText("/session-n");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain(
+				"/session-name  Set the current session name",
+			);
+			view.mockInput.pressTab();
+			await view.mockInput.typeText("My project");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent).toEqual([
+				{ type: "set-session-title", title: "My project" },
+			]);
 		} finally {
 			app.destroy();
 			view.renderer.destroy();
@@ -450,6 +545,68 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("suggests prompt templates as their own command only at the start", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			store.getState().apply({
+				type: "prompts",
+				prompts: [{ name: "review-pr", description: "Review a pull request" }],
+			});
+			store.getState().apply({
+				type: "skills",
+				skills: [{ name: "review-pr", description: "Shadowed by the template" }],
+			});
+			await view.renderOnce();
+			await view.mockInput.typeText("/rev");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain(
+				"/review-pr  Review a pull request",
+			);
+			expect(view.captureCharFrame()).not.toContain("Shadowed by the template");
+			await view.mockInput.typeText("iew-pr and then /rev");
+			await view.flush();
+			expect(view.captureCharFrame()).not.toContain("Review a pull request");
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("uses the accent for a leading prompt template only", async () => {
+		const store = createTuiStore("session-1");
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			store.getState().apply({
+				type: "prompts",
+				prompts: [{ name: "standup", description: "Daily standup" }],
+			});
+			store.getState().addUser("/standup after /standup");
+			await view.flush();
+			const accented = view
+				.captureSpans()
+				.lines.flatMap((line) => line.spans)
+				.filter(
+					(span) =>
+						span.text === "/standup" && span.fg.equals(RGBA.fromHex("#89b4fa")),
+				);
+			expect(accented).toHaveLength(1);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("limits and truncates slash suggestions", async () => {
 		const store = createTuiStore("session-1");
 		const view = await createTestRenderer({
@@ -473,7 +630,7 @@ describe("OpenTUI app", () => {
 			expect(frame).toContain("/s1");
 			expect(frame).not.toContain("/s5");
 			expect(frame).not.toContain("suggestion row");
-			for (let index = 0; index < 5; index++) view.mockInput.pressArrow("down");
+			for (let index = 0; index < 6; index++) view.mockInput.pressArrow("down");
 			await view.flush();
 			expect(view.captureCharFrame()).toContain("/s5");
 		} finally {
@@ -732,6 +889,81 @@ describe("OpenTUI app", () => {
 			expect(
 				sent.some((command) => (command as { type: string }).type === "abort"),
 			).toBe(false);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("picks fast-cycle models with Space and cycles them with Ctrl+P", async () => {
+		const store = createTuiStore("session-1");
+		const sent: unknown[] = [];
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async (command) => {
+			sent.push(command);
+		});
+		try {
+			await view.renderOnce();
+			store.getState().apply({
+				type: "fast-cycle",
+				entries: [
+					{
+						provider: "openai-codex",
+						model: "gpt-5.6-sol",
+						thinkingLevel: "high",
+					},
+				],
+			});
+			await view.mockInput.typeText("/fast-cycle ");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent.at(-1)).toEqual({ type: "list-models" });
+			store.getState().apply({
+				type: "models",
+				models: [
+					{
+						provider: "openai-codex",
+						providerName: "OpenAI Codex",
+						id: "gpt-5.6-sol",
+						name: "GPT-5.6 Sol",
+					},
+					{
+						provider: "anthropic",
+						providerName: "Anthropic",
+						id: "opus",
+						name: "Opus",
+					},
+				],
+			});
+			await view.flush();
+			expect(view.captureCharFrame()).toContain(
+				"[x] GPT-5.6 Sol · OpenAI Codex · high",
+			);
+			expect(view.captureCharFrame()).toContain("[ ] Opus · Anthropic");
+			view.mockInput.pressArrow("down");
+			view.mockInput.pressKey(" ");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("[x] Opus · Anthropic");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent.at(-1)).toEqual({
+				type: "set-fast-cycle",
+				entries: [
+					{
+						provider: "openai-codex",
+						model: "gpt-5.6-sol",
+						thinkingLevel: "high",
+					},
+					{ provider: "anthropic", model: "opus" },
+				],
+			});
+			view.mockInput.pressKey("p", { ctrl: true });
+			await view.flush();
+			expect(sent.at(-1)).toEqual({ type: "cycle-model" });
 		} finally {
 			app.destroy();
 			view.renderer.destroy();

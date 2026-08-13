@@ -1,4 +1,4 @@
-import { serveHarness } from "./http-server";
+import { serveHarnez } from "./http-server";
 import { log } from "./logger";
 
 export function runServer(): ReturnType<typeof Bun.serve> {
@@ -7,7 +7,7 @@ export function runServer(): ReturnType<typeof Bun.serve> {
 		process.env["HARNESS_CONTEXT_BUDGET"];
 	const databasePath =
 		process.env["HARNEZ_DATABASE_PATH"] ?? process.env["HARNESS_DATABASE_PATH"];
-	const server = serveHarness({
+	const server = serveHarnez({
 		port: Number(
 			process.env["HARNEZ_PORT"] ?? process.env["HARNESS_PORT"] ?? 7432,
 		),

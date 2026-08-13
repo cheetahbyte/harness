@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ContextBudgetError, ContextManager } from "../src/context/manager";
 import { MAX_OBSERVATION_RECALL_LIMIT } from "../src/context/recall";
-import { SessionStore } from "../src/session-store";
+import { SessionStore } from "../src/sessions/store";
 
 const paths: string[] = [];
 afterEach(() => {
@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 function storePath(): string {
-	const dir = mkdtempSync(join(tmpdir(), "harness-context-test-"));
+	const dir = mkdtempSync(join(tmpdir(), "harnez-context-test-"));
 	paths.push(dir);
 	return join(dir, "state.sqlite");
 }

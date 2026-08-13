@@ -1,17 +1,17 @@
-# Harness architecture
+# Harnez architecture
 
 **Status:** Draft
 **Version:** 0.1
 
 ## 1. Purpose
 
-Harness is a personal, terminal-first AI agent harness optimized primarily for software development while remaining general enough for research, university work, and other agentic workflows.
+Harnez is a personal, terminal-first AI agent harness optimized primarily for software development while remaining general enough for research, university work, and other agentic workflows.
 
 The product direction is intentionally opinionated:
 
 > Claude Code's cohesion and interaction model, pi's simplicity and openness, first-class multi-model support, and architecture tailored to one user's workflows.
 
-Harness is not intended to become a general-purpose framework or plugin ecosystem. If its opinions happen to work well for other users, they can use it as-is.
+Harnez is not intended to become a general-purpose framework or plugin ecosystem. If its opinions happen to work well for other users, they can use it as-is.
 
 ## 2. Design principles
 
@@ -23,7 +23,7 @@ The underlying runtime should nevertheless avoid assumptions that prevent resear
 
 ### 2.2 Opinionated over configurable
 
-Harness optimizes for a specific workflow instead of accommodating every possible preference.
+Harnez optimizes for a specific workflow instead of accommodating every possible preference.
 
 Good internal modularity is desirable. Public extensibility is not a goal.
 
@@ -46,7 +46,7 @@ Different agents within the same session may use different models.
 
 The agent is trusted to act on behalf of the user.
 
-Harness does not use approval prompts for ordinary:
+Harnez does not use approval prompts for ordinary:
 
 * file reads
 * file writes
@@ -67,7 +67,7 @@ Infrastructure-level boundaries may still exist to protect the runtime, credenti
 
 Large execution results should not automatically enter the model context.
 
-Harness separates:
+Harnez separates:
 
 * model context
 * runtime state
@@ -78,7 +78,7 @@ Only information useful for reasoning should cross into the model context.
 
 ### 2.6 Interoperable, not extensible
 
-Harness does not provide a general extension framework.
+Harnez does not provide a general extension framework.
 
 It does support established interoperability standards where useful, particularly:
 
@@ -87,13 +87,13 @@ It does support established interoperability standards where useful, particularl
 * Model Context Protocol
 * Agent Plugins Specification
 
-These formats feed Harness's own internal registries and runtime abstractions.
+These formats feed Harnez's own internal registries and runtime abstractions.
 
 ---
 
 ## 3. High-level architecture
 
-Harness uses a local client/server architecture.
+Harnez uses a local client/server architecture.
 
 ```text
 ┌──────────────────────┐
@@ -103,7 +103,7 @@ Harness uses a local client/server architecture.
        local IPC
            │
 ┌──────────▼───────────┐
-│    Harness Server    │
+│    Harnez Server    │
 │                      │
 │  Session Manager     │
 │  Agent Runtime       │
@@ -123,9 +123,9 @@ Harness uses a local client/server architecture.
 └──────────────────────┘
 ```
 
-Operationally, Harness should still feel like one application.
+Operationally, Harnez should still feel like one application.
 
-Running `harness` should automatically connect to or start the local server as needed.
+Running `harnez` should automatically connect to or start the local server as needed.
 
 Remote operation is not an initial requirement.
 
@@ -133,7 +133,7 @@ Remote operation is not an initial requirement.
 
 ## 4. Runtime
 
-Harness is implemented in TypeScript and runs on Bun.
+Harnez is implemented in TypeScript and runs on Bun.
 
 The server is a long-lived Bun process.
 
@@ -145,7 +145,7 @@ Subagents should normally run as agent instances within the existing runtime rat
 
 Memory usage is an architectural concern.
 
-Harness should:
+Harnez should:
 
 * bound caches
 * stream large outputs
@@ -161,24 +161,24 @@ Large or historical state should preferentially live on disk rather than remain 
 
 ## 5. Model and agent runtime
 
-Harness should initially build on:
+Harnez should initially build on:
 
 * `@earendil-works/pi-ai`
 * `pi-agent-core`
 
 These dependencies provide model integration and basic agent-loop mechanics.
 
-They must remain behind narrow Harness-owned interfaces.
+They must remain behind narrow Harnez-owned interfaces.
 
 Pi-specific types and semantics should not propagate throughout the codebase.
 
 Conceptually:
 
 ```text
-Harness
+Harnez
    │
    ▼
-Harness runtime interfaces
+Harnez runtime interfaces
    │
    ▼
 pi-agent-core / pi-ai
@@ -187,7 +187,7 @@ pi-agent-core / pi-ai
 Provider APIs
 ```
 
-This allows replacing or diverging from Pi later without redesigning Harness.
+This allows replacing or diverging from Pi later without redesigning Harnez.
 
 ---
 
@@ -260,12 +260,12 @@ Initial semantics should remain simple:
 
 * independent operations may run concurrently
 * conflicting mutations must not run concurrently
-* Harness may reject or serialize unsafe combinations
+* Harnez may reject or serialize unsafe combinations
 * no dependency graphs
 * no embedded workflow language
 * no branching or variable binding initially
 
-If more sophisticated tool composition becomes necessary, Harness should investigate a Code Mode-style execution environment rather than continuously expanding `batch_tools`.
+If more sophisticated tool composition becomes necessary, Harnez should investigate a Code Mode-style execution environment rather than continuously expanding `batch_tools`.
 
 ---
 
@@ -299,7 +299,7 @@ A task completes when the model produces a final response without requesting add
 
 ### 9.1 Steering
 
-Harness distinguishes three user operations.
+Harnez distinguishes three user operations.
 
 #### Enter: steer
 
@@ -404,13 +404,13 @@ Different subagents may use different models.
 
 ## 11. Context management
 
-Harness separates the lossless session history from the bounded working set sent
+Harnez separates the lossless session history from the bounded working set sent
 to a model. `SessionStore` persists immutable context payloads and append-only
 episode events in SQLite. A separate lifecycle row records whether each item is
 `pinned`, `active`, `retained`, or `archived`, along with its current projection
 and the reason for that decision.
 
-`ContextManager` is the Harness-owned policy boundary. `HarnessAgentRuntime`
+`ContextManager` is the Harnez-owned policy boundary. `HarnezAgentRuntime`
 remains the only Pi adapter: it persists finalized Pi messages, asks the manager
 to assemble every provider request through Pi's context hooks, and replaces the
 live Pi transcript with the same managed projection after a turn. Restarting a
@@ -418,7 +418,7 @@ server reconstructs context from SQLite rather than from UI event deltas.
 
 System instructions, user-authored messages, and explicit decisions or
 constraints created by `pin_context` are mechanically protected. Unknown work
-also fails toward retention. If protected content alone cannot fit, Harness
+also fails toward retention. If protected content alone cannot fit, Harnez
 returns a context-budget error before calling the provider.
 
 Tool output is externalized at creation. SQLite retains the exact observation;
@@ -510,7 +510,7 @@ May use system temporary storage.
 
 ### Reconstructable cache
 
-Stored under Harness cache storage and eligible for aggressive garbage collection.
+Stored under Harnez cache storage and eligible for aggressive garbage collection.
 
 ### Session-critical
 
@@ -518,7 +518,7 @@ Persist until their owning session is deleted or expires.
 
 ### User-created output
 
-Lives in the workspace and is never managed as disposable Harness storage.
+Lives in the workspace and is never managed as disposable Harnez storage.
 
 Where practical, artifact storage should be content-addressed to avoid duplication.
 
@@ -534,7 +534,7 @@ Retention should be bounded through:
 
 ## 15. Repository instructions
 
-Harness follows the AGENTS.md convention rather than inventing a Harness-specific instruction file.
+Harnez follows the AGENTS.md convention rather than inventing a Harnez-specific instruction file.
 
 Instructions may exist at:
 
@@ -543,13 +543,13 @@ Instructions may exist at:
 
 Applicability is determined relative to files being operated on, allowing different parts of a monorepo to carry different instructions.
 
-Harness runtime configuration remains separate from agent instructions.
+Harnez runtime configuration remains separate from agent instructions.
 
 ---
 
 ## 16. Skills
 
-Harness follows the Agent Skills format.
+Harnez follows the Agent Skills format.
 
 Skill sources may include:
 
@@ -574,7 +574,7 @@ Skills may be:
 * automatically activated by the model where permitted
 * preloaded by a subagent profile
 
-Harness supports Claude Code-style controls:
+Harnez supports Claude Code-style controls:
 
 ```yaml
 user-invocable: true
@@ -591,9 +591,9 @@ Skills normally remain active for the current task rather than accumulating perm
 
 ## 17. Agent plugins
 
-Harness supports Agent Plugins Specification packages as an interoperability format.
+Harnez supports Agent Plugins Specification packages as an interoperability format.
 
-Agent Plugins are not Harness's architectural extension mechanism.
+Agent Plugins are not Harnez's architectural extension mechanism.
 
 A package may contribute:
 
@@ -602,7 +602,7 @@ A package may contribute:
 
 These components feed the same internal registries used by built-in and locally configured capabilities.
 
-Harness-specific subagent profiles remain outside the portable Agent Plugins v1 component model.
+Harnez-specific subagent profiles remain outside the portable Agent Plugins v1 component model.
 
 ---
 
@@ -610,7 +610,7 @@ Harness-specific subagent profiles remain outside the portable Agent Plugins v1 
 
 Agent Plugin-provided MCP configuration follows the Agent Plugins `mcp.json` format.
 
-Global and project-local MCP configuration may live in Harness configuration while feeding the same internal MCP registry.
+Global and project-local MCP configuration may live in Harnez configuration while feeding the same internal MCP registry.
 
 MCP servers should be lazy:
 
@@ -634,19 +634,19 @@ Credentials and environment configuration must remain outside model context.
 
 ## 19. Configuration
 
-Harness-specific configuration should remain separate from interoperability files.
+Harnez-specific configuration should remain separate from interoperability files.
 
 Potential structure:
 
 ```text
-~/.config/harness/
+~/.config/harnez/
   config.toml
   skills/
   agents/
 
 <repo>/
   AGENTS.md
-  .harness/
+  .harnez/
     config.toml
     skills/
     agents/
@@ -658,7 +658,7 @@ Exact paths and precedence remain to be finalized.
 
 ## 20. Observability
 
-Harness should expose enough information to understand its own resource usage and behavior.
+Harnez should expose enough information to understand its own resource usage and behavior.
 
 Useful diagnostics include:
 
@@ -677,7 +677,7 @@ A `/memory` or equivalent diagnostic command should be considered early rather t
 
 ## 21. Non-goals
 
-At least initially, Harness is not intended to provide:
+At least initially, Harnez is not intended to provide:
 
 * a public extension SDK
 * a plugin marketplace

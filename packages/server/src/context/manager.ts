@@ -1,4 +1,4 @@
-import type { SessionStore } from "../session-store";
+import type { SessionStore } from "../sessions/store";
 import { tokenCost } from "../token-cost";
 import {
 	episodeStates,
@@ -418,14 +418,28 @@ export class ContextManager {
 	assemble(
 		sessionId: string,
 		options: AssemblyOptions,
-	): { payloads: unknown[]; estimatedTokens: number; evictedIds: string[] } {
+	): {
+		payloads: unknown[];
+		estimatedTokens: number;
+		evictedIds: string[];
+		tokensBefore: number;
+		episodesArchived: number;
+	} {
 		let state = this.assemblyState(sessionId, options.overheadTokens);
 		const evictedIds: string[] = [];
+		const archivedEpisodeIds: string[] = [];
+		const tokensBefore = state.estimatedTokens;
 		const underPressure = state.estimatedTokens > options.budget;
 		if (underPressure)
 			state = this.archiveRetained(sessionId, state, options, evictedIds);
 		if (underPressure && state.estimatedTokens > options.target)
-			state = this.archiveEpisodes(sessionId, state, options, evictedIds);
+			state = this.archiveEpisodes(
+				sessionId,
+				state,
+				options,
+				evictedIds,
+				archivedEpisodeIds,
+			);
 		if (underPressure && state.estimatedTokens > options.budget)
 			throw new ContextBudgetError(state.estimatedTokens, options.budget);
 		return {
@@ -435,6 +449,8 @@ export class ContextManager {
 			],
 			estimatedTokens: state.estimatedTokens,
 			evictedIds,
+			tokensBefore,
+			episodesArchived: archivedEpisodeIds.length,
 		};
 	}
 
@@ -477,6 +493,7 @@ export class ContextManager {
 		state: AssemblyState,
 		options: AssemblyOptions,
 		evictedIds: string[],
+		archivedEpisodeIds: string[],
 	): AssemblyState {
 		const tried = new Set<string>();
 		while (state.estimatedTokens > options.target) {
@@ -485,6 +502,7 @@ export class ContextManager {
 			);
 			if (!episode) break;
 			tried.add(episode.id);
+			archivedEpisodeIds.push(episode.id);
 			for (const item of structuralEvictionItems(state.items, episode.id)) {
 				if (item.lifecycle === "archived") continue;
 				this.store.setContextLifecycle(
@@ -516,8 +534,14 @@ export class ContextManager {
 	assembleTask(
 		sessionId: string,
 		options: TaskAssemblyOptions,
-	): { payloads: unknown[]; estimatedTokens: number; evictedIds: string[] } {
-		this.assemble(sessionId, options);
+	): {
+		payloads: unknown[];
+		estimatedTokens: number;
+		evictedIds: string[];
+		tokensBefore: number;
+		episodesArchived: number;
+	} {
+		const compaction = this.assemble(sessionId, options);
 		const terminal = new Set(options.predecessorTerminalIds);
 		const items = this.store
 			.contextItems(sessionId)
@@ -536,7 +560,9 @@ export class ContextManager {
 		return {
 			payloads: projectedPayloads(items),
 			estimatedTokens,
-			evictedIds: [],
+			evictedIds: compaction.evictedIds,
+			tokensBefore: compaction.tokensBefore,
+			episodesArchived: compaction.episodesArchived,
 		};
 	}
 
@@ -579,10 +605,18 @@ export class ContextManager {
 			retained: 0,
 			archived: 0,
 		};
-		for (const item of items) counts[item.lifecycle]++;
+		let historyTokens = 0;
+		let parkedObservations = 0;
+		for (const item of items) {
+			counts[item.lifecycle]++;
+			historyTokens += item.tokenCost;
+			if (item.kind === "observation") parkedObservations++;
+		}
 		return {
 			sessionId,
 			estimatedTokens: estimatedCost(items, overheadTokens, episodes),
+			historyTokens,
+			parkedObservations,
 			...(inspectOptions.budget === undefined
 				? {}
 				: { budget: inspectOptions.budget }),

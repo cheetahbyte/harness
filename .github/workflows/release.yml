@@ -64,6 +64,16 @@ jobs:
             sleep 0.1
           done
           curl --fail --silent http://127.0.0.1:7432/health | grep '"name":"harnez"'
+          version=$(node -p "require('./package.json').version")
+          test "$(./dist/harnez --version)" = "$version"
+          curl --fail --silent http://127.0.0.1:7432/health | grep "\"version\":\"$version\""
+          # A restart has to leave exactly one server behind, on a new pid.
+          ./dist/harnez server restart
+          restarted=$(curl --fail --silent http://127.0.0.1:7432/health)
+          echo "$restarted" | grep '"name":"harnez"'
+          restarted_pid=$(echo "$restarted" | sed 's/.*"pid":\([0-9]*\).*/\1/')
+          test "$restarted_pid" != "$server_pid"
+          server_pid="$restarted_pid"
           if [ "$RUNNER_OS" = Linux ]; then
             script -q -c ./dist/harnez /dev/null >tui.log 2>&1 &
           else

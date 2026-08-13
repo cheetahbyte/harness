@@ -17,7 +17,33 @@ export type StreamOptions = {
 	from?: number;
 };
 
-export class HarnessClient {
+export type SessionSummary = {
+	id: string;
+	createdAt: string;
+	workspace: string | null;
+	title: string | null;
+};
+
+/**
+ * Reads a JSON body as the named operation. The server answers JSON on every
+ * success, so a parse failure means something else replied — a proxy, or a
+ * truncated body — and it reads as that rather than as a bare SyntaxError.
+ */
+async function readJson(
+	response: Response,
+	operation: string,
+): Promise<unknown> {
+	try {
+		return await response.json();
+	} catch (error) {
+		throw new Error(
+			`${operation} returned a malformed response (${response.status})`,
+			{ cause: error },
+		);
+	}
+}
+
+export class HarnezClient {
 	constructor(
 		readonly base = process.env["HARNEZ_URL"] ??
 			process.env["HARNESS_URL"] ??
@@ -32,7 +58,7 @@ export class HarnessClient {
 		});
 		if (!response.ok)
 			throw new Error(`session creation failed (${response.status})`);
-		const body: unknown = await response.json();
+		const body: unknown = await readJson(response, "session creation");
 		if (
 			!body ||
 			typeof body !== "object" ||
@@ -42,6 +68,30 @@ export class HarnessClient {
 		)
 			throw new Error("session creation returned an invalid response");
 		return body.sessionId;
+	}
+
+	async listSessions(): Promise<SessionSummary[]> {
+		const response = await fetch(`${this.base}/sessions`);
+		if (!response.ok)
+			throw new Error(`session listing failed (${response.status})`);
+		const body: unknown = await readJson(response, "session listing");
+		if (
+			!Array.isArray(body) ||
+			body.some(
+				(session) =>
+					!session ||
+					typeof session !== "object" ||
+					typeof session.id !== "string" ||
+					!session.id ||
+					typeof session.createdAt !== "string" ||
+					!session.createdAt ||
+					(session.workspace !== null &&
+						typeof session.workspace !== "string") ||
+					(session.title !== null && typeof session.title !== "string"),
+			)
+		)
+			throw new Error("session listing returned an invalid response");
+		return body as SessionSummary[];
 	}
 
 	async send(sessionId: string, command: ClientCommand): Promise<void> {

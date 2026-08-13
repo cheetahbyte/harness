@@ -18,9 +18,9 @@ Harnez scans four roots in this order:
 
 | Scope | Location |
 | --- | --- |
-| Project | `.harness/skills/<name>/SKILL.md` |
+| Project | `.harnez/skills/<name>/SKILL.md` |
 | Project, shared | `.agents/skills/<name>/SKILL.md` |
-| User | `~/.harness/skills/<name>/SKILL.md` |
+| User | `~/.harnez/skills/<name>/SKILL.md` |
 | User, shared | `~/.agents/skills/<name>/SKILL.md` |
 
 Each skill must be one directory below a root. Harnez does not scan parent
@@ -33,7 +33,7 @@ the order above wins.
 Create a directory and add `SKILL.md`:
 
 ```text
-.harness/skills/release-notes/
+.harnez/skills/release-notes/
 └── SKILL.md
 ```
 

@@ -8,7 +8,10 @@ import {
 	TextRenderable,
 	t,
 } from "@opentui/core";
-import { slashCommandPattern } from "../../../shared/src/slash-command";
+import {
+	expandsAt,
+	slashCommandPattern,
+} from "../../../shared/src/slash-command";
 import type { TranscriptEntry } from "../store";
 
 const ACCENT = "#89b4fa";
@@ -19,6 +22,7 @@ type DisplayEntry =
 export class TranscriptView {
 	readonly root: ScrollBoxRenderable;
 	private skillNames = new Set<string>();
+	private promptNames = new Set<string>();
 	private readonly renderedEntries: {
 		row: BoxRenderable;
 		text: TextRenderable;
@@ -44,6 +48,10 @@ export class TranscriptView {
 		this.skillNames = new Set(skillNames);
 	}
 
+	setPrompts(promptNames: readonly string[]) {
+		this.promptNames = new Set(promptNames);
+	}
+
 	setDisableThinkingBlocks(disabled: boolean) {
 		this.disableThinkingBlocks = disabled;
 		for (const entry of this.renderedEntries)
@@ -67,7 +75,7 @@ export class TranscriptView {
 			const text = new TextRenderable(this.renderer, {
 				content: toolCall
 					? formatToolTitle(entry.tools)
-					: formatEntry(entry, this.skillNames),
+					: formatEntry(entry, this.skillNames, this.promptNames),
 				fg: toolCall ? ACCENT : entryColor(entry),
 				flexGrow: 1,
 			});
@@ -115,7 +123,7 @@ export class TranscriptView {
 				entry.kind !== "reasoning" || !this.disableThinkingBlocks;
 			rendered.text.content = toolCall
 				? formatToolTitle(entry.tools)
-				: formatEntry(entry, this.skillNames);
+				: formatEntry(entry, this.skillNames, this.promptNames);
 			rendered.text.fg = toolCall ? ACCENT : entryColor(entry);
 			if (rendered.detail && toolCall)
 				rendered.detail.content = formatToolDetails(entry.tools);
@@ -140,6 +148,7 @@ function groupToolCalls(entries: TranscriptEntry[]): DisplayEntry[] {
 function formatEntry(
 	entry: TranscriptEntry,
 	skillNames: ReadonlySet<string>,
+	promptNames: ReadonlySet<string>,
 ): string | StyledText {
 	const prefix = (
 		{
@@ -151,6 +160,7 @@ function formatEntry(
 			error: "error: ",
 			status: "[",
 			usage: "usage: ",
+			compaction: "⋯ ",
 			completed: "",
 			aborted: "[",
 		} as const
@@ -161,11 +171,16 @@ function formatEntry(
 	let position = 0;
 	for (const match of entry.text.matchAll(slashCommandPattern())) {
 		const start = (match.index ?? 0) + (match[1] ?? "").length;
-		const skill = match[2] ?? "";
-		if (!skillNames.has(skill)) continue;
+		const name = match[2] ?? "";
+		const kind = skillNames.has(name)
+			? "skill"
+			: promptNames.has(name)
+				? "prompt"
+				: undefined;
+		if (!expandsAt(kind, start)) continue;
 		chunks.push(...t`${entry.text.slice(position, start)}`.chunks);
-		chunks.push(fg(ACCENT)(entry.text.slice(start, start + skill.length + 1)));
-		position = start + skill.length + 1;
+		chunks.push(fg(ACCENT)(entry.text.slice(start, start + name.length + 1)));
+		position = start + name.length + 1;
 	}
 	chunks.push(...t`${entry.text.slice(position)}`.chunks);
 	return new StyledText(chunks);
@@ -212,6 +227,7 @@ function entryColor(entry: TranscriptEntry): string {
 	if (entry.error || entry.kind === "error") return "#f38ba8";
 	if (entry.kind === "reasoning") return "#a6adc8";
 	if (entry.kind === "completed") return "#8b8d98";
+	if (entry.kind === "compaction") return "#6c7086";
 	if (entry.kind.startsWith("tool")) return ACCENT;
 	return "#cdd6f4";
 }

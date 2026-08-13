@@ -40,6 +40,25 @@ describe("TUI protocol store", () => {
 		]);
 	});
 
+	test("replays user messages and deduplicates their optimistic row", () => {
+		const store = createTuiStore("session");
+		store.getState().apply({ type: "user", text: "replayed" });
+		store.getState().addSteering("user-1", "optimistic");
+		store
+			.getState()
+			.apply({ type: "user", id: "user-1", text: "optimistic" });
+
+		expect(
+			store
+				.getState()
+				.entries.filter((entry) => entry.kind === "user")
+				.map(({ id, text, pending }) => ({ id, text, pending })),
+		).toEqual([
+			{ id: undefined, text: "replayed", pending: undefined },
+			{ id: "user-1", text: "optimistic", pending: false },
+		]);
+	});
+
 	test("hides runtime rows by default and shows the completion duration", () => {
 		const store = createStoreWithStatus(false);
 		store
