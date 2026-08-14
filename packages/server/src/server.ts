@@ -23,6 +23,7 @@ import { HarnezAgentRuntime } from "./agent/runtime";
 import { ContextManager } from "./context/manager";
 import type { SubagentResult } from "./context/types";
 import { log } from "./logger";
+import { McpRegistry } from "./mcp/registry";
 import { scanPrompts } from "./prompts";
 import {
 	createHarnezModels,
@@ -61,6 +62,7 @@ export class HarnezServer {
 	private readonly workspaceModels = new Map<string, ModelRegistry>();
 	private readonly defaultWorkspace: string;
 	private readonly context: ContextManager;
+	private readonly mcp: McpRegistry;
 	private readonly taskRunner: SessionTaskRunner;
 	private readonly authentication: SessionAuthentication;
 	private readonly namer: SessionNamer;
@@ -95,11 +97,15 @@ export class HarnezServer {
 			(id, event) => this.publish(id, event, false),
 		);
 		this.context = new ContextManager(this.store);
+		this.mcp = new McpRegistry(this.defaultWorkspace);
+		// Connecting starts now so the first prompt does not pay for the handshake.
+		this.mcp.start();
 		this.runtime = new HarnezAgentRuntime({
 			credentials: this.credentials,
 			modelsFor: (id) => this.modelsFor(id) as Models,
 			store: this.store,
 			context: this.context,
+			mcp: this.mcp,
 			...(options.contextBudget === undefined
 				? {}
 				: { contextBudget: options.contextBudget }),
@@ -108,11 +114,17 @@ export class HarnezServer {
 			runtime: this.runtime,
 			store: this.store,
 			context: this.context,
+			mcp: this.mcp,
 			capabilityBudget: 8_000,
 			workspace: (sessionId) => this.workspace(sessionId),
 			modelConfig: (sessionId) => this.modelConfig(sessionId),
 			emit: (sessionId, event) => this.publish(sessionId, event),
 		});
+	}
+
+	/** Releases process-level resources; stdio MCP servers are child processes. */
+	async close(): Promise<void> {
+		await this.mcp.close();
 	}
 
 	createSession(workspace = this.defaultWorkspace): string {

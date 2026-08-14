@@ -13,6 +13,8 @@ import {
 import type { ContextManager } from "../context/manager";
 import { ContextBudgetError } from "../context/types";
 import { log } from "../logger";
+import { isMcpProvider, mcpCapabilities } from "../mcp/capabilities";
+import type { McpRegistry, McpToolDescriptor } from "../mcp/registry";
 import { expandPrompt, scanPrompts } from "../prompts";
 import { activateSkill, type SkillSnapshotEntry, scanSkills } from "../skills";
 import { TaskRuntime, type TaskTerminalStatus } from "../task-runtime";
@@ -33,6 +35,7 @@ export type RunningTask = {
 	task: TaskRuntime;
 	tools: CoreTools;
 	skills: SkillSnapshotEntry[];
+	mcpTools: McpToolDescriptor[];
 	prompt: string;
 	contextWatermark: number;
 };
@@ -41,6 +44,7 @@ type RunnerOptions = {
 	runtime: HarnezAgentRuntime;
 	store: SessionStore;
 	context: ContextManager;
+	mcp: Pick<McpRegistry, "snapshot">;
 	capabilityBudget: number;
 	workspace: (sessionId: string) => string;
 	modelConfig: (sessionId: string) => ModelConfig | undefined;
@@ -88,6 +92,7 @@ export class SessionTaskRunner {
 				tools: running.tools,
 				task: running.task,
 				skills: running.skills,
+				mcpTools: running.mcpTools,
 				signal: controller.signal,
 				emit: (event) => this.options.emit(id, event),
 			});
@@ -320,15 +325,26 @@ export class SessionTaskRunner {
 		const contextWatermark = this.options.store.contextSequence(id);
 		const workspace = this.options.workspace(id);
 		const tools = new CoreTools(workspace);
-		const [scanned, prompts] = await Promise.all([
+		const [scanned, prompts, mcp] = await Promise.all([
 			scanSkills(workspace, undefined, bindingGeneration),
 			scanPrompts(workspace),
+			this.options.mcp.snapshot(),
 		]);
 		const skills = [...scanned.discoverable, ...scanned.operatorOnly];
 		for (const diagnostic of scanned.diagnostics)
 			log.warn(
 				{ sessionId: id, path: diagnostic.path, error: diagnostic.error },
 				"skill ignored",
+			);
+		for (const diagnostic of mcp.diagnostics)
+			log.warn(
+				{
+					sessionId: id,
+					path: diagnostic.path,
+					server: diagnostic.server,
+					error: diagnostic.error,
+				},
+				"mcp server ignored",
 			);
 		/** A template expands before skills are selected, so it can invoke them. */
 		const { text: expanded, template } = expandPrompt(text, prompts.templates);
@@ -341,6 +357,7 @@ export class SessionTaskRunner {
 			[
 				...tools.capabilities(bindingGeneration),
 				...contextCapabilities(bindingGeneration),
+				...mcpCapabilities(mcp.tools, bindingGeneration),
 				...skills.map(({ capability }) => capability),
 			],
 			bindingGeneration,
@@ -365,6 +382,7 @@ export class SessionTaskRunner {
 			task,
 			tools,
 			skills,
+			mcpTools: mcp.tools,
 			prompt,
 			contextWatermark,
 		};
@@ -426,25 +444,45 @@ export class SessionTaskRunner {
 		return { task, context, accountant };
 	}
 
+	/**
+	 * Tools harnez ships are loaded up front because they are already in the
+	 * model's tool list. Everything else — today, MCP — stays catalog-only until
+	 * `tools_load` admits it, so a server advertising hundreds of tools costs one
+	 * catalog entry each instead of a schema in every request.
+	 */
 	private loadTools(
 		task: TaskRuntime,
 		snapshot: CapabilitySnapshot,
 		context: CapabilityContext,
 		accountant: TokenAccountant,
 	): void {
-		for (const item of snapshot.list({ kind: "tool", limit: 100 }).items) {
-			const inspected = snapshot.inspect(item.ref);
-			const admission = context.admit({
-				capability: item.ref,
-				scope: "task",
-				contentHash: item.ref.contractHash,
-				content: inspected.contract,
-				accountant,
+		/**
+		 * Discovery is paginated and ordered by id, so a catalog large enough to
+		 * span pages would otherwise strand core tools behind `tool:mcp__…`.
+		 */
+		let cursor: string | undefined;
+		do {
+			const page = snapshot.list({
+				kind: "tool",
+				limit: 100,
+				...(cursor === undefined ? {} : { cursor }),
 			});
-			if (admission.status === "rejected")
-				throw new Error(JSON.stringify(admission));
-			task.load(item.ref);
-		}
+			for (const item of page.items) {
+				if (isMcpProvider(item.ref.providerBinding.providerId)) continue;
+				const inspected = snapshot.inspect(item.ref);
+				const admission = context.admit({
+					capability: item.ref,
+					scope: "task",
+					contentHash: item.ref.contractHash,
+					content: inspected.contract,
+					accountant,
+				});
+				if (admission.status === "rejected")
+					throw new Error(JSON.stringify(admission));
+				task.load(item.ref);
+			}
+			cursor = page.nextCursor;
+		} while (cursor !== undefined);
 	}
 
 	private async activateSkills(

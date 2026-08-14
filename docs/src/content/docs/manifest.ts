@@ -9,6 +9,7 @@ import contextCompaction from "./context-compaction.md?raw";
 import { getFrontmatterSlug } from "./frontmatter";
 import installation from "./installation.md?raw";
 import introduction from "./introduction.md?raw";
+import mcp from "./mcp.md?raw";
 import promptTemplates from "./prompt-templates.md?raw";
 import sessions from "./sessions.md?raw";
 import skills from "./skills.md?raw";
@@ -123,6 +124,14 @@ export const docPages: DocPage[] = [
 			"Create reusable skill instructions, control model discovery, activate skills manually, and troubleshoot loading.",
 		section: "Advanced",
 		source: skills,
+	},
+	{
+		slug: getFrontmatterSlug(mcp),
+		title: "MCP servers",
+		description:
+			"Connect Model Context Protocol servers with the Agent Plugins mcp.json format, configure stdio and HTTP transports, and troubleshoot loading.",
+		section: "Advanced",
+		source: mcp,
 	},
 ];
 

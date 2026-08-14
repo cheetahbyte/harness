@@ -1,4 +1,8 @@
-import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
+import {
+	Agent,
+	type AgentMessage,
+	type AgentTool,
+} from "@earendil-works/pi-agent-core";
 import {
 	type Api,
 	type AssistantMessageEvent,
@@ -15,6 +19,7 @@ import { abortableSleep } from "../../../shared/src/abortable-sleep";
 import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
 import type { ContextManager } from "../context/manager";
 import { log } from "../logger";
+import type { McpRegistry, McpToolDescriptor } from "../mcp/registry";
 import { HarnezProviderError, providerModels } from "../provider";
 import type { SessionStore } from "../sessions/store";
 import type { SkillSnapshotEntry } from "../skills";
@@ -39,6 +44,7 @@ export type AgentRunInput = {
 	tools: CoreTools;
 	task: TaskRuntime;
 	skills: readonly SkillSnapshotEntry[];
+	mcpTools: readonly McpToolDescriptor[];
 	signal: AbortSignal;
 	emit: (event: ServerEvent) => void;
 };
@@ -60,18 +66,21 @@ export class HarnezAgentRuntime {
 	private readonly store: SessionStore;
 	private readonly context: ContextManager;
 	private readonly contextBudget: number;
+	private readonly mcp: Pick<McpRegistry, "call">;
 
 	constructor(options: {
 		credentials: CredentialStore;
 		modelsFor: (sessionId: string) => Models;
 		store: SessionStore;
 		context: ContextManager;
+		mcp: Pick<McpRegistry, "call">;
 		contextBudget?: number;
 	}) {
 		this.credentials = options.credentials;
 		this.modelsFor = options.modelsFor;
 		this.store = options.store;
 		this.context = options.context;
+		this.mcp = options.mcp;
 		this.contextBudget = options.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
 	}
 
@@ -82,6 +91,7 @@ export class HarnezAgentRuntime {
 		tools,
 		task,
 		skills,
+		mcpTools,
 		signal,
 		emit,
 	}: AgentRunInput): Promise<AgentRunTiming> {
@@ -107,6 +117,7 @@ export class HarnezAgentRuntime {
 				config,
 				task,
 				skills,
+				mcpTools,
 			});
 			created.agent.subscribe((event) =>
 				translateAgentEvent({
@@ -200,6 +211,7 @@ export class HarnezAgentRuntime {
 		config,
 		task,
 		skills,
+		mcpTools,
 	}: {
 		sessionId: string;
 		key: string;
@@ -209,6 +221,7 @@ export class HarnezAgentRuntime {
 		config: ModelConfig;
 		task: TaskRuntime;
 		skills: readonly SkillSnapshotEntry[];
+		mcpTools: readonly McpToolDescriptor[];
 	}): AgentEntry {
 		ensureSystem({
 			sessionId,
@@ -217,6 +230,16 @@ export class HarnezAgentRuntime {
 			systemPrompt: SYSTEM_PROMPT,
 		});
 		const entry = newAgentEntry(key, tools, task);
+		/**
+		 * Publishes a tool mid-task. `entry.agent` is assigned before any tool can
+		 * run, so the deferred read is always resolved by the time this fires.
+		 * Re-admitting the same name is ignored: `tools_load` is idempotent.
+		 */
+		const admit = (tool: AgentTool): void => {
+			const current = entry.agent.state.tools;
+			if (current.some((existing) => existing.name === tool.name)) return;
+			entry.agent.state.tools = [...current, tool];
+		};
 		const managed = (): AgentMessage[] => {
 			try {
 				entry.contextError = undefined;
@@ -240,6 +263,9 @@ export class HarnezAgentRuntime {
 					tools,
 					task,
 					skills,
+					mcpTools,
+					mcp: this.mcp,
+					admit,
 					context: this.context,
 					contextOptions: this.contextOptions.bind(this),
 					previewLimit: this.previewLimit.bind(this),

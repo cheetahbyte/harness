@@ -1,18 +1,29 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { type Api, type Model, Type } from "@earendil-works/pi-ai";
+import {
+	type Api,
+	type Model,
+	type TSchema,
+	Type,
+} from "@earendil-works/pi-ai";
 
 import type { TokenAccountant } from "../capabilities/context";
-import type { EffectClass, ToolCapabilityInput } from "../capabilities/types";
+import type {
+	EffectClass,
+	InspectedCapability,
+	ToolCapabilityInput,
+} from "../capabilities/types";
 import type { ContextManager } from "../context/manager";
 import {
 	MAX_OBSERVATION_RECALL_LIMIT,
 	parseObservationUri,
 } from "../context/recall";
 import type { ObservationRecall } from "../context/types";
+import type { McpRegistry, McpToolDescriptor } from "../mcp/registry";
 import { activateSkill, type SkillSnapshotEntry } from "../skills";
 import type { TaskRuntime } from "../task-runtime";
 import { tokenCost } from "../token-cost";
 import { CoreTools } from "../tools";
+import { EvictionPriority, type ToolContextMetadata } from "../tools/tool";
 import { detailsRecord } from "./message";
 
 const RECALL_DESCRIPTION =
@@ -98,6 +109,15 @@ type AgentToolsOptions = {
 	task: TaskRuntime;
 	skills: readonly SkillSnapshotEntry[];
 	context: ContextManager;
+	/** Tools advertised by connected MCP servers, admitted on demand. */
+	mcpTools: readonly McpToolDescriptor[];
+	mcp: Pick<McpRegistry, "call">;
+	/**
+	 * Publishes a tool to the running agent. Capabilities outside the core set
+	 * stay out of the model's tool list until `tools_load` admits them, which is
+	 * what keeps a large MCP server from riding along in every request.
+	 */
+	admit: (tool: AgentTool) => void;
 	contextOptions: (model: Model<Api>) => {
 		budget: number;
 		target: number;
@@ -108,21 +128,31 @@ type AgentToolsOptions = {
 
 export function agentTools(options: AgentToolsOptions): AgentTool[] {
 	return [
-		...capabilityTools(options.task, options.model, options.skills),
+		...capabilityTools(options),
 		...coreTools(options),
 		...contextTools(options),
 	];
 }
 
-function coreTools({
-	sessionId,
-	model,
-	tools,
-	task,
-	context,
-	previewLimit,
-}: AgentToolsOptions): AgentTool[] {
-	return tools.agentTools().map((tool): AgentTool => ({
+function coreTools(options: AgentToolsOptions): AgentTool[] {
+	return options.tools
+		.agentTools()
+		.map((tool) =>
+			instrument(tool, options, options.tools.contextMetadata(tool.name)),
+		);
+}
+
+/**
+ * Wraps a tool so every call is authorized and ledgered by the task runtime and
+ * its output is archived as an observation, leaving only a bounded preview in
+ * context. Core and MCP tools share this path so they behave identically.
+ */
+function instrument(
+	tool: AgentTool,
+	{ sessionId, model, task, context, previewLimit }: AgentToolsOptions,
+	metadata: ToolContextMetadata,
+): AgentTool {
+	return {
 		...tool,
 		execute: async (id, input, signal, onUpdate) => {
 			const ref = task.snapshot.reference(`tool:${tool.name}`);
@@ -142,7 +172,7 @@ function coreTools({
 				.join("");
 			const observation = context.recordObservation(sessionId, output, {
 				toolCallId: id,
-				...tools.contextMetadata(tool.name),
+				...metadata,
 			});
 			return {
 				...result,
@@ -158,7 +188,43 @@ function coreTools({
 				},
 			};
 		},
-	}));
+	};
+}
+
+/**
+ * The callable form of an MCP tool. It is built only when `tools_load` admits
+ * the capability, so an unloaded server costs nothing but a catalog entry.
+ */
+function mcpAgentTool(
+	descriptor: McpToolDescriptor,
+	inspected: InspectedCapability,
+	options: AgentToolsOptions,
+): AgentTool {
+	const tool: AgentTool = {
+		name: descriptor.name,
+		label: `${descriptor.server}: ${descriptor.tool}`,
+		description: inspected.description,
+		parameters: (inspected.contract as { schema: TSchema }).schema,
+		execute: async (id, input, signal) => ({
+			content: [
+				{
+					type: "text" as const,
+					text: await options.mcp.call(
+						descriptor.server,
+						descriptor.tool,
+						input,
+						signal ?? new AbortController().signal,
+					),
+				},
+			],
+			details: { id },
+		}),
+	};
+	return instrument(tool, options, {
+		toolName: descriptor.name,
+		// Server output can be anything, so it gets the ordinary eviction rank.
+		evictionPriority: EvictionPriority.Normal,
+	});
 }
 
 function contextTools({
@@ -174,11 +240,8 @@ function contextTools({
 	];
 }
 
-function capabilityTools(
-	task: TaskRuntime,
-	model: Model<Api>,
-	skills: readonly SkillSnapshotEntry[],
-): AgentTool[] {
+function capabilityTools(options: AgentToolsOptions): AgentTool[] {
+	const { task, model, skills } = options;
 	const accountant: TokenAccountant = {
 		modelId: model.id,
 		serializerVersion: "pi-json-v1",
@@ -189,7 +252,7 @@ function capabilityTools(
 		listCapabilitiesTool(task),
 		searchCapabilitiesTool(task),
 		inspectCapabilityTool(task),
-		loadTool(task, accountant),
+		loadTool(options, accountant),
 		activateSkillTool(task, skills, accountant),
 	];
 }
@@ -258,7 +321,11 @@ function inspectCapabilityTool(task: TaskRuntime): AgentTool {
 		},
 	};
 }
-function loadTool(task: TaskRuntime, accountant: TokenAccountant): AgentTool {
+function loadTool(
+	options: AgentToolsOptions,
+	accountant: TokenAccountant,
+): AgentTool {
+	const { task, mcpTools, admit } = options;
 	return {
 		name: "tools_load",
 		label: "load tool",
@@ -279,6 +346,13 @@ function loadTool(task: TaskRuntime, accountant: TokenAccountant): AgentTool {
 			if (admission.status === "rejected")
 				throw new Error(JSON.stringify(admission));
 			task.load(ref);
+			/**
+			 * Loading a core tool only admits its contract — it is already callable.
+			 * A catalog-only tool has to be published to the agent as well, or the
+			 * model would be told it succeeded and still have nothing to call.
+			 */
+			const descriptor = mcpTools.find((tool) => tool.name === inspected.name);
+			if (descriptor) admit(mcpAgentTool(descriptor, inspected, options));
 			return {
 				content: [{ type: "text" as const, text: `Loaded ${inspected.name}` }],
 				details: { contextItemId: admission.item?.id },

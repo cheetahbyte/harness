@@ -608,27 +608,52 @@ Harnez-specific subagent profiles remain outside the portable Agent Plugins v1 c
 
 ## 18. MCP
 
-Agent Plugin-provided MCP configuration follows the Agent Plugins `mcp.json` format.
+Harnez reads the Agent Plugins v1.0.0 `mcp.json` format (§7.2, §9) without yet
+adopting the surrounding plugin package model. Borrowing only the schema means
+that supporting whole plugin packages later is a manifest parser plus a
+different root/data pair, rather than a config migration.
 
-Global and project-local MCP configuration may live in Harnez configuration while feeding the same internal MCP registry.
+Configuration lives at `~/.config/harnez/mcp.json` and `<repo>/.harnez/mcp.json`,
+merged by server name with the project file winning. `$schema` is required and
+matched by exact string compare; it is never fetched.
 
-MCP servers should be lazy:
+The two plugin variables are bound to the config file that declares the server:
+
+| Variable | Value |
+| --- | --- |
+| `PLUGIN_ROOT` | the directory holding that `mcp.json` |
+| `PLUGIN_DATA` | `~/.config/harnez/mcp-data/<server>`, created before launch |
+
+Failures are isolated at the narrowest scope the spec defines: a malformed file
+disables MCP for that file alone, a malformed entry skips one server, and a
+server that will not start is reported and skipped. Nothing about MCP can
+prevent the rest of a session from running.
+
+Discovery is lazy; connections are not:
 
 ```text
 configuration
      ↓
-registered metadata
+connect at server start, cache tools/list
      ↓
-search_tools
+capability catalog (metadata only)
      ↓
-call_tool
+capabilities_search / capabilities_inspect
      ↓
-start/connect MCP server if necessary
+tools_load  →  tool joins the model's tool list
+     ↓
+call
 ```
 
-Idle MCP servers may be stopped later to reduce resource use.
+Servers connect eagerly because a task's capability catalog is built from tool
+metadata, which cannot be known without a handshake. What stays lazy is the
+model's tool list: an MCP tool is a catalog entry until `tools_load` admits it,
+so the permanent request surface does not grow with the number of connected
+servers. Idle servers may be stopped later to reduce resource use.
 
-Credentials and environment configuration must remain outside model context.
+`sse` is parsed and reported as an unsupported transport, which the
+specification permits. Credentials belong in the ambient environment that stdio
+servers inherit, never in `env` or `headers`, which are visible configuration.
 
 ---
 

@@ -52,6 +52,7 @@
 		"@ade_oshineye/yaket": "0.5.3",
 		"@earendil-works/pi-agent-core": "^0.84.1",
 		"@earendil-works/pi-ai": "^0.84.1",
+		"@modelcontextprotocol/sdk": "^1.30.0",
 		"@opentui/core": "^0.5.1",
 		"pino": "^10.3.1",
 		"zustand": "^5.0.14"
