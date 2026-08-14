@@ -7,19 +7,18 @@ import type { EffectClass } from "../capabilities/types";
 
 const writeLocks = new Map<string, Promise<void>>();
 
-
 export const EvictionPriority = {
-  Early: "early",
-  Normal: "normal",
-  Late: "late",
+	Early: "early",
+	Normal: "normal",
+	Late: "late",
 } as const;
 
 export type EvictionPriority =
-  (typeof EvictionPriority)[keyof typeof EvictionPriority];
+	(typeof EvictionPriority)[keyof typeof EvictionPriority];
 
 export type ToolContextMetadata = {
-  toolName: string;
-  evictionPriority: EvictionPriority;
+	toolName: string;
+	evictionPriority: EvictionPriority;
 };
 
 export abstract class WorkspaceTool {
