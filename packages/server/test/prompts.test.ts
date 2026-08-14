@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SYSTEM_PROMPT } from "../src/agent/runtime";
 import { contextCapabilities } from "../src/agent/tools";
+import { PRESSURE_NOTE } from "../src/context/manager";
 import { expandPrompt, scanPrompts } from "../src/prompts";
 
 const paths: string[] = [];
@@ -19,6 +20,15 @@ test("guides agents to avoid short-task bookkeeping and batch tool calls", () =>
 
 	expect(SYSTEM_PROMPT).toContain("Batch independent tool calls");
 	expect(SYSTEM_PROMPT).toContain("skip episodes and pin_context for short tasks");
+	/** The trigger has to be something the model can observe, not a guess. */
+	expect(SYSTEM_PROMPT).toContain(
+		"once context is reported to be under compaction pressure",
+	);
+	expect(PRESSURE_NOTE).toContain("under compaction pressure");
+	/** Placeholders are recoverable, and nothing else says so to the model. */
+	expect(SYSTEM_PROMPT).toContain(
+		"read it back with recall_observation instead of running the tool again",
+	);
 	expect(pin?.description).toContain("Skip it for short tasks");
 	expect(episode?.description).toContain(
 		"Exploration end requires a conclusion; action end must omit it",

@@ -59,6 +59,11 @@ const lifecycles = new Set<ContextLifecycle>([
 	"archived",
 ]);
 
+export const PRESSURE_NOTE_REASON = "working-context pressure";
+export const PRESSURE_NOTE =
+	"Context is under compaction pressure: older tool output is being archived to observation:// references, which recall_observation reads back. Use episode to bound work that continues past this point, and pin_context for anything later steps must not lose.";
+export const PRESSURE_NOTE_TOKENS = computeTokenCost(PRESSURE_NOTE);
+
 type AssemblyOptions = {
 	budget: number;
 	target: number;
@@ -415,6 +420,49 @@ export class ContextManager {
 		return item;
 	}
 
+	/**
+	 * Compaction is otherwise invisible to the model: the placeholders it leaves
+	 * behind read as ordinary output, and the budget it works against is never
+	 * quoted. Without this note the system prompt's instruction to reach for
+	 * episodes under pressure has no observable trigger to fire on.
+	 *
+	 * Stored rather than synthesized per assembly so it is said exactly once —
+	 * a session over budget stays over budget, so a note derived from the live
+	 * pressure flag would repeat on every turn for the rest of the session.
+	 * Pinned, because the one message explaining the placeholders must not
+	 * become a placeholder itself.
+	 *
+	 * Skipped unless the assembled context can afford it. Pinned weight is
+	 * never reclaimed, so a note taken on credit would raise the floor of
+	 * every later assembly — advice about a tight budget is not worth being
+	 * the reason that budget stops being satisfiable.
+	 */
+	private notePressure(
+		sessionId: string,
+		estimatedTokens: number,
+		budget: number,
+	): void {
+		if (estimatedTokens + PRESSURE_NOTE_TOKENS > budget) return;
+		if (
+			this.store
+				.contextItems(sessionId)
+				.some((item) => item.reason === PRESSURE_NOTE_REASON)
+		)
+			return;
+		this.record({
+			sessionId,
+			kind: "pinned-note",
+			payload: {
+				role: "user",
+				content: PRESSURE_NOTE,
+				timestamp: Date.now(),
+			},
+			tokenCost: PRESSURE_NOTE_TOKENS,
+			lifecycle: "pinned",
+			reason: PRESSURE_NOTE_REASON,
+		});
+	}
+
 	assemble(
 		sessionId: string,
 		options: AssemblyOptions,
@@ -443,6 +491,14 @@ export class ContextManager {
 			);
 		if (underPressure && state.estimatedTokens > options.budget)
 			throw new ContextBudgetError(state.estimatedTokens, options.budget);
+		/**
+		 * After the archiving pass, never before it: a note about scarce budget
+		 * that competed for that same budget could be the weight that pushes an
+		 * assembly past its target. It reaches the model on the next assembly,
+		 * which a turn under pressure always performs.
+		 */
+		if (underPressure)
+			this.notePressure(sessionId, state.estimatedTokens, options.budget);
 		return {
 			payloads: [
 				...projectedPayloads(state.items),

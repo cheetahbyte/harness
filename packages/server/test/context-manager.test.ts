@@ -2,7 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ContextBudgetError, ContextManager } from "../src/context/manager";
+import {
+	ContextBudgetError,
+	ContextManager,
+	PRESSURE_NOTE,
+	PRESSURE_NOTE_REASON,
+	PRESSURE_NOTE_TOKENS,
+} from "../src/context/manager";
 import { MAX_OBSERVATION_RECALL_LIMIT } from "../src/context/recall";
 import { SessionStore } from "../src/sessions/store";
 
@@ -928,9 +934,13 @@ describe("ContextManager", () => {
 		expect(assembly.evictedIds).toEqual([evicted.id]);
 		expect(assembly.tokensBefore).toBe(210);
 		expect(assembly.tokensAfter).toBe(assembly.estimatedTokens);
-		/** Observations are free against the budget but still count as history. */
-		expect(inspection.estimatedTokens).toBe(15);
-		expect(inspection.historyTokens).toBe(410);
+		/**
+		 * Observations are free against the budget but still count as history.
+		 * The pressure note is the working set's only other resident: this
+		 * assembly crossed the budget, which is what announces it.
+		 */
+		expect(inspection.estimatedTokens).toBe(15 + PRESSURE_NOTE_TOKENS);
+		expect(inspection.historyTokens).toBe(410 + PRESSURE_NOTE_TOKENS);
 		expect(inspection.parkedObservations).toBe(1);
 		store.db.close();
 	});
@@ -1072,7 +1082,11 @@ describe("ContextManager", () => {
 			});
 			expect(assembly.estimatedTokens).toBeLessThanOrEqual(1_600);
 			expect(JSON.stringify(assembly.payloads)).not.toContain(raw);
-			expect(store.contextItems(sessionId)).toHaveLength(201);
+			expect(
+				store
+					.contextItems(sessionId)
+					.filter((item) => item.reason !== PRESSURE_NOTE_REASON),
+			).toHaveLength(201);
 			expect(store.contextItems(sessionId)[0]).toMatchObject({
 				lifecycle: "pinned",
 				projection: "full",
@@ -1081,4 +1095,182 @@ describe("ContextManager", () => {
 		},
 		20_000,
 	);
+
+	test("says nothing about pressure while the session stays inside budget", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "small task" },
+			tokenCost: 10,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+
+		const assembly = manager.assemble(sessionId, {
+			budget: 100,
+			target: 80,
+			overheadTokens: 0,
+		});
+
+		expect(JSON.stringify(assembly.payloads)).not.toContain(PRESSURE_NOTE);
+		expect(
+			store
+				.contextItems(sessionId)
+				.some((item) => item.reason === PRESSURE_NOTE_REASON),
+		).toBe(false);
+		store.db.close();
+	});
+
+	test("announces compaction pressure once, after the pass that caused it", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "keep" },
+			tokenCost: 600,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+		const tool = manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "large output" },
+			compactPayload: { role: "toolResult", content: "observation://old" },
+			tokenCost: 500,
+			compactTokenCost: 50,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "read" },
+		});
+		const options = { budget: 1_000, target: 800, overheadTokens: 0 };
+
+		const crossing = manager.assemble(sessionId, options);
+		const next = manager.assemble(sessionId, options);
+		const later = manager.assemble(sessionId, options);
+
+		expect(crossing.evictedIds).toEqual([tool.id]);
+		/** The note must not count against the budget it is reporting on. */
+		expect(JSON.stringify(crossing.payloads)).not.toContain(PRESSURE_NOTE);
+		expect(crossing.estimatedTokens).toBeLessThanOrEqual(options.target);
+		expect(
+			JSON.stringify(next.payloads).split(PRESSURE_NOTE).length - 1,
+		).toBe(1);
+		expect(
+			JSON.stringify(later.payloads).split(PRESSURE_NOTE).length - 1,
+		).toBe(1);
+		expect(
+			store
+				.contextItems(sessionId)
+				.filter((item) => item.reason === PRESSURE_NOTE_REASON),
+		).toMatchObject([{ lifecycle: "pinned", kind: "pinned-note" }]);
+		store.db.close();
+	});
+
+	test("withholds the pressure note when the budget cannot seat it", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "large" },
+			compactPayload: { role: "toolResult", content: "ref" },
+			tokenCost: 10,
+			compactTokenCost: 1,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "read" },
+		});
+		const options = { budget: 2, target: 2, overheadTokens: 0 };
+
+		const assembly = manager.assemble(sessionId, options);
+
+		/** Pressure was real, but announcing it would have overrun the budget. */
+		expect(assembly.evictedIds).toHaveLength(1);
+		expect(assembly.estimatedTokens).toBeLessThanOrEqual(options.budget);
+		expect(
+			store
+				.contextItems(sessionId)
+				.some((item) => item.reason === PRESSURE_NOTE_REASON),
+		).toBe(false);
+		store.db.close();
+	});
+
+	test("keeps the pressure note out of every eviction path", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "keep" },
+			tokenCost: 600,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+		const options = { budget: 1_000, target: 800, overheadTokens: 0 };
+		/** Weight the retained pass cannot reclaim, so episode eviction runs. */
+		manager.record({
+			sessionId,
+			kind: "assistant",
+			payload: { role: "assistant", content: "looked around" },
+			tokenCost: 250,
+			lifecycle: "active",
+			reason: "investigating",
+		});
+		manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "large output" },
+			compactPayload: { role: "toolResult", content: "observation://old" },
+			tokenCost: 500,
+			compactTokenCost: 50,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "read" },
+		});
+		const exploration = manager.startEpisode(sessionId, {
+			name: "survey",
+			kind: "exploration",
+		});
+		manager.endEpisode(sessionId, "The parser owns validation.");
+		const episode = manager.startEpisode(sessionId, {
+			name: "sweep",
+			kind: "action",
+			dependencies: [exploration.id],
+		});
+		manager.assemble(sessionId, options);
+		/**
+		 * The note is recorded while the episode is open, so it inherits that
+		 * episode id and would ride along on a structural eviction if being
+		 * pinned did not exempt it.
+		 */
+		manager.endEpisode(sessionId);
+		manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "more output" },
+			tokenCost: 200,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "bash" },
+		});
+
+		const assembly = manager.assemble(sessionId, options);
+
+		/** Vacuous unless the episode holding the note was actually swept. */
+		expect(assembly.episodesArchived).toBe(1);
+		expect(JSON.stringify(assembly.payloads)).toContain(PRESSURE_NOTE);
+		expect(
+			store
+				.contextItems(sessionId)
+				.find((item) => item.reason === PRESSURE_NOTE_REASON),
+		).toMatchObject({ lifecycle: "pinned", episodeId: episode.id });
+		store.db.close();
+	});
 });
