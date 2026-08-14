@@ -7,16 +7,26 @@ import type { EffectClass } from "../capabilities/types";
 
 const writeLocks = new Map<string, Promise<void>>();
 
+
+export const EvictionPriority = {
+  Early: "early",
+  Normal: "normal",
+  Late: "late",
+} as const;
+
+export type EvictionPriority =
+  (typeof EvictionPriority)[keyof typeof EvictionPriority];
+
 export type ToolContextMetadata = {
-	toolName: string;
-	evictionPriority: "early" | "normal" | "late";
+  toolName: string;
+  evictionPriority: EvictionPriority;
 };
 
 export abstract class WorkspaceTool {
 	abstract readonly name: string;
 	abstract readonly description: string;
 	abstract readonly schema: TSchema;
-	readonly evictionPriority: ToolContextMetadata["evictionPriority"] = "normal";
+	readonly evictionPriority: EvictionPriority = EvictionPriority.Normal;
 	readonly effect: EffectClass = "mutating";
 
 	constructor(protected readonly workspace: string) {}

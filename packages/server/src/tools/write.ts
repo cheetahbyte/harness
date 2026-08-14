@@ -3,11 +3,11 @@ import { dirname } from "node:path";
 
 import { Type } from "@earendil-works/pi-ai";
 
-import { WorkspaceTool } from "./tool";
+import { EvictionPriority, WorkspaceTool } from "./tool";
 
 export class WriteTool extends WorkspaceTool {
 	readonly name = "write";
-	override readonly evictionPriority = "early" as const;
+	override readonly evictionPriority = EvictionPriority.Early;
 	readonly description = "Write a text file in the workspace.";
 	readonly schema = Type.Object({
 		path: Type.String({ minLength: 1 }),
