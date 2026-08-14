@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+
 import {
 	BoxRenderable,
 	bold,
@@ -8,6 +9,7 @@ import {
 	TextRenderable,
 	t,
 } from "@opentui/core";
+
 import { VERSION } from "../../../shared/src/version";
 import type { TuiState } from "../store";
 import { ACCENT, DIM, TEXT, WARNING } from "./theme";

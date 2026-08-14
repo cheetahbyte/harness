@@ -1,4 +1,5 @@
 import { BoxRenderable, type CliRenderer, TextRenderable } from "@opentui/core";
+
 import type { TuiState } from "../store";
 import { DIM, TEXT } from "./theme";
 

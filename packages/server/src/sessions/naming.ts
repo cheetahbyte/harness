@@ -6,6 +6,7 @@ import {
 	type ModelThinkingLevel,
 	type ThinkingLevel,
 } from "@earendil-works/pi-ai";
+
 import type { ModelConfig } from "../../../shared/src/protocol";
 import { log } from "../logger";
 import { providerModels } from "../provider";

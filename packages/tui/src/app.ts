@@ -5,6 +5,7 @@ import {
 	type SelectOption,
 } from "@opentui/core";
 import type { StoreApi } from "zustand/vanilla";
+
 import type {
 	AuthNotifyEvent,
 	AuthPromptEvent,

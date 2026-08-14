@@ -8,6 +8,7 @@ import {
 	TextRenderable,
 	t,
 } from "@opentui/core";
+
 import {
 	expandsAt,
 	slashCommandPattern,

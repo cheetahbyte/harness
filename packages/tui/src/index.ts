@@ -3,6 +3,7 @@ import {
 	createCliRenderer,
 	type SelectOption,
 } from "@opentui/core";
+
 import { abortableSleep } from "../../shared/src/abortable-sleep";
 import { TuiApp } from "./app";
 import { HarnezClient, type SessionSummary } from "./client";
@@ -120,13 +121,11 @@ export function pickSession(
 			{
 				kind: "select",
 				title: "Resume session",
-				options: sessions.map(
-					(session): SelectOption => ({
-						name: session.title ?? session.workspace ?? "Unknown workspace",
-						description: `${session.title !== null ? `${session.workspace ?? "Unknown workspace"} · ` : ""}${new Date(session.createdAt).toLocaleString()} · ${session.id}`,
-						value: session.id,
-					}),
-				),
+				options: sessions.map((session): SelectOption => ({
+					name: session.title ?? session.workspace ?? "Unknown workspace",
+					description: `${session.title !== null ? `${session.workspace ?? "Unknown workspace"} · ` : ""}${new Date(session.createdAt).toLocaleString()} · ${session.id}`,
+					value: session.id,
+				})),
 				searchable: true,
 				descriptionLayout: "inline",
 			},

@@ -1,0 +1,19 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"plugins": ["typescript", "unicorn", "oxc", "import", "promise"],
+	"categories": {
+		"correctness": "error",
+		"suspicious": "error"
+	},
+	"rules": {
+		// tsconfig sets noPropertyAccessFromIndexSignature, which forces bracket
+		// access in exactly the places this rule wants dot access.
+		"typescript/dot-notation": "off",
+		// Fire-and-forget chains here are deliberately `void`-prefixed with a
+		// terminal .catch(); nothing consumes the resolved value.
+		"promise/always-return": "off",
+		// False-positives on resolve() calls guarded by an early return.
+		"promise/no-multiple-resolved": "off"
+	},
+	"ignorePatterns": ["**/*.test.ts", "docs", "dist"]
+}

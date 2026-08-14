@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+
 import { VERSION } from "../../shared/src/version";
 import { dataDirectory, health } from "./server-command";
 import { compareVersions, latestVersion } from "./update";

@@ -1,5 +1,5 @@
 import type { SessionStore } from "../sessions/store";
-import { tokenCost } from "../token-cost";
+import { tokenCost as computeTokenCost } from "../token-cost";
 import {
 	episodeStates,
 	replayEpisodes,
@@ -305,8 +305,8 @@ export class ContextManager {
 		const scoped = this.store
 			.contextItems(sessionId)
 			.filter((item) => item.sequence > afterSequence);
-		const terminal = [...scoped]
-			.reverse()
+		const terminal = scoped
+			.toReversed()
 			.find((item) => item.kind === "assistant" && assistantText(item.payload));
 		let terminalId: string | undefined;
 		for (const item of scoped) {
@@ -325,7 +325,7 @@ export class ContextManager {
 					sessionId,
 					kind: "assistant",
 					payload,
-					tokenCost: tokenCost(payload, 1),
+					tokenCost: computeTokenCost(payload, 1),
 					lifecycle: "retained",
 					reason: "predecessor terminal user-visible message",
 					groupId: terminal.groupId ?? crypto.randomUUID(),
@@ -347,7 +347,7 @@ export class ContextManager {
 			sessionId,
 			kind: "observation",
 			payload: exactOutput,
-			tokenCost: tokenCost(exactOutput),
+			tokenCost: computeTokenCost(exactOutput),
 			lifecycle: "archived",
 			projection: "omitted",
 			reason: "externalized observation",
@@ -406,7 +406,7 @@ export class ContextManager {
 				sessionId,
 				kind: "pinned-note",
 				payload,
-				tokenCost: tokenCost(text),
+				tokenCost: computeTokenCost(text),
 				lifecycle: "pinned",
 				reason: `pinned ${kind}`,
 			},
@@ -590,8 +590,8 @@ export class ContextManager {
 			kind: "subagent-handoff",
 			payload: result,
 			compactPayload,
-			tokenCost: tokenCost(result),
-			compactTokenCost: tokenCost(compactPayload),
+			tokenCost: computeTokenCost(result),
+			compactTokenCost: computeTokenCost(compactPayload),
 			lifecycle: "retained",
 			projection: "compact",
 			reason: "structured subagent handoff",

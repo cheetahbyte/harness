@@ -9,6 +9,7 @@ import {
 	SelectRenderableEvents,
 	TextRenderable,
 } from "@opentui/core";
+
 import { ACCENT, CYAN, DIM, TEXT } from "./theme";
 
 export type WizardScreen =

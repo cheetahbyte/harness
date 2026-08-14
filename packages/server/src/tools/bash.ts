@@ -1,4 +1,5 @@
 import { Type } from "@earendil-works/pi-ai";
+
 import { WorkspaceTool } from "./tool";
 
 export class BashTool extends WorkspaceTool {

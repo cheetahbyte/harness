@@ -1,5 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
+
 import { Type } from "@earendil-works/pi-ai";
+
 import { WorkspaceTool } from "./tool";
 
 export class EditTool extends WorkspaceTool {

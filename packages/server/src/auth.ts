@@ -1,8 +1,10 @@
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
+
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+
 import { authPromptAnswer } from "./auth-prompt";
 import { JsonCredentialStore } from "./provider";
 import { globalHarnezPath } from "./settings-store";

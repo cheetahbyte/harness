@@ -21,7 +21,7 @@ export function canonicalJson(value: unknown): string {
 	if (typeof value === "object") {
 		const record = value as Record<string, unknown>;
 		const entries = Object.keys(record)
-			.sort()
+			.toSorted()
 			.map((key) => {
 				const item = record[key];
 				if (item === undefined)

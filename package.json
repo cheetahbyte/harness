@@ -1,27 +1,32 @@
 {
 	"name": "harnez",
 	"version": "0.2.2",
-	"bin": {
-		"harnez": "bin/harnez.js"
+	"description": "Minimal harness for agentic coding and more.",
+	"keywords": [],
+	"homepage": "https://github.com/cheetahbyte/harnez#readme",
+	"bugs": {
+		"url": "https://github.com/cheetahbyte/harnez/issues"
 	},
 	"license": "MIT",
-	"workspaces": [
-		"packages/*"
-	],
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/cheetahbyte/harnez.git"
 	},
+	"bin": {
+		"harnez": "bin/harnez.js"
+	},
+	"directories": {
+		"doc": "docs"
+	},
+	"workspaces": [
+		"packages/*"
+	],
 	"files": [
 		"bin",
 		"README.md"
 	],
-	"knip": {
-		"project": [
-			"**/*.{js,mjs,cjs,jsx,ts,tsx,mts,cts}!",
-			"!docs/**"
-		]
-	},
+	"type": "commonjs",
+	"main": "index.js",
 	"publishConfig": {
 		"access": "public"
 	},
@@ -33,10 +38,15 @@
 		"cli": "bun packages/cli/src/index.ts",
 		"build:binary": "bun build packages/cli/src/index.ts --compile --outfile dist/harnez",
 		"test": "bun test",
-		"check": "biome check .",
+		"lint": "oxlint",
+		"lint:fix": "oxlint --fix",
+		"format": "oxfmt",
+		"format:check": "oxfmt --check",
+		"typecheck": "tsc --noEmit",
+		"check": "bun run lint && bun run format:check && bun run typecheck",
+		"fix": "oxfmt && oxlint --fix",
 		"prepare": "git config core.hooksPath .githooks",
-		"knip": "knip-bun",
-		"typecheck": "bunx tsc --noEmit"
+		"knip": "knip-bun"
 	},
 	"dependencies": {
 		"@ade_oshineye/yaket": "0.5.3",
@@ -47,21 +57,17 @@
 		"zustand": "^5.0.14"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^2.5.7",
 		"@types/node": "^26.2.0",
 		"bun-types": "^1.3.14",
 		"knip": "^6.32.0",
+		"oxfmt": "^0.63.0",
+		"oxlint": "^1.78.0",
 		"typescript": "^7.0.2"
 	},
-	"description": "Minimal harness for agentic coding and more.",
-	"main": "index.js",
-	"directories": {
-		"doc": "docs"
-	},
-	"keywords": [],
-	"type": "commonjs",
-	"bugs": {
-		"url": "https://github.com/cheetahbyte/harnez/issues"
-	},
-	"homepage": "https://github.com/cheetahbyte/harnez#readme"
+	"knip": {
+		"project": [
+			"**/*.{js,mjs,cjs,jsx,ts,tsx,mts,cts}!",
+			"!docs/**"
+		]
+	}
 }

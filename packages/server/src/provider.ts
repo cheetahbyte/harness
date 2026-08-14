@@ -1,5 +1,6 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+
 import {
 	type AuthOperationOptions,
 	type Credential,
@@ -14,6 +15,7 @@ import {
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+
 import type { ModelConfig } from "../../shared/src/protocol";
 import type {
 	OpenAICompatibleProviderSettings,

@@ -1,4 +1,5 @@
 import { createStore } from "zustand/vanilla";
+
 import type {
 	AuthNotifyEvent,
 	AuthPromptEvent,

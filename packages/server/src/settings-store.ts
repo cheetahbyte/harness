@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+
 import type { FastCycleEntry, ModelConfig } from "../../shared/src/protocol";
 
 export type OpenAICompatibleProviderSettings = {
@@ -130,6 +131,7 @@ function readSettings(path: string): Settings {
 	} catch (error) {
 		throw new Error(
 			`${path} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+			{ cause: error },
 		);
 	}
 	return settings.providers === undefined

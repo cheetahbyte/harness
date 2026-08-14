@@ -73,7 +73,7 @@ export async function scanPrompts(
 			.filter(
 				(candidate) => candidate.isFile() && candidate.name.endsWith(".md"),
 			)
-			.sort((a, b) => a.name.localeCompare(b.name))) {
+			.toSorted((a, b) => a.name.localeCompare(b.name))) {
 			const path = join(root, entry.name);
 			try {
 				const template = parsePromptBuffer(

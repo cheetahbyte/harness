@@ -6,6 +6,7 @@ import {
 	type TextChunk,
 	TextRenderable,
 } from "@opentui/core";
+
 import { formatTokens, formatUsd, type TuiState } from "../store";
 import { ModelView } from "./model";
 import { DIM, TEXT } from "./theme";

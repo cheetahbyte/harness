@@ -4,6 +4,7 @@ import type {
 	AgentMessage,
 } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
+
 import type { ServerEvent } from "../../../shared/src/protocol";
 import type { ContextManager } from "../context/manager";
 import { ContextBudgetError, type ContextInspection } from "../context/types";
@@ -355,18 +356,16 @@ export function managedMessages({
 					},
 				]
 			: []),
-		...(task?.context.items().map(
-			(item): AgentMessage => ({
-				role: "user",
-				content: [
-					{
-						type: "text",
-						text: `Task capability context (${item.capability.id}):\n${typeof item.content === "string" ? item.content : JSON.stringify(item.content)}`,
-					},
-				],
-				timestamp: new Date(task.startedAt).getTime(),
-			}),
-		) ?? []),
+		...(task?.context.items().map((item): AgentMessage => ({
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text: `Task capability context (${item.capability.id}):\n${typeof item.content === "string" ? item.content : JSON.stringify(item.content)}`,
+				},
+			],
+			timestamp: new Date(task.startedAt).getTime(),
+		})) ?? []),
 	];
 	const lastUser = messages.findLastIndex((message) => message.role === "user");
 	return lastUser < 0

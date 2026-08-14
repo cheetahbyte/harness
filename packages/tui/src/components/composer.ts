@@ -6,6 +6,7 @@ import {
 	TextareaRenderable,
 	TextRenderable,
 } from "@opentui/core";
+
 import {
 	expandsAt,
 	type SlashCommandKind,

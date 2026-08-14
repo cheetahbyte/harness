@@ -1,5 +1,6 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { type Api, type Model, Type } from "@earendil-works/pi-ai";
+
 import type { TokenAccountant } from "../capabilities/context";
 import type { EffectClass, ToolCapabilityInput } from "../capabilities/types";
 import type { ContextManager } from "../context/manager";
@@ -121,45 +122,43 @@ function coreTools({
 	context,
 	previewLimit,
 }: AgentToolsOptions): AgentTool[] {
-	return tools.agentTools().map(
-		(tool): AgentTool => ({
-			...tool,
-			execute: async (id, input, signal, onUpdate) => {
-				const ref = task.snapshot.reference(`tool:${tool.name}`);
-				const result = (await task.execute(ref, input, {
-					execute: async (_input, runtimeSignal) =>
-						await tool.execute(
-							id,
-							input,
-							combinedSignal(signal, runtimeSignal),
-							onUpdate,
-						),
-				})) as Awaited<ReturnType<typeof tool.execute>>;
-				if (signal?.aborted || task.state !== "running")
-					throw new DOMException("Aborted", "AbortError");
-				const output = result.content
-					.map((content: { type: string; text?: string }) => content.text ?? "")
-					.join("");
-				const observation = context.recordObservation(sessionId, output, {
-					toolCallId: id,
-					...tools.contextMetadata(tool.name),
-				});
-				return {
-					...result,
-					content: [
-						{
-							type: "text" as const,
-							text: previewOutput(output, observation.id, previewLimit(model)),
-						},
-					],
-					details: {
-						...detailsRecord(result.details),
-						observationId: observation.id,
+	return tools.agentTools().map((tool): AgentTool => ({
+		...tool,
+		execute: async (id, input, signal, onUpdate) => {
+			const ref = task.snapshot.reference(`tool:${tool.name}`);
+			const result = (await task.execute(ref, input, {
+				execute: async (_input, runtimeSignal) =>
+					await tool.execute(
+						id,
+						input,
+						combinedSignal(signal, runtimeSignal),
+						onUpdate,
+					),
+			})) as Awaited<ReturnType<typeof tool.execute>>;
+			if (signal?.aborted || task.state !== "running")
+				throw new DOMException("Aborted", "AbortError");
+			const output = result.content
+				.map((content: { type: string; text?: string }) => content.text ?? "")
+				.join("");
+			const observation = context.recordObservation(sessionId, output, {
+				toolCallId: id,
+				...tools.contextMetadata(tool.name),
+			});
+			return {
+				...result,
+				content: [
+					{
+						type: "text" as const,
+						text: previewOutput(output, observation.id, previewLimit(model)),
 					},
-				};
-			},
-		}),
-	);
+				],
+				details: {
+					...detailsRecord(result.details),
+					observationId: observation.id,
+				},
+			};
+		},
+	}));
 }
 
 function contextTools({

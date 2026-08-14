@@ -1,11 +1,13 @@
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
+
 import {
 	type CredentialStore,
 	clampThinkingLevel,
 	getSupportedThinkingLevels,
 	type Models,
 } from "@earendil-works/pi-ai";
+
 import type {
 	AuthType,
 	ClientCommand,
@@ -647,7 +649,7 @@ export class HarnezServer {
 				type: "providers",
 				providers: providers
 					.filter((provider): provider is ProviderOption => !!provider)
-					.sort((a, b) => a.name.localeCompare(b.name)),
+					.toSorted((a, b) => a.name.localeCompare(b.name)),
 			},
 			false,
 		);
