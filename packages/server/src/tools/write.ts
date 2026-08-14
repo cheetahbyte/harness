@@ -1,4 +1,5 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { WorkspaceTool } from "./tool";
 
@@ -22,6 +23,7 @@ export class WriteTool extends WorkspaceTool {
 		const path = this.path(input["path"]);
 		await this.withWriteLock(path, async () => {
 			if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+			await mkdir(dirname(path), { recursive: true });
 			await writeFile(path, content);
 		});
 		return `wrote ${input["path"]}`;

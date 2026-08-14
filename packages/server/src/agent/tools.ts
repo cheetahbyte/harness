@@ -16,9 +16,10 @@ import { detailsRecord } from "./message";
 
 const RECALL_DESCRIPTION =
 	"Read an exact slice from an archived observation:// reference. Pages with offset and limit; the reply states its range when it is partial.";
-const PIN_DESCRIPTION = "Keep a short instruction for the current task.";
+const PIN_DESCRIPTION =
+	"Keep a short instruction for long-running work that risks context compaction. Skip it for short tasks.";
 const EPISODE_DESCRIPTION =
-	"Start or end one semantic work episode. Actions depend on completed exploration IDs.";
+	"Start or end one semantic work episode for long-running work that risks context compaction. Skip it for short tasks. Actions depend on completed exploration IDs. Exploration end requires a conclusion; action end must omit it.";
 
 /**
  * The context tools every turn carries, described once so the token estimate,
@@ -471,7 +472,13 @@ function episodeSchema() {
 			name: Type.Optional(Type.String({ minLength: 1 })),
 			kind: Type.Optional(Type.String({ enum: ["exploration", "action"] })),
 			dependencies: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-			conclusion: Type.Optional(Type.String({ minLength: 1 })),
+			conclusion: Type.Optional(
+				Type.String({
+					minLength: 1,
+					description:
+						"Required when ending exploration; omit when ending action.",
+				}),
+			),
 		},
 		{ additionalProperties: false },
 	);

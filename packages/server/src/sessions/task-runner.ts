@@ -1,6 +1,6 @@
 import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
 import { slashCommandPattern } from "../../../shared/src/slash-command";
-import type { HarnezAgentRuntime } from "../agent/runtime";
+import type { AgentRunTiming, HarnezAgentRuntime } from "../agent/runtime";
 import { contextCapabilities } from "../agent/tools";
 import {
 	CapabilityCatalog,
@@ -79,8 +79,9 @@ export class SessionTaskRunner {
 						: {}),
 				});
 		this.emitStart(id, running, pending, pendingType, text);
+		let timing: AgentRunTiming;
 		try {
-			await this.options.runtime.run({
+			timing = await this.options.runtime.run({
 				sessionId: id,
 				text: running.prompt,
 				config: this.options.modelConfig(id),
@@ -96,10 +97,10 @@ export class SessionTaskRunner {
 		}
 		delete session.running;
 		if (controller.signal.aborted) {
-			await this.abort(id, session, running, pending, startedAt);
+			await this.abort(id, session, running, pending, startedAt, timing);
 			return;
 		}
-		this.succeed(id, running, pending, startedAt);
+		this.succeed(id, running, pending, startedAt, timing);
 		await this.advance(id, session, session.scheduler.settle(running.task));
 	}
 
@@ -248,7 +249,9 @@ export class SessionTaskRunner {
 		running: RunningTask,
 		pending: QueuedTask | PendingSteer | undefined,
 		startedAt: number,
+		timing: AgentRunTiming,
 	): Promise<void> {
+		const durationMs = Date.now() - startedAt;
 		const steer = session.pendingSteer;
 		if (
 			steer &&
@@ -256,7 +259,7 @@ export class SessionTaskRunner {
 			!running.task.result()
 		) {
 			delete session.pendingSteer;
-			this.options.emit(id, { type: "aborted" });
+			this.options.emit(id, { type: "aborted", durationMs, ...timing });
 			await this.run({ id, session, command: steer, resume: running });
 			return;
 		}
@@ -267,11 +270,8 @@ export class SessionTaskRunner {
 				terminalMessageIds,
 			);
 		else running.task.addTerminalMessageIds(terminalMessageIds);
-		log.info(
-			{ sessionId: id, durationMs: Date.now() - startedAt },
-			"run aborted",
-		);
-		this.options.emit(id, { type: "aborted" });
+		log.info({ sessionId: id, durationMs, ...timing }, "run aborted");
+		this.options.emit(id, { type: "aborted", durationMs, ...timing });
 		this.completeTask(
 			id,
 			running.task,
@@ -286,14 +286,15 @@ export class SessionTaskRunner {
 		running: RunningTask,
 		pending: QueuedTask | PendingSteer | undefined,
 		startedAt: number,
+		timing: AgentRunTiming,
 	): void {
 		running.task.finish({
 			status: "completed",
 			terminalMessageIds: this.terminalMessages(id, running),
 		});
 		const durationMs = Date.now() - startedAt;
-		log.info({ sessionId: id, durationMs }, "run finished");
-		this.options.emit(id, { type: "completed", durationMs });
+		log.info({ sessionId: id, durationMs, ...timing }, "run finished");
+		this.options.emit(id, { type: "completed", durationMs, ...timing });
 		this.completeTask(id, running.task, "completed");
 		this.finishPending(id, pending);
 	}

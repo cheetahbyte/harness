@@ -338,7 +338,7 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 					if (event.durationMs !== undefined)
 						return append({
 							kind: event.type,
-							text: `✶ Noodled for ${formatDuration(event.durationMs)}${turnCostUsd === undefined ? "" : ` (${formatUsd(turnCostUsd)})`}`,
+							text: `✶ Noodled for ${formatDuration(event.durationMs)}${event.modelDurationMs === undefined || event.toolDurationMs === undefined ? "" : ` · model ${formatDuration(event.modelDurationMs)} · tools ${formatDuration(event.toolDurationMs)}`}${turnCostUsd === undefined ? "" : ` (${formatUsd(turnCostUsd)})`}`,
 						});
 					return;
 				}

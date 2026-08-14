@@ -1157,6 +1157,18 @@ function episodeId(
 					(event) => event.type === "usage" && event.totalTokens === 9,
 				),
 			).toBe(true);
+			const completed = server.store
+				.events(id)
+				.findLast((event) => event.type === "completed");
+			if (completed?.type === "completed") {
+				expect(typeof completed.modelDurationMs).toBe("number");
+				expect(typeof completed.toolDurationMs).toBe("number");
+			}
+			expect(completed).toMatchObject({
+				type: "completed",
+				modelDurationMs: expect.any(Number),
+				toolDurationMs: expect.any(Number),
+			});
 		} finally {
 			provider.stop(true);
 			delete process.env["HARNESS_OPENAI_API_KEY"];
@@ -1345,9 +1357,16 @@ function episodeId(
 				),
 			]);
 			expect(calls).toBe(2);
-			expect(
-				server.store.events(id).filter((event) => event.type === "aborted"),
-			).toHaveLength(1);
+			const aborted = server.store
+				.events(id)
+				.filter((event) => event.type === "aborted");
+			expect(aborted).toHaveLength(1);
+			expect(aborted[0]).toMatchObject({
+				type: "aborted",
+				durationMs: expect.any(Number),
+				modelDurationMs: expect.any(Number),
+				toolDurationMs: expect.any(Number),
+			});
 		} finally {
 			provider.stop(true);
 			delete process.env["HARNESS_OPENAI_API_KEY"];

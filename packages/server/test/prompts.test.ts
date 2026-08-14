@@ -2,12 +2,30 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SYSTEM_PROMPT } from "../src/agent/runtime";
+import { contextCapabilities } from "../src/agent/tools";
 import { expandPrompt, scanPrompts } from "../src/prompts";
 
 const paths: string[] = [];
 afterEach(() => {
 	for (const path of paths.splice(0))
 		rmSync(path, { recursive: true, force: true });
+});
+
+test("guides agents to avoid short-task bookkeeping and batch tool calls", () => {
+	const capabilities = contextCapabilities("binding");
+	const episode = capabilities.find((item) => item.name === "episode");
+	const pin = capabilities.find((item) => item.name === "pin_context");
+
+	expect(SYSTEM_PROMPT).toContain("Batch independent tool calls");
+	expect(SYSTEM_PROMPT).toContain("skip episodes and pin_context for short tasks");
+	expect(pin?.description).toContain("Skip it for short tasks");
+	expect(episode?.description).toContain(
+		"Exploration end requires a conclusion; action end must omit it",
+	);
+	expect(JSON.stringify(episode?.schema)).toContain(
+		"Required when ending exploration; omit when ending action",
+	);
 });
 
 function workspaces() {

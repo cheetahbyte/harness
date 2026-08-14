@@ -42,8 +42,13 @@ export type AgentRunInput = {
 	emit: (event: ServerEvent) => void;
 };
 
-const SYSTEM_PROMPT =
-	"You are Harnez, a coding agent. Use deterministic capability discovery when you need more context, and use the provided tools to inspect and change the current workspace. Runtime context belongs only to the current task.";
+export type AgentRunTiming = {
+	modelDurationMs: number;
+	toolDurationMs: number;
+};
+
+export const SYSTEM_PROMPT =
+	"You are Harnez, a coding agent. Use deterministic capability discovery when you need more context, and use the provided tools to inspect and change the current workspace. Batch independent tool calls, including related reads, writes, and edits, in the same turn. Use episodes and pin_context only for long-running work that risks context compaction; skip episodes and pin_context for short tasks. Runtime context belongs only to the current task.";
 const DEFAULT_CONTEXT_BUDGET = 80_000;
 
 /** Pi is contained here: server code only sees Harnez events and model configuration. */
@@ -78,7 +83,7 @@ export class HarnezAgentRuntime {
 		skills,
 		signal,
 		emit,
-	}: AgentRunInput): Promise<void> {
+	}: AgentRunInput): Promise<AgentRunTiming> {
 		if (!config)
 			throw new HarnezProviderError(
 				"no model configured; use /model",
@@ -147,6 +152,10 @@ export class HarnezAgentRuntime {
 		} finally {
 			signal.removeEventListener("abort", abort);
 		}
+		return {
+			modelDurationMs: Math.round(entry.timing.modelDurationMs),
+			toolDurationMs: Math.round(entry.timing.toolDurationMs),
+		};
 	}
 
 	steer(sessionId: string, text: string, callbacks: QueueCallbacks): boolean {
@@ -253,6 +262,7 @@ export class HarnezAgentRuntime {
 					() => models.streamSimple(model, requestContext, options),
 					options?.signal,
 					{ sessionId, provider: config.provider, model: config.model },
+					(durationMs) => (entry.timing.modelDurationMs += durationMs),
 				);
 			},
 			toolExecution: "parallel",
@@ -327,6 +337,7 @@ function streamWithRetry(
 	produce: () => AssistantMessageEventStream,
 	signal: AbortSignal | undefined,
 	context: { sessionId: string; provider: string; model: string },
+	onComplete: (durationMs: number) => void,
 ): AssistantMessageEventStream {
 	const out = createAssistantMessageEventStream();
 	void (async () => {
@@ -338,9 +349,14 @@ function streamWithRetry(
 			let terminal:
 				| Extract<AssistantMessageEvent, { type: "done" | "error" }>
 				| undefined;
-			for await (const event of produce())
-				if (event.type === "done" || event.type === "error") terminal = event;
-				else out.push(event);
+			const startedAt = performance.now();
+			try {
+				for await (const event of produce())
+					if (event.type === "done" || event.type === "error") terminal = event;
+					else out.push(event);
+			} finally {
+				onComplete(performance.now() - startedAt);
+			}
 			if (!terminal) {
 				log.warn(
 					{ ...context, attempt: attempt + 1 },
@@ -413,6 +429,12 @@ function newAgentEntry(
 		active: [],
 		steering: undefined,
 		task,
+		timing: {
+			modelDurationMs: 0,
+			toolDurationMs: 0,
+			activeToolCalls: new Set(),
+			toolWindowStartedAt: undefined,
+		},
 		emit: undefined,
 	};
 }

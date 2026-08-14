@@ -31,6 +31,12 @@ export type AgentEntry = {
 	queued: WeakMap<object, QueuedMessage>;
 	active: QueuedMessage[];
 	task: TaskRuntime;
+	timing: {
+		modelDurationMs: number;
+		toolDurationMs: number;
+		activeToolCalls: Set<string>;
+		toolWindowStartedAt: number | undefined;
+	};
 	/** Emitter for the in-flight run; context assembly reports compaction through it. */
 	emit: ((event: ServerEvent) => void) | undefined;
 };
@@ -74,6 +80,9 @@ export function translateAgentEvent({
 			handleAgentEnd(sessionId, entry, context, shrink, emit);
 			return;
 		case "tool_execution_start":
+			if (!entry.timing.activeToolCalls.size)
+				entry.timing.toolWindowStartedAt = performance.now();
+			entry.timing.activeToolCalls.add(event.toolCallId);
 			emit({
 				type: "tool-call",
 				id: event.toolCallId,
@@ -82,6 +91,15 @@ export function translateAgentEvent({
 			});
 			return;
 		case "tool_execution_end":
+			entry.timing.activeToolCalls.delete(event.toolCallId);
+			if (
+				!entry.timing.activeToolCalls.size &&
+				entry.timing.toolWindowStartedAt !== undefined
+			) {
+				entry.timing.toolDurationMs +=
+					performance.now() - entry.timing.toolWindowStartedAt;
+				entry.timing.toolWindowStartedAt = undefined;
+			}
 			emit({
 				type: "tool-result",
 				id: event.toolCallId,

@@ -136,8 +136,18 @@ export type ServerEvent =
 	| { type: "fast-cycle"; entries: FastCycleEntry[] }
 	| { type: "ui-settings"; disableThinkingBlocks: boolean }
 	| { type: "status"; text: string }
-	| { type: "completed"; durationMs?: number }
-	| { type: "aborted" }
+	| {
+			type: "completed";
+			durationMs?: number;
+			modelDurationMs?: number;
+			toolDurationMs?: number;
+	  }
+	| {
+			type: "aborted";
+			durationMs?: number;
+			modelDurationMs?: number;
+			toolDurationMs?: number;
+	  }
 	| { type: "providers"; providers: ProviderOption[] }
 	| { type: "models"; models: ModelOption[] }
 	| { type: "skills"; skills: SkillOption[] }
