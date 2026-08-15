@@ -56,9 +56,8 @@ describe("OpenTUI app", () => {
 			expect(frame).toContain("◆");
 			expect(footerLine(frame)).not.toContain("~/project");
 			expect(view.captureCharFrame()).toContain("Read 1 file");
-			expect(view.captureCharFrame()).toContain(
-				`╰ hello ${"x".repeat(44)}...`,
-			);
+			/** The path read, not the bytes it returned. */
+			expect(view.captureCharFrame()).toContain("╰ note.txt");
 			expect(view.captureCharFrame()).not.toContain("x".repeat(45));
 			expect(view.captureCharFrame()).toContain("›");
 			store.getState().apply({ type: "assistant-delta", text: "stream" });
@@ -128,12 +127,12 @@ describe("OpenTUI app", () => {
 
 	test("groups consecutive tool calls by operation", async () => {
 		const store = createTuiStore("session-1");
-		for (const [id, name] of [
-			["bash-1", "bash"],
-			["read-1", "read"],
-			["read-2", "read"],
+		for (const [id, name, input] of [
+			["bash-1", "bash", { command: "bun test" }],
+			["read-1", "read", { path: "one.ts" }],
+			["read-2", "read", { path: "two.ts" }],
 		] as const) {
-			store.getState().apply({ type: "tool-call", id, name, input: {} });
+			store.getState().apply({ type: "tool-call", id, name, input });
 			store.getState().apply({
 				type: "tool-result",
 				id,
@@ -151,9 +150,90 @@ describe("OpenTUI app", () => {
 			await view.flush();
 			const frame = view.captureCharFrame();
 			expect(frame).toContain("Ran 1 shell command, read 2 files");
-			expect(frame).toContain("╰ bash-1 output");
-			expect(frame).toContain("╰ read-2 output");
+			expect(frame).toContain("╰ bun test");
+			expect(frame).toContain("╰ two.ts");
+			/** Output is not worth a transcript line. */
+			expect(frame).not.toContain("bash-1 output");
 			expect(frame.match(/Ran|Read/g)).toHaveLength(1);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("renders catalog discovery as a query and tool names", async () => {
+		const store = createTuiStore("session-1");
+		const calls = [
+			[
+				"c-1",
+				"capabilities_search",
+				{ query: "aachen fire" },
+				'{"items":[{"ref":{"id":"tool:mcp__ddg-search__search"}}]}',
+			],
+			[
+				"c-2",
+				"tools_load",
+				{ id: "tool:mcp__ddg-search__search" },
+				"Loaded mcp__ddg-search__search",
+			],
+			[
+				"c-3",
+				"mcp__ddg-search__search",
+				{ query: "aachen fire" },
+				"Found 10 search results: 1. Grossbraende in Aachen",
+			],
+		] as const;
+		for (const [id, name, input, output] of calls) {
+			store.getState().apply({ type: "tool-call", id, name, input });
+			store.getState().apply({ type: "tool-result", id, name, output });
+		}
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			await view.flush();
+			const frame = view.captureCharFrame();
+			expect(frame).toContain('Searched for "aachen fire"');
+			expect(frame).toContain("loaded 1 tool");
+			expect(frame).toContain("used 1 tool");
+			/** The routing name never reaches the screen, but the argument does. */
+			expect(frame).toContain('╰ ddg-search: search "aachen fire"');
+			expect(frame).not.toContain("mcp__ddg-search__search");
+			expect(frame).not.toContain("Found 10 search results");
+			expect(frame).not.toContain('{"items"');
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("keeps a failing tool's output, which is the only thing that explains it", async () => {
+		const store = createTuiStore("session-1");
+		store.getState().apply({
+			type: "tool-call",
+			id: "bash-1",
+			name: "bash",
+			input: { command: "exit 1" },
+		});
+		store.getState().apply({
+			type: "tool-result",
+			id: "bash-1",
+			name: "bash",
+			output: "exit 1: command not found",
+			isError: true,
+		});
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("╰ exit 1: command not found");
 		} finally {
 			app.destroy();
 			view.renderer.destroy();

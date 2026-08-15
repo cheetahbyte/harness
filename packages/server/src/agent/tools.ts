@@ -329,7 +329,8 @@ function loadTool(
 	return {
 		name: "tools_load",
 		label: "load tool",
-		description: "Admit one inspected tool schema into task context.",
+		description:
+			"Make one catalog tool callable, using an id from capabilities_search or capabilities_list. Inspecting it first is optional. The tool joins your tool list from the next turn onward, so end the turn after loading it rather than trying to call it in the same one.",
 		parameters: idSchema(),
 		execute: async (_id, input) => {
 			const ref = task.snapshot.reference((input as { id: string }).id);

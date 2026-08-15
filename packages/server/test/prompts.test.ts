@@ -19,6 +19,16 @@ test("guides agents to avoid short-task bookkeeping and batch tool calls", () =>
 	const pin = capabilities.find((item) => item.name === "pin_context");
 
 	expect(SYSTEM_PROMPT).toContain("Batch independent tool calls");
+	/**
+	 * Catalog tools are invisible until loaded, so a model that trusts its tool
+	 * list will deny capabilities the user has actually connected, or reach for
+	 * bash instead of the tool built for the job.
+	 */
+	expect(SYSTEM_PROMPT).toContain("Your tool list is partial");
+	expect(SYSTEM_PROMPT).toContain("call capabilities_search");
+	expect(SYSTEM_PROMPT).toContain(
+		"Never conclude that a tool is unavailable from your tool list alone",
+	);
 	expect(SYSTEM_PROMPT).toContain("skip episodes and pin_context for short tasks");
 	/** The trigger has to be something the model can observe, not a guess. */
 	expect(SYSTEM_PROMPT).toContain(
