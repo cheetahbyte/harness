@@ -405,11 +405,7 @@ function real(path: string): string {
 		tail.unshift(existing.slice(parent.length + 1));
 		existing = parent;
 	}
-	try {
-		return join(realpathSync(existing), ...tail);
-	} catch {
-		return path;
-	}
+	return join(realpathSync(existing), ...tail);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

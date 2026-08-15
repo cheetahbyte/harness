@@ -696,7 +696,7 @@ describe("ContextManager", () => {
 			manager.assemble(sessionId, {
 				budget: 10,
 				target: 8,
-				overheadTokens: 11,
+				overheadTokens: 9,
 			}),
 		).toThrow(ContextBudgetError);
 		expect(store.contextItems(sessionId)[0]?.lifecycle).toBe("pinned");

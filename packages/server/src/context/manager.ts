@@ -945,13 +945,12 @@ function rollingSummaryContent(
 	const joined = [priorText, ...texts]
 		.filter((text): text is string => text !== undefined && text.length > 0)
 		.join("\n");
-	const content = joined
-		? `${ROLLING_SUMMARY_PREFIX}${joined}`
-		: ROLLING_SUMMARY_PREFIX;
+	if (joined.length === 0) return undefined;
+	const content = `${ROLLING_SUMMARY_PREFIX}${joined}`;
 	const maxChars = Math.min(maxTokens, ROLLING_SUMMARY_MAX_TOKENS) * 4;
 	if (maxChars < 1) return undefined;
 	if (content.length <= maxChars) return content;
-	if (maxChars <= ROLLING_SUMMARY_PREFIX.length) return joined.slice(-maxChars);
+	if (maxChars <= ROLLING_SUMMARY_PREFIX.length) return undefined;
 	return (
 		ROLLING_SUMMARY_PREFIX +
 		content

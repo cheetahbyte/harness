@@ -235,6 +235,9 @@ test("reports a failed server in the listing and clears it on a retry", async ()
 	const [failed] = await mcp.list();
 	expect(failed?.connected).toBe(false);
 	expect(failed?.error).toContain("failed to connect");
+	await expect(
+		mcp.call("broken", "shout", {}, AbortSignal.timeout(5_000)),
+	).rejects.toThrow("failed to connect");
 
 	// Switching a broken server off retires the failure with it.
 	enabled.delete("broken");
@@ -242,6 +245,26 @@ test("reports a failed server in the listing and clears it on a retry", async ()
 	const [disabled] = await mcp.list();
 	expect(disabled?.error).toBeUndefined();
 	expect((await mcp.snapshot()).diagnostics).toEqual([]);
+}, 30_000);
+
+test("revives a client after callTool rejects", async () => {
+	const root = pluginRoot();
+	const pool = new McpConnectionPool({ sweep: false });
+	const mcp = registry(
+		root,
+		{ echo: { type: "stdio", command: "./bin/server" } },
+		{ pool },
+	);
+	await mcp.snapshot();
+	const aborted = new AbortController();
+	aborted.abort();
+	await expect(mcp.call("echo", "shout", {}, aborted.signal)).rejects.toThrow();
+
+	expect(
+		await mcp.call("echo", "shout", { text: "back" }, AbortSignal.timeout(20_000)),
+	).toBe("BACK");
+	expect(spawns(root)).toBe(2);
+	await pool.close();
 }, 30_000);
 
 test("runs one child for the same server configured in two workspaces", async () => {

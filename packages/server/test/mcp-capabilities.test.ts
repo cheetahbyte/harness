@@ -27,6 +27,11 @@ test("clamps server metadata the catalog would otherwise reject", () => {
 	const generation = "binding-1";
 	const capabilities = mcpCapabilities(
 		[
+			descriptor({
+				tool: "missing",
+				name: "mcp__acme__missing",
+				description: undefined as never,
+			}),
 			descriptor({ tool: "blank", name: "mcp__acme__blank", description: "   " }),
 			descriptor({
 				tool: "verbose",
@@ -38,9 +43,12 @@ test("clamps server metadata the catalog would otherwise reject", () => {
 	);
 
 	expect(capabilities[0]?.description).toBe(
+		"The missing tool provided by the acme MCP server.",
+	);
+	expect(capabilities[1]?.description).toBe(
 		"The blank tool provided by the acme MCP server.",
 	);
-	expect(capabilities[1]?.description).toHaveLength(2_000);
+	expect(capabilities[2]?.description).toHaveLength(2_000);
 	expect(() => new CapabilityCatalog(capabilities, generation)).not.toThrow();
 });
 

@@ -51,8 +51,12 @@ export async function runTui(
 			if (clearInProgress) return clearInProgress;
 			clearInProgress = (async () => {
 				// Do not abandon the current session unless its replacement was created.
+				const previousSessionId = sessionId;
 				const nextSessionId = await client.createSession(store.getState().pwd);
 				if (stopped) return;
+				await client
+					.send(previousSessionId, { type: "abort" })
+					.catch(() => undefined);
 				controller.abort();
 				sessionId = nextSessionId;
 				store = createTuiStore(sessionId);

@@ -131,6 +131,10 @@ export class McpConnectionPool {
 		const entry = this.entries.get(key);
 		if (!entry) throw new Error(`MCP server not connected: ${server.name}`);
 		entry.lastUsed = Date.now();
+		if (!entry.client && entry.failure)
+			throw new Error(
+				`MCP server not connected: ${server.name} (${entry.failure})`,
+			);
 		if (!entry.client) await this.connect(key, entry);
 		const client = entry.client;
 		if (!client)
@@ -139,11 +143,20 @@ export class McpConnectionPool {
 					entry.failure ? ` (${entry.failure})` : ""
 				}`,
 			);
-		const result = await client.callTool(
-			{ name: tool, arguments: (input ?? {}) as Record<string, unknown> },
-			undefined,
-			{ signal, timeout: CALL_TIMEOUT_MS },
-		);
+		let result: Awaited<ReturnType<Client["callTool"]>>;
+		try {
+			result = await client.callTool(
+				{ name: tool, arguments: (input ?? {}) as Record<string, unknown> },
+				undefined,
+				{ signal, timeout: CALL_TIMEOUT_MS },
+			);
+		} catch (error) {
+			// The child may have exited while the client object still exists.
+			delete entry.client;
+			entry.idle = true;
+			void client.close().catch(() => undefined);
+			throw error;
+		}
 		entry.lastUsed = Date.now();
 		const text = flatten(result["content"]);
 		// A server-reported tool error is the tool failing, not the client.

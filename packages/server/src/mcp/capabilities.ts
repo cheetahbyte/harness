@@ -50,7 +50,7 @@ export function mcpCapabilities(
 
 function describe(tool: McpToolDescriptor): string {
 	return clamp(
-		tool.description.trim(),
+		tool.description?.trim() ?? "",
 		MAX_DESCRIPTION,
 		`The ${tool.tool} tool provided by the ${tool.server} MCP server.`,
 	);
@@ -65,7 +65,7 @@ function clamp(value: string, max: number, fallback: string): string {
  * MCP input schemas are JSON Schema, which the agent layer accepts structurally.
  * A server that advertises something else still gets a usable, empty contract.
  */
-function schemaOf(tool: McpToolDescriptor): unknown {
+function schemaOf(tool: McpToolDescriptor): object {
 	const schema = tool.inputSchema;
 	return typeof schema === "object" && schema !== null && !Array.isArray(schema)
 		? schema
