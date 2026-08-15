@@ -1,11 +1,13 @@
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
+
 import {
 	type CredentialStore,
 	clampThinkingLevel,
 	getSupportedThinkingLevels,
 	type Models,
 } from "@earendil-works/pi-ai";
+
 import type {
 	AuthType,
 	ClientCommand,
@@ -21,6 +23,8 @@ import { HarnezAgentRuntime } from "./agent/runtime";
 import { ContextManager } from "./context/manager";
 import type { SubagentResult } from "./context/types";
 import { log } from "./logger";
+import { McpConnectionPool } from "./mcp/pool";
+import { McpRegistry } from "./mcp/registry";
 import { scanPrompts } from "./prompts";
 import {
 	createHarnezModels,
@@ -57,8 +61,12 @@ export class HarnezServer {
 	private readonly models: ModelRegistry;
 	private readonly injectedModels: boolean;
 	private readonly workspaceModels = new Map<string, ModelRegistry>();
+	private readonly workspaceSettings = new Map<string, SettingsStore>();
+	private readonly workspaceMcp = new Map<string, McpRegistry>();
 	private readonly defaultWorkspace: string;
 	private readonly context: ContextManager;
+	/** Shared by every workspace, so one server is one child process. */
+	private readonly mcpPool = new McpConnectionPool();
 	private readonly taskRunner: SessionTaskRunner;
 	private readonly authentication: SessionAuthentication;
 	private readonly namer: SessionNamer;
@@ -93,6 +101,7 @@ export class HarnezServer {
 			(id, event) => this.publish(id, event, false),
 		);
 		this.context = new ContextManager(this.store);
+		this.workspaceSettings.set(this.defaultWorkspace, this.defaultSettings);
 		this.runtime = new HarnezAgentRuntime({
 			credentials: this.credentials,
 			modelsFor: (id) => this.modelsFor(id) as Models,
@@ -106,16 +115,26 @@ export class HarnezServer {
 			runtime: this.runtime,
 			store: this.store,
 			context: this.context,
-			capabilityBudget: 8_000,
+			mcpFor: (sessionId) => this.mcpFor(sessionId),
 			workspace: (sessionId) => this.workspace(sessionId),
 			modelConfig: (sessionId) => this.modelConfig(sessionId),
 			emit: (sessionId, event) => this.publish(sessionId, event),
 		});
 	}
 
+	/** Releases process-level resources; stdio MCP servers are child processes. */
+	async close(): Promise<void> {
+		const registries = [...this.workspaceMcp.values()];
+		this.workspaceMcp.clear();
+		await Promise.allSettled(registries.map((registry) => registry.close()));
+		await this.mcpPool.close();
+	}
+
 	createSession(workspace = this.defaultWorkspace): string {
 		const id = this.store.create(workspacePath(workspace));
 		this.sessions.set(id, new Session());
+		// Connecting starts now so the first prompt does not pay for the handshake.
+		this.mcpFor(id);
 		log.info({ sessionId: id }, "session created");
 		return id;
 	}
@@ -217,6 +236,12 @@ export class HarnezServer {
 				return;
 			case "list-prompts":
 				await this.listPrompts(id);
+				return;
+			case "list-mcp-servers":
+				await this.listMcpServers(id);
+				return;
+			case "set-mcp-enabled":
+				await this.setMcpEnabled(id, command.servers);
 				return;
 			case "set-session-title": {
 				const title =
@@ -647,7 +672,7 @@ export class HarnezServer {
 				type: "providers",
 				providers: providers
 					.filter((provider): provider is ProviderOption => !!provider)
-					.sort((a, b) => a.name.localeCompare(b.name)),
+					.toSorted((a, b) => a.name.localeCompare(b.name)),
 			},
 			false,
 		);
@@ -692,6 +717,31 @@ export class HarnezServer {
 		this.publish(id, { type: "prompts", prompts }, false);
 	}
 
+	private async listMcpServers(id: string): Promise<void> {
+		this.publish(
+			id,
+			{ type: "mcp-servers", servers: await this.mcpFor(id).list() },
+			false,
+		);
+	}
+
+	/**
+	 * The menu sends back the servers that stay on, so a server added to
+	 * `mcp.json` while the menu was open is never switched off by an answer that
+	 * predates it: only servers the operator actually saw can be excluded.
+	 */
+	private async setMcpEnabled(id: string, servers: string[]): Promise<void> {
+		const enabled = new Set(servers);
+		const registry = this.mcpFor(id);
+		const disabled = (await registry.list())
+			.map((server) => server.name)
+			.filter((name) => !enabled.has(name));
+		this.settingsFor(id).setDisabledMcpServers(disabled);
+		const off = new Set(disabled);
+		await registry.setEnabled((server) => !off.has(server));
+		await this.listMcpServers(id);
+	}
+
 	private run(
 		id: string,
 		command: string | QueuedTask | PendingSteer,
@@ -718,14 +768,42 @@ export class HarnezServer {
 		return this.store.modelConfig(id) ?? this.settingsFor(id).modelConfig();
 	}
 
+	/**
+	 * Memoized per workspace: a store caches what it read, so handing out a fresh
+	 * one per call would lose writes made through an earlier instance — which is
+	 * exactly what the MCP toggle does when it saves and then re-reads.
+	 */
 	private settingsFor(id: string): SettingsStore {
 		const workspace = this.workspace(id);
-		return workspace === this.defaultWorkspace
-			? this.defaultSettings
-			: new SettingsStore(
-					globalHarnezPath("settings.json"),
-					projectHarnezPath("settings.json", resolve(workspace)),
-				);
+		let settings = this.workspaceSettings.get(workspace);
+		if (!settings) {
+			settings = new SettingsStore(
+				globalHarnezPath("settings.json"),
+				projectHarnezPath("settings.json", resolve(workspace)),
+			);
+			this.workspaceSettings.set(workspace, settings);
+		}
+		return settings;
+	}
+
+	/**
+	 * The session's own MCP registry. Servers are declared per workspace, so a
+	 * session in one project must never inherit another project's `mcp.json` —
+	 * nor the binaries a relative `command` in it resolves to.
+	 */
+	private mcpFor(id: string): McpRegistry {
+		const workspace = this.workspace(id);
+		let registry = this.workspaceMcp.get(workspace);
+		if (!registry) {
+			const settings = this.settingsFor(id);
+			registry = new McpRegistry(workspace, {
+				enabled: (server) => !settings.disabledMcpServers().includes(server),
+				pool: this.mcpPool,
+			});
+			this.workspaceMcp.set(workspace, registry);
+			registry.start();
+		}
+		return registry;
 	}
 
 	private modelsFor(id: string): ModelRegistry {
@@ -780,6 +858,8 @@ function isImmediateCommand(type: ClientCommand["type"]): boolean {
 		type === "list-models" ||
 		type === "list-skills" ||
 		type === "list-prompts" ||
+		type === "list-mcp-servers" ||
+		type === "set-mcp-enabled" ||
 		type === "set-session-title" ||
 		type === "set-fast-cycle" ||
 		type === "set-disable-thinking-blocks" ||

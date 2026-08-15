@@ -156,7 +156,7 @@ export class CapabilitySnapshot {
 		return this.page(
 			[...this.records.values()]
 				.filter((record) => this.discoverable(record, options.kind))
-				.sort((a, b) => a.ref.id.localeCompare(b.ref.id)),
+				.toSorted((a, b) => a.ref.id.localeCompare(b.ref.id)),
 			options,
 		);
 	}
@@ -167,8 +167,8 @@ export class CapabilitySnapshot {
 		const scored = [...this.records.values()]
 			.filter((record) => this.discoverable(record, options.kind))
 			.map((record) => ({ record, score: score(record, terms) }))
-			.filter(({ score }) => score > 0)
-			.sort(
+			.filter((entry) => entry.score > 0)
+			.toSorted(
 				(a, b) =>
 					b.score - a.score || a.record.ref.id.localeCompare(b.record.ref.id),
 			)

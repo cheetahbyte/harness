@@ -159,5 +159,5 @@ export function structuralEvictionItems(
 			continue;
 		for (const current of group) result.set(current.id, current);
 	}
-	return [...result.values()].sort((a, b) => a.sequence - b.sequence);
+	return [...result.values()].toSorted((a, b) => a.sequence - b.sequence);
 }

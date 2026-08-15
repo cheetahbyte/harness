@@ -2,12 +2,50 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SYSTEM_PROMPT } from "../src/agent/runtime";
+import { contextCapabilities } from "../src/agent/tools";
+import { PRESSURE_NOTE } from "../src/context/manager";
 import { expandPrompt, scanPrompts } from "../src/prompts";
 
 const paths: string[] = [];
 afterEach(() => {
 	for (const path of paths.splice(0))
 		rmSync(path, { recursive: true, force: true });
+});
+
+test("guides agents to avoid short-task bookkeeping and batch tool calls", () => {
+	const capabilities = contextCapabilities("binding");
+	const episode = capabilities.find((item) => item.name === "episode");
+	const pin = capabilities.find((item) => item.name === "pin_context");
+
+	expect(SYSTEM_PROMPT).toContain("Batch independent tool calls");
+	/**
+	 * Catalog tools are invisible until loaded, so a model that trusts its tool
+	 * list will deny capabilities the user has actually connected, or reach for
+	 * bash instead of the tool built for the job.
+	 */
+	expect(SYSTEM_PROMPT).toContain("Your tool list is partial");
+	expect(SYSTEM_PROMPT).toContain("call capabilities_search");
+	expect(SYSTEM_PROMPT).toContain(
+		"Never conclude that a tool is unavailable from your tool list alone",
+	);
+	expect(SYSTEM_PROMPT).toContain("skip episodes and pin_context for short tasks");
+	/** The trigger has to be something the model can observe, not a guess. */
+	expect(SYSTEM_PROMPT).toContain(
+		"once context is reported to be under compaction pressure",
+	);
+	expect(PRESSURE_NOTE).toContain("under compaction pressure");
+	/** Placeholders are recoverable, and nothing else says so to the model. */
+	expect(SYSTEM_PROMPT).toContain(
+		"read it back with recall_observation instead of running the tool again",
+	);
+	expect(pin?.description).toContain("Skip it for short tasks");
+	expect(episode?.description).toContain(
+		"Exploration end requires a conclusion; action end must omit it",
+	);
+	expect(JSON.stringify(episode?.schema)).toContain(
+		"Required when ending exploration; omit when ending action",
+	);
 });
 
 function workspaces() {

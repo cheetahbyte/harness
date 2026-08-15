@@ -1,4 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+
 import type { ToolCapabilityInput } from "../capabilities/types";
 import { BashTool } from "./bash";
 import { EditTool } from "./edit";

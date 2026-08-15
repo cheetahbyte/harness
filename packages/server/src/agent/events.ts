@@ -4,6 +4,7 @@ import type {
 	AgentMessage,
 } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
+
 import type { ServerEvent } from "../../../shared/src/protocol";
 import type { ContextManager } from "../context/manager";
 import { ContextBudgetError, type ContextInspection } from "../context/types";
@@ -31,6 +32,12 @@ export type AgentEntry = {
 	queued: WeakMap<object, QueuedMessage>;
 	active: QueuedMessage[];
 	task: TaskRuntime;
+	timing: {
+		modelDurationMs: number;
+		toolDurationMs: number;
+		activeToolCalls: Set<string>;
+		toolWindowStartedAt: number | undefined;
+	};
 	/** Emitter for the in-flight run; context assembly reports compaction through it. */
 	emit: ((event: ServerEvent) => void) | undefined;
 };
@@ -74,6 +81,9 @@ export function translateAgentEvent({
 			handleAgentEnd(sessionId, entry, context, shrink, emit);
 			return;
 		case "tool_execution_start":
+			if (!entry.timing.activeToolCalls.size)
+				entry.timing.toolWindowStartedAt = performance.now();
+			entry.timing.activeToolCalls.add(event.toolCallId);
 			emit({
 				type: "tool-call",
 				id: event.toolCallId,
@@ -82,6 +92,15 @@ export function translateAgentEvent({
 			});
 			return;
 		case "tool_execution_end":
+			entry.timing.activeToolCalls.delete(event.toolCallId);
+			if (
+				!entry.timing.activeToolCalls.size &&
+				entry.timing.toolWindowStartedAt !== undefined
+			) {
+				entry.timing.toolDurationMs +=
+					performance.now() - entry.timing.toolWindowStartedAt;
+				entry.timing.toolWindowStartedAt = undefined;
+			}
 			emit({
 				type: "tool-result",
 				id: event.toolCallId,
@@ -298,30 +317,9 @@ export function managedMessages({
 	};
 	emit?: ((event: ServerEvent) => void) | undefined;
 }): AgentMessage[] {
-	if (
-		store.contextItems(sessionId).length === 0 &&
-		!task?.context.items().length
-	)
+	const capabilityItems = task?.context.items() ?? [];
+	if (store.contextItems(sessionId).length === 0 && !capabilityItems.length)
 		return [];
-	const assembly =
-		task?.submissionWatermark !== undefined &&
-		task.taskStartSequence !== undefined
-			? context.assembleTask(sessionId, {
-					...contextOptions(model),
-					submissionWatermark: task.submissionWatermark,
-					taskStartSequence: task.taskStartSequence,
-					predecessorTerminalIds: task.predecessorTerminalMessageIds,
-				})
-			: context.assemble(sessionId, contextOptions(model));
-	if (emit && assembly.evictedIds.length)
-		emit({
-			type: "context-compaction",
-			evictedCount: assembly.evictedIds.length,
-			tokensBefore: assembly.tokensBefore,
-			tokensAfter: assembly.tokensAfter,
-			episodesArchived: assembly.episodesArchived,
-		});
-	const messages = assembly.payloads as AgentMessage[];
 	const dynamic: AgentMessage[] = [
 		...(task?.predecessorDigest
 			? [
@@ -337,19 +335,38 @@ export function managedMessages({
 					},
 				]
 			: []),
-		...(task?.context.items().map(
-			(item): AgentMessage => ({
-				role: "user",
-				content: [
-					{
-						type: "text",
-						text: `Task capability context (${item.capability.id}):\n${typeof item.content === "string" ? item.content : JSON.stringify(item.content)}`,
-					},
-				],
-				timestamp: new Date(task.startedAt).getTime(),
-			}),
-		) ?? []),
+		...capabilityItems.map((item): AgentMessage => ({
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text: `Task capability context (${item.capability.id}):\n${typeof item.content === "string" ? item.content : JSON.stringify(item.content)}`,
+				},
+			],
+			timestamp: task ? new Date(task.startedAt).getTime() : Date.now(),
+		})),
 	];
+	const options = contextOptions(model);
+	options.overheadTokens += dynamic.length ? tokenCost(dynamic) : 0;
+	const assembly =
+		task?.submissionWatermark !== undefined &&
+		task.taskStartSequence !== undefined
+			? context.assembleTask(sessionId, {
+					...options,
+					submissionWatermark: task.submissionWatermark,
+					taskStartSequence: task.taskStartSequence,
+					predecessorTerminalIds: task.predecessorTerminalMessageIds,
+				})
+			: context.assemble(sessionId, options);
+	if (emit && assembly.evictedIds.length)
+		emit({
+			type: "context-compaction",
+			evictedCount: assembly.evictedIds.length,
+			tokensBefore: assembly.tokensBefore,
+			tokensAfter: assembly.tokensAfter,
+			episodesArchived: assembly.episodesArchived,
+		});
+	const messages = assembly.payloads as AgentMessage[];
 	const lastUser = messages.findLastIndex((message) => message.role === "user");
 	return lastUser < 0
 		? [...messages, ...dynamic]

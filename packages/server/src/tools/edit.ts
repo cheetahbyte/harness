@@ -1,10 +1,12 @@
 import { readFile, writeFile } from "node:fs/promises";
+
 import { Type } from "@earendil-works/pi-ai";
-import { WorkspaceTool } from "./tool";
+
+import { EvictionPriority, WorkspaceTool } from "./tool";
 
 export class EditTool extends WorkspaceTool {
 	readonly name = "edit";
-	override readonly evictionPriority = "early" as const;
+	override readonly evictionPriority = EvictionPriority.Early;
 	readonly description = "Replace exact text in a file.";
 	readonly schema = Type.Object({
 		path: Type.String({ minLength: 1 }),

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+
 import { VERSION } from "../../shared/src/version";
 import { type Health, restartServer } from "./server-command";
 
@@ -152,6 +153,7 @@ export async function runUpdateCommand(): Promise<void> {
 	} catch (error) {
 		throw new Error(
 			`could not reach the npm registry: ${error instanceof Error ? error.message : String(error)}`,
+			{ cause: error },
 		);
 	}
 	if (compareVersions(latest, current) <= 0) {
@@ -174,6 +176,7 @@ export async function runUpdateCommand(): Promise<void> {
 	} catch (error) {
 		throw new Error(
 			`could not run \`${command.join(" ")}\`: ${error instanceof Error ? error.message : String(error)}`,
+			{ cause: error },
 		);
 	}
 	if (exitCode !== 0)

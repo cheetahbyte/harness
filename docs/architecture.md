@@ -151,7 +151,7 @@ Harnez should:
 * stream large outputs
 * externalize completed execution state
 * release completed subagent state
-* lazily start MCP servers
+* stop idle MCP servers and revive them on demand
 * avoid retaining full historical transcripts in live objects
 * expose memory/resource diagnostics
 
@@ -416,10 +416,12 @@ to assemble every provider request through Pi's context hooks, and replaces the
 live Pi transcript with the same managed projection after a turn. Restarting a
 server reconstructs context from SQLite rather than from UI event deltas.
 
-System instructions, user-authored messages, and explicit decisions or
-constraints created by `pin_context` are mechanically protected. Unknown work
-also fails toward retention. If protected content alone cannot fit, Harnez
-returns a context-budget error before calling the provider.
+System instructions remain mechanically protected. User-authored messages and
+explicit decisions or constraints created by `pin_context` stay pinned until a
+final fallback collapses the oldest eligible items into one bounded rolling
+summary. Unknown work also fails toward retention. Harnez returns a
+context-budget error only when fixed overhead and the smallest valid protected
+projection still cannot fit.
 
 Tool output is externalized at creation. SQLite retains the exact observation;
 the active model receives a bounded head/tail preview and an
@@ -445,8 +447,10 @@ Cleanup first retires completed tool exchanges in a fixed reconstructability
 order. If that is insufficient, it archives the oldest completed action
 episode. A completed exploration becomes eligible only after every dependent
 action is archived; its detailed trace leaves the prompt while its conclusion
-remains. Assistant tool calls and results move as one group, and raw payloads
-are never rewritten or deleted.
+remains. As a hard-budget fallback, pinned user messages and notes collapse
+oldest-first into one rolling summary; task assembly keeps the two most recent
+pre-submission user messages verbatim. Assistant tool calls and results move as
+one group, and raw payloads are never rewritten or deleted.
 
 Compact subagent results cross the parent boundary as validated structured
 handoffs with external `subagent://...` transcript references. The parent never
@@ -456,10 +460,11 @@ fake producer against this same boundary.
 `GET /sessions/:id/context` exposes projected token cost, lifecycle counts,
 episode state, and item-level reasons without returning archived payloads.
 
-LLM-generated historical summaries, arbitrary item-level dependency graphs,
-nested episodes, learned policies, and artifact garbage collection remain
-future work. They should extend this lifecycle model rather than replace the
-immutable event history.
+LLM-generated historical summaries remain future work; the current rolling
+summary is deterministic and locally truncated. Arbitrary item-level dependency
+graphs, nested episodes, learned policies, and artifact garbage collection also
+remain future work. They should extend this lifecycle model rather than replace
+the immutable event history.
 
 ---
 
@@ -608,27 +613,92 @@ Harnez-specific subagent profiles remain outside the portable Agent Plugins v1 c
 
 ## 18. MCP
 
-Agent Plugin-provided MCP configuration follows the Agent Plugins `mcp.json` format.
+Harnez reads the Agent Plugins v1.0.0 `mcp.json` format (§7.2, §9) without yet
+adopting the surrounding plugin package model. Borrowing only the schema means
+that supporting whole plugin packages later is a manifest parser plus a
+different root/data pair, rather than a config migration.
 
-Global and project-local MCP configuration may live in Harnez configuration while feeding the same internal MCP registry.
+Configuration lives at `~/.config/harnez/mcp.json` and `<repo>/.harnez/mcp.json`,
+merged by server name with the project file winning. `$schema` is required and
+matched by exact string compare; it is never fetched.
 
-MCP servers should be lazy:
+The two plugin variables are bound to the config file that declares the server:
+
+| Variable | Value |
+| --- | --- |
+| `PLUGIN_ROOT` | the directory holding that `mcp.json` |
+| `PLUGIN_DATA` | `~/.config/harnez/mcp-data/<server>`, created before launch |
+
+Failures are isolated at the narrowest scope the spec defines: a malformed file
+disables MCP for that file alone, a malformed entry skips one server, and a
+server that will not start is reported and skipped. Nothing about MCP can
+prevent the rest of a session from running.
+
+Discovery is lazy; connections are not:
 
 ```text
 configuration
      ↓
-registered metadata
+connect at server start, cache tools/list
      ↓
-search_tools
+capability catalog (metadata only)
      ↓
-call_tool
+capabilities_search / capabilities_inspect
      ↓
-start/connect MCP server if necessary
+tools_load  →  tool joins the model's tool list
+     ↓
+call
 ```
 
-Idle MCP servers may be stopped later to reduce resource use.
+Servers connect eagerly because a task's capability catalog is built from tool
+metadata, which cannot be known without a handshake. What stays lazy is the
+model's tool list: an MCP tool is a catalog entry until `tools_load` admits it,
+so the permanent request surface does not grow with the number of connected
+servers.
 
-Credentials and environment configuration must remain outside model context.
+### Workspace scope
+
+`mcp.json` is resolved per workspace, not per process. The server is a daemon
+shared by every project on the machine, and its own working directory is an
+accident of whichever client started it, so binding configuration to it would
+let one project's `mcp.json` — and the binaries its relative `command` resolves
+to — run inside another project's session.
+
+Each workspace therefore owns a registry: the servers its files declare, and
+which of them the operator left switched on. Sessions carry their workspace
+already, which is how skills, prompt templates, and the core tools resolve, and
+MCP now follows the same rule.
+
+### One connection per server
+
+Registries do not own connections; a process-wide pool does, keyed by what a
+server *is* — transport, command, arguments, environment, and roots — rather
+than by the name a workspace gave it. Two projects configuring the same server
+share one child process. `PLUGIN_DATA` is derived from the configured name, so
+two genuinely separate installations still key apart.
+
+The pool refcounts holders. A server switched off in one workspace is released
+there and keeps running for any workspace that still holds it; the child stops
+when the last holder lets go.
+
+### Idle eviction
+
+A connection nobody has called for an idle interval is closed, but its tool
+metadata is kept. A catalog built after an eviction still describes the server
+accurately, and only a call pays to bring the process back — so an idle daemon
+does not sit on a dozen stdio children, and the model never sees a capability
+appear or vanish because of it.
+
+### Switching servers off
+
+`/mcp` lists a workspace's servers, marked by the file that declared them, and
+`Space` switches one off or on. The exclusions are stored in `settings.json` as
+`disabledMcpServers` and consulted on every connection round. A running task
+keeps the catalog it was built with; the change applies to the next one.
+
+`sse` is parsed and reported as an unsupported transport, which the
+specification permits. Credentials belong in the ambient environment that stdio
+servers inherit, never in `env` or `headers`, which are visible configuration.
 
 ---
 
@@ -704,7 +774,6 @@ The following still require concrete design work:
 8. SQLite schema and event representation.
 9. Artifact retention defaults.
 10. Exact global/project configuration hierarchy.
-11. MCP idle lifecycle behavior.
-12. Whether and when Code Mode-style tool composition should supplement `batch_tools`.
-13. TUI rendering and navigation details beyond the steering semantics already established.
-14. Research/university-specific first-class capabilities required beyond tools and skills.
+11. Whether and when Code Mode-style tool composition should supplement `batch_tools`.
+12. TUI rendering and navigation details beyond the steering semantics already established.
+13. Research/university-specific first-class capabilities required beyond tools and skills.

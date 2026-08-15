@@ -1,9 +1,11 @@
 import { createStore } from "zustand/vanilla";
+
 import type {
 	AuthNotifyEvent,
 	AuthPromptEvent,
 	ClientCommand,
 	FastCycleEntry,
+	McpServerOption,
 	ModelConfig,
 	ModelOption,
 	PromptOption,
@@ -28,6 +30,12 @@ export type TranscriptEntry = {
 	kind: TranscriptKind;
 	text: string;
 	detail?: string;
+	/**
+	 * What the call was about: the path read, the command run, the query
+	 * searched for. Tool output is rarely worth a line of the transcript, but
+	 * the subject nearly always is.
+	 */
+	subject?: string;
 	id?: string;
 	error?: boolean;
 	active?: boolean;
@@ -52,6 +60,7 @@ export type WizardState =
 	| { kind: "idle" }
 	| { kind: "providers"; providers: ProviderOption[] }
 	| { kind: "models"; models: ModelOption[] }
+	| { kind: "mcp-servers"; servers: McpServerOption[] }
 	| { kind: "prompt"; prompt: AuthPromptEvent }
 	| { kind: "notice"; notification: AuthNotifyEvent }
 	| { kind: "completed"; provider: string }
@@ -181,6 +190,10 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 					});
 				if (event.type === "models")
 					return set({ wizard: { kind: "models", models: event.models } });
+				if (event.type === "mcp-servers")
+					return set({
+						wizard: { kind: "mcp-servers", servers: event.servers },
+					});
 				if (event.type === "auth-prompt")
 					return set({ wizard: { kind: "prompt", prompt: event.prompt } });
 				if (event.type === "auth-notify")
@@ -231,12 +244,15 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 					return delta("assistant", event.text);
 				if (event.type === "assistant-reasoning-delta")
 					return delta("reasoning", event.text);
-				if (event.type === "tool-call")
+				if (event.type === "tool-call") {
+					const subject = toolSubject(event.name, event.input);
 					return append({
 						kind: "tool-call",
 						id: event.id,
 						text: event.name,
+						...(subject === undefined ? {} : { subject }),
 					});
+				}
 				if (event.type === "tool-result") {
 					let merged = false;
 					set((state) => {
@@ -338,7 +354,7 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 					if (event.durationMs !== undefined)
 						return append({
 							kind: event.type,
-							text: `✶ Noodled for ${formatDuration(event.durationMs)}${turnCostUsd === undefined ? "" : ` (${formatUsd(turnCostUsd)})`}`,
+							text: `✶ Noodled for ${formatDuration(event.durationMs)}${event.modelDurationMs === undefined || event.toolDurationMs === undefined ? "" : ` · model ${formatDuration(event.modelDurationMs)} · tools ${formatDuration(event.toolDurationMs)}`}${turnCostUsd === undefined ? "" : ` (${formatUsd(turnCostUsd)})`}`,
 						});
 					return;
 				}
@@ -435,6 +451,67 @@ function formatDuration(durationMs: number): string {
 	const seconds = Math.round(durationMs / 1000);
 	const minutes = Math.floor(seconds / 60);
 	return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+}
+
+/**
+ * `mcp__<server>__<tool>` is a routing name. People reading a transcript want
+ * to know which server answered, not how the call was addressed.
+ */
+export function mcpToolName(
+	name: string,
+): { server: string; tool: string } | undefined {
+	if (!name.startsWith("mcp__")) return undefined;
+	const [server, ...rest] = name.slice("mcp__".length).split("__");
+	return server && rest.length ? { server, tool: rest.join("__") } : undefined;
+}
+
+export function isMcpTool(name: string): boolean {
+	return mcpToolName(name) !== undefined;
+}
+
+/** Strips the catalog prefix from a capability id: `tool:mcp__a__b` reads as `a: b`. */
+function capabilityName(id: string | undefined): string | undefined {
+	if (!id) return undefined;
+	const bare = id.replace(/^(tool|skill):/, "");
+	const mcp = mcpToolName(bare);
+	return mcp ? `${mcp.server}: ${mcp.tool}` : bare;
+}
+
+/**
+ * The one thing worth showing about a call. Output is usually noise in a
+ * transcript, while the file touched or the query asked for is what a person
+ * scans back through a session looking for.
+ */
+function toolSubject(name: string, input: unknown): string | undefined {
+	const fields = (input ?? {}) as Record<string, unknown>;
+	const text = (key: string): string | undefined =>
+		typeof fields[key] === "string" && fields[key] ? fields[key] : undefined;
+	const mcp = mcpToolName(name);
+	if (mcp) {
+		/**
+		 * Two calls to the same server are only distinguishable by what they were
+		 * asked, so the argument matters as much as the tool's name. Servers name
+		 * their arguments freely, so a known key wins and any other string does.
+		 */
+		const argument =
+			text("query") ??
+			text("q") ??
+			text("url") ??
+			text("path") ??
+			text("text") ??
+			Object.values(fields).find(
+				(value): value is string => typeof value === "string" && !!value,
+			);
+		// Left whole: the renderer owns truncation, and two caps stacking chewed
+		// the server name off the front of the line.
+		return argument
+			? `${mcp.server}: ${mcp.tool} "${argument.replace(/\s+/g, " ").trim()}"`
+			: `${mcp.server}: ${mcp.tool}`;
+	}
+	if (name === "capabilities_search") return text("query");
+	if (["tools_load", "skills_activate", "capabilities_inspect"].includes(name))
+		return capabilityName(text("id"));
+	return text("path") ?? text("command") ?? text("reference");
 }
 
 export function formatTokens(tokens: number): string {

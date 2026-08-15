@@ -3,6 +3,7 @@ import type {
 	AuthInteraction,
 	AuthPrompt,
 } from "@earendil-works/pi-ai";
+
 import type {
 	AuthNotifyEvent,
 	AuthPromptEvent,

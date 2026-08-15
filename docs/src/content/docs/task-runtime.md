@@ -28,8 +28,9 @@ cancels, or replaces it.
 ## Fresh capability state
 
 Each new task gets a fresh capability catalog snapshot, provider bindings,
-grants, and capability context. Loaded tool schemas and activated skill bodies
-belong to that task. They are removed when it terminates.
+grants, and capability context. Loaded tool schemas are task-scoped. Skills
+activated by the model are step-scoped and leave context after one model step;
+skills activated directly with `/name` remain until the task terminates.
 
 The runtime checks a capability's catalog generation, contract hash, provider
 binding, grant, and load state before execution. A global revocation or disabled
@@ -42,10 +43,13 @@ grants run from `discover` through `activate`. The ceiling can shrink during a
 task but cannot grow. A confirmation satisfies a condition on an existing
 execute grant; it does not add authority.
 
-Capability context also has its own admission budget. Harnez accounts for the
-base task request and active capability items, adds a safety margin, and either
-admits the item or returns a rejection with removal candidates. It does not
-silently evict a loaded schema or skill body.
+Capability admission uses a ceiling derived from the model's usable input
+budget. Harnez accounts for active capability items and a minimal model base,
+adds a safety margin, and either admits the item or reports its estimated need,
+the margin, and the ceiling. Final request assembly charges injected capability
+content and conversation history against the same input budget. Harnez does not
+silently evict a loaded schema or skill body; a directly requested skill that
+does not fit is skipped with a status message instead of failing the task.
 
 ## Cancellation
 

@@ -18,6 +18,22 @@ export type ModelOption = {
 
 export type SkillOption = { name: string; description: string };
 
+/** One configured MCP server, as the server menu shows it. */
+export type McpServerOption = {
+	name: string;
+	/** Which file declared it: `~/.config/harnez` or the workspace's `.harnez`. */
+	scope: "global" | "project";
+	transport: "stdio" | "streamable-http";
+	/** Whether the operator has left the server switched on. */
+	enabled: boolean;
+	/** An enabled server that failed to start or list its tools is not connected. */
+	connected: boolean;
+	/** Connected, but its child was stopped while idle; the next call revives it. */
+	idle: boolean;
+	tools: number;
+	error?: string;
+};
+
 export type PromptOption = { name: string; description: string };
 
 export type ModelConfig = {
@@ -71,6 +87,9 @@ export type ClientCommand =
 	| { type: "list-models"; provider?: string }
 	| { type: "list-skills" }
 	| { type: "list-prompts" }
+	| { type: "list-mcp-servers" }
+	/** The servers that stay on; every other configured server is switched off. */
+	| { type: "set-mcp-enabled"; servers: string[] }
 	| { type: "set-session-title"; title: string }
 	| { type: "set-disable-thinking-blocks"; disabled: boolean }
 	| { type: "login"; provider: string; authType: AuthType }
@@ -136,12 +155,23 @@ export type ServerEvent =
 	| { type: "fast-cycle"; entries: FastCycleEntry[] }
 	| { type: "ui-settings"; disableThinkingBlocks: boolean }
 	| { type: "status"; text: string }
-	| { type: "completed"; durationMs?: number }
-	| { type: "aborted" }
+	| {
+			type: "completed";
+			durationMs?: number;
+			modelDurationMs?: number;
+			toolDurationMs?: number;
+	  }
+	| {
+			type: "aborted";
+			durationMs?: number;
+			modelDurationMs?: number;
+			toolDurationMs?: number;
+	  }
 	| { type: "providers"; providers: ProviderOption[] }
 	| { type: "models"; models: ModelOption[] }
 	| { type: "skills"; skills: SkillOption[] }
 	| { type: "prompts"; prompts: PromptOption[] }
+	| { type: "mcp-servers"; servers: McpServerOption[] }
 	| { type: "auth-prompt"; prompt: AuthPromptEvent }
 	| { type: "auth-notify"; notification: AuthNotifyEvent }
 	| { type: "auth-completed"; provider: string }

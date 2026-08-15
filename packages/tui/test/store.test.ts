@@ -86,7 +86,12 @@ describe("TUI protocol store", () => {
 			cacheWrite: 0,
 			totalTokens: 187,
 		});
-		store.getState().apply({ type: "completed", durationMs: 257_000 });
+		store.getState().apply({
+			type: "completed",
+			durationMs: 257_000,
+			modelDurationMs: 211_000,
+			toolDurationMs: 38_000,
+		});
 		expect(store.getState().running).toBe(false);
 		expect(store.getState().modelConfig).toEqual({
 			provider: "openai-codex",
@@ -97,7 +102,9 @@ describe("TUI protocol store", () => {
 			"tool-result",
 			"completed",
 		]);
-		expect(store.getState().entries.at(-1)?.text).toBe("✶ Noodled for 4m 17s");
+		expect(store.getState().entries.at(-1)?.text).toBe(
+			"✶ Noodled for 4m 17s · model 3m 31s · tools 38s",
+		);
 	});
 
 	test("shows runtime rows when HARNESS_SHOW_STATUS is enabled", () => {

@@ -5,14 +5,12 @@ export function abortableSleep(
 ): Promise<void> {
 	return new Promise((resolve) => {
 		if (signal?.aborted) return resolve();
-		const abort = () => {
+		const finish = () => {
 			clearTimeout(timeout);
+			signal?.removeEventListener("abort", finish);
 			resolve();
 		};
-		const timeout = setTimeout(() => {
-			signal?.removeEventListener("abort", abort);
-			resolve();
-		}, ms);
-		signal?.addEventListener("abort", abort, { once: true });
+		const timeout = setTimeout(finish, ms);
+		signal?.addEventListener("abort", finish, { once: true });
 	});
 }

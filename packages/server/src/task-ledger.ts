@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+
 import type { CapabilitySnapshot } from "./capabilities/catalog";
 import { canonicalJson } from "./capabilities/hash";
 import type {
@@ -137,7 +138,7 @@ export function buildTaskLedgerDigest(
 				finishes.get(start.callId)?.outcome ?? "",
 			),
 		).length,
-		referencedCapabilities: [...referenced.values()].sort((a, b) =>
+		referencedCapabilities: [...referenced.values()].toSorted((a, b) =>
 			a.id.localeCompare(b.id),
 		),
 		startedAt: ledger.startedAt,

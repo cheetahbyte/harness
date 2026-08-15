@@ -1,4 +1,8 @@
-import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
+import {
+	Agent,
+	type AgentMessage,
+	type AgentTool,
+} from "@earendil-works/pi-agent-core";
 import {
 	type Api,
 	type AssistantMessageEvent,
@@ -10,10 +14,12 @@ import {
 	type Model,
 	type Models,
 } from "@earendil-works/pi-ai";
+
 import { abortableSleep } from "../../../shared/src/abortable-sleep";
 import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
 import type { ContextManager } from "../context/manager";
 import { log } from "../logger";
+import type { McpRegistry, McpToolDescriptor } from "../mcp/registry";
 import { HarnezProviderError, providerModels } from "../provider";
 import type { SessionStore } from "../sessions/store";
 import type { SkillSnapshotEntry } from "../skills";
@@ -38,13 +44,23 @@ export type AgentRunInput = {
 	tools: CoreTools;
 	task: TaskRuntime;
 	skills: readonly SkillSnapshotEntry[];
+	mcpTools: readonly McpToolDescriptor[];
+	/** The workspace's registry: MCP is per workspace, not per process. */
+	mcp: Pick<McpRegistry, "call">;
 	signal: AbortSignal;
 	emit: (event: ServerEvent) => void;
 };
 
-const SYSTEM_PROMPT =
-	"You are Harnez, a coding agent. Use deterministic capability discovery when you need more context, and use the provided tools to inspect and change the current workspace. Runtime context belongs only to the current task.";
+export type AgentRunTiming = {
+	modelDurationMs: number;
+	toolDurationMs: number;
+};
+
+export const SYSTEM_PROMPT =
+	"You are Harnez, a coding agent. Your tool list is partial: more tools and skills, including any MCP servers the user connected, wait in a catalog. Before saying you lack a capability, call capabilities_search. Never conclude that a tool is unavailable from your tool list alone, and prefer a catalog tool over improvising with bash. tools_load makes one callable from the next turn. Use the provided tools to inspect and change the current workspace. Batch independent tool calls, including related reads, writes, and edits, in the same turn. Tool output carrying an observation:// reference was archived, not lost: read it back with recall_observation instead of running the tool again. Use episodes and pin_context once context is reported to be under compaction pressure, or when the work ahead will span many tool calls; skip episodes and pin_context for short tasks. Runtime context belongs only to the current task.";
 const DEFAULT_CONTEXT_BUDGET = 80_000;
+/** Floor for models that cannot be resolved, and the old fixed ceiling. */
+const FALLBACK_CAPABILITY_BUDGET = 8_000;
 
 /** Pi is contained here: server code only sees Harnez events and model configuration. */
 export class HarnezAgentRuntime {
@@ -76,9 +92,11 @@ export class HarnezAgentRuntime {
 		tools,
 		task,
 		skills,
+		mcpTools,
+		mcp,
 		signal,
 		emit,
-	}: AgentRunInput): Promise<void> {
+	}: AgentRunInput): Promise<AgentRunTiming> {
 		if (!config)
 			throw new HarnezProviderError(
 				"no model configured; use /model",
@@ -101,6 +119,8 @@ export class HarnezAgentRuntime {
 				config,
 				task,
 				skills,
+				mcpTools,
+				mcp,
 			});
 			created.agent.subscribe((event) =>
 				translateAgentEvent({
@@ -147,6 +167,36 @@ export class HarnezAgentRuntime {
 		} finally {
 			signal.removeEventListener("abort", abort);
 		}
+		return {
+			modelDurationMs: Math.round(entry.timing.modelDurationMs),
+			toolDurationMs: Math.round(entry.timing.toolDurationMs),
+		};
+	}
+
+	/**
+	 * Tool contracts and skill bodies have to follow the model the same way the
+	 * transcript does. A fixed ceiling made the outcome depend on which constant
+	 * was compiled in rather than on what the model could hold: under the 8k
+	 * literal this replaces, a mid-sized skill could not be activated at all on a
+	 * 200k model. An unconfigured or unresolvable model falls back to that
+	 * constant, since the run is about to fail on the missing model anyway.
+	 */
+	capabilityBudget(sessionId: string, config: ModelConfig | undefined): number {
+		if (!config) return FALLBACK_CAPABILITY_BUDGET;
+		try {
+			const { model } = providerModels(
+				config,
+				this.credentials,
+				this.modelsFor(sessionId),
+			);
+			return this.contextOptions(model).budget;
+		} catch (error) {
+			log.warn(
+				{ err: error, sessionId, model: config.model },
+				"capability budget falling back to the default ceiling",
+			);
+			return FALLBACK_CAPABILITY_BUDGET;
+		}
 	}
 
 	steer(sessionId: string, text: string, callbacks: QueueCallbacks): boolean {
@@ -190,6 +240,8 @@ export class HarnezAgentRuntime {
 		config,
 		task,
 		skills,
+		mcpTools,
+		mcp,
 	}: {
 		sessionId: string;
 		key: string;
@@ -199,6 +251,8 @@ export class HarnezAgentRuntime {
 		config: ModelConfig;
 		task: TaskRuntime;
 		skills: readonly SkillSnapshotEntry[];
+		mcpTools: readonly McpToolDescriptor[];
+		mcp: Pick<McpRegistry, "call">;
 	}): AgentEntry {
 		ensureSystem({
 			sessionId,
@@ -207,6 +261,16 @@ export class HarnezAgentRuntime {
 			systemPrompt: SYSTEM_PROMPT,
 		});
 		const entry = newAgentEntry(key, tools, task);
+		/**
+		 * Publishes a tool mid-task. `entry.agent` is assigned before any tool can
+		 * run, so the deferred read is always resolved by the time this fires.
+		 * Re-admitting the same name is ignored: `tools_load` is idempotent.
+		 */
+		const admit = (tool: AgentTool): void => {
+			const current = entry.agent.state.tools;
+			if (current.some((existing) => existing.name === tool.name)) return;
+			entry.agent.state.tools = [...current, tool];
+		};
 		const managed = (): AgentMessage[] => {
 			try {
 				entry.contextError = undefined;
@@ -230,13 +294,20 @@ export class HarnezAgentRuntime {
 					tools,
 					task,
 					skills,
+					mcpTools,
+					mcp,
+					admit,
 					context: this.context,
 					contextOptions: this.contextOptions.bind(this),
 					previewLimit: this.previewLimit.bind(this),
 				}),
 				messages: this.messages(sessionId, model, task),
 			},
-			transformContext: async () => managed(),
+			transformContext: async () => {
+				const messages = managed();
+				task.context.completeStep();
+				return messages;
+			},
 			prepareNextTurnWithContext: (turn) => {
 				this.context.completeTurn(
 					sessionId,
@@ -244,7 +315,16 @@ export class HarnezAgentRuntime {
 				);
 				const messages = managed();
 				agent.state.messages = messages;
-				return { context: { ...turn.context, messages } };
+				/**
+				 * Pi snapshots the tool list once when a prompt starts and then reuses
+				 * whatever context this hook returns, so the tools have to be re-read
+				 * here. Without it, a tool that `tools_load` published earlier in the
+				 * run stays invisible for the rest of it: the model is told the load
+				 * succeeded and every later call comes back "not found".
+				 */
+				return {
+					context: { ...turn.context, messages, tools: agent.state.tools },
+				};
 			},
 			shouldStopAfterTurn: () => !!entry.contextError,
 			streamFn: (_unused, requestContext, options) => {
@@ -253,6 +333,7 @@ export class HarnezAgentRuntime {
 					() => models.streamSimple(model, requestContext, options),
 					options?.signal,
 					{ sessionId, provider: config.provider, model: config.model },
+					(durationMs) => (entry.timing.modelDurationMs += durationMs),
 				);
 			},
 			toolExecution: "parallel",
@@ -327,6 +408,7 @@ function streamWithRetry(
 	produce: () => AssistantMessageEventStream,
 	signal: AbortSignal | undefined,
 	context: { sessionId: string; provider: string; model: string },
+	onComplete: (durationMs: number) => void,
 ): AssistantMessageEventStream {
 	const out = createAssistantMessageEventStream();
 	void (async () => {
@@ -338,9 +420,14 @@ function streamWithRetry(
 			let terminal:
 				| Extract<AssistantMessageEvent, { type: "done" | "error" }>
 				| undefined;
-			for await (const event of produce())
-				if (event.type === "done" || event.type === "error") terminal = event;
-				else out.push(event);
+			const startedAt = performance.now();
+			try {
+				for await (const event of produce())
+					if (event.type === "done" || event.type === "error") terminal = event;
+					else out.push(event);
+			} finally {
+				onComplete(performance.now() - startedAt);
+			}
 			if (!terminal) {
 				log.warn(
 					{ ...context, attempt: attempt + 1 },
@@ -413,6 +500,12 @@ function newAgentEntry(
 		active: [],
 		steering: undefined,
 		task,
+		timing: {
+			modelDurationMs: 0,
+			toolDurationMs: 0,
+			activeToolCalls: new Set(),
+			toolWindowStartedAt: undefined,
+		},
 		emit: undefined,
 	};
 }

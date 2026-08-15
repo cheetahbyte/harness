@@ -5,12 +5,14 @@ import {
 	type SelectOption,
 } from "@opentui/core";
 import type { StoreApi } from "zustand/vanilla";
+
 import type {
 	AuthNotifyEvent,
 	AuthPromptEvent,
 	AuthType,
 	ClientCommand,
 	FastCycleEntry,
+	McpServerOption,
 	ModelOption,
 	ProviderOption,
 } from "../../shared/src/protocol";
@@ -26,7 +28,8 @@ type WizardFlow =
 	| { kind: "login-provider"; authType: AuthType }
 	| { kind: "login-active" }
 	| { kind: "model"; provider?: string }
-	| { kind: "fast-cycle" };
+	| { kind: "fast-cycle" }
+	| { kind: "mcp" };
 type AppCommand = CommandHint & {
 	kind: "command";
 	run: (args: string) => void | Promise<void>;
@@ -40,16 +43,20 @@ export class TuiApp {
 	private readonly wizard: WizardView;
 	private readonly footer: FooterView;
 	private readonly commands: readonly AppCommand[];
-	private readonly unsubscribe: () => void;
+	private unsubscribe: () => void;
+	private store: StoreApi<TuiState>;
 	private flow: WizardFlow | undefined;
 	private renderedWizard: WizardState | undefined;
 	private authUrl: string | undefined;
 
 	constructor(
 		private readonly renderer: CliRenderer,
-		private readonly store: StoreApi<TuiState>,
+		store: StoreApi<TuiState>,
 		private readonly send: (command: ClientCommand) => Promise<void>,
+		private readonly clearSession: () => Promise<void> = async () => {},
+		private readonly reloadServer: () => Promise<void> = async () => {},
 	) {
+		this.store = store;
 		this.root = new BoxRenderable(renderer, {
 			width: "100%",
 			height: "100%",
@@ -60,6 +67,24 @@ export class TuiApp {
 		this.header = new HeaderView(renderer);
 		this.transcript = new TranscriptView(renderer);
 		this.commands = [
+			{
+				name: "/clear",
+				description: "Start a new session",
+				kind: "command",
+				run: (args) => {
+					if (args.trim()) throw new Error("/clear does not accept arguments");
+					return this.clearSession();
+				},
+			},
+			{
+				name: "/reload",
+				description: "Reload the server and refresh integrations",
+				kind: "command",
+				run: (args) => {
+					if (args.trim()) throw new Error("/reload does not accept arguments");
+					return this.reloadServer();
+				},
+			},
 			{
 				name: "/login",
 				description: "Configure provider authentication",
@@ -80,6 +105,12 @@ export class TuiApp {
 				description: "Pick the models Ctrl+P cycles through",
 				kind: "command",
 				run: () => this.openFastCycle(),
+			},
+			{
+				name: "/mcp",
+				description: "Enable or disable configured MCP servers",
+				kind: "command",
+				run: () => this.openMcpServers(),
 			},
 			{
 				name: "/session-name",
@@ -162,6 +193,13 @@ export class TuiApp {
 	setNotice(text: { full: string; short: string }) {
 		this.header.setNotice(text);
 		this.renderer.requestRender();
+	}
+
+	replaceStore(store: StoreApi<TuiState>) {
+		this.unsubscribe();
+		this.store = store;
+		this.unsubscribe = store.subscribe(() => this.sync());
+		this.sync();
 	}
 
 	destroy() {
@@ -336,11 +374,19 @@ export class TuiApp {
 		void this.sendWizard({ type: "list-models" });
 	}
 
+	private openMcpServers() {
+		this.flow = { kind: "mcp" };
+		this.showNoticeText("MCP Servers", "Connecting to configured servers…");
+		void this.sendWizard({ type: "list-mcp-servers" });
+	}
+
 	private renderWizard(wizard: WizardState) {
 		if (wizard.kind === "idle") return;
 		if (wizard.kind === "providers")
 			return this.showProviders(wizard.providers);
 		if (wizard.kind === "models") return this.showModels(wizard);
+		if (wizard.kind === "mcp-servers")
+			return this.showMcpServers(wizard.servers);
 		if (wizard.kind === "prompt") return this.showPrompt(wizard.prompt);
 		if (wizard.kind === "notice") return this.showNotice(wizard.notification);
 		this.closeWizard();
@@ -497,6 +543,44 @@ export class TuiApp {
 		);
 	}
 
+	/**
+	 * Space-toggled picker over every configured server; the check marks are the
+	 * servers that stay connected. Saving re-lists, so the redrawn menu reports
+	 * what actually happened — a server that would not start says so here.
+	 */
+	private showMcpServers(servers: McpServerOption[]) {
+		if (this.flow?.kind !== "mcp") return;
+		if (!servers.length)
+			return this.showNoticeText(
+				"MCP Servers",
+				"No servers configured. Add them to mcp.json.",
+			);
+		const connected = servers.filter((server) => server.connected);
+		this.composer.setActive(false);
+		this.wizard.show(
+			{
+				kind: "multiselect",
+				title: `MCP Servers · ${connected.length}/${servers.length} connected`,
+				options: servers.map((server) => ({
+					name: server.name,
+					description: describeMcpServer(server),
+					value: server.name,
+				})),
+				selected: servers
+					.filter((server) => server.enabled)
+					.map((server) => server.name),
+				searchable: true,
+			},
+			{
+				confirm: (values) => {
+					this.showNoticeText("MCP Servers", "Applying…");
+					void this.sendWizard({ type: "set-mcp-enabled", servers: values });
+				},
+				cancel: () => this.escape(),
+			},
+		);
+	}
+
 	private startLogin(provider: string, authType: AuthType | undefined) {
 		if (!authType) return;
 		this.authUrl = undefined;
@@ -608,6 +692,15 @@ export class TuiApp {
 			this.reportError(error);
 		}
 	}
+}
+
+function describeMcpServer(server: McpServerOption): string {
+	const where = `${server.scope} · ${server.transport}`;
+	if (!server.enabled) return `${where} · off`;
+	if (!server.connected) return `${where} · ${server.error ?? "not connected"}`;
+	return `${where} · ${server.tools} tool${server.tools === 1 ? "" : "s"}${
+		server.idle ? " · idle" : ""
+	}`;
 }
 
 function modelKey(config: { provider: string; model: string }): string {

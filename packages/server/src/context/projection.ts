@@ -125,7 +125,7 @@ export function evictionCandidates(
 								result.lifecycle === "retained",
 						))),
 		)
-		.sort(
+		.toSorted(
 			(a, b) => evictionRank(a) - evictionRank(b) || a.sequence - b.sequence,
 		);
 }

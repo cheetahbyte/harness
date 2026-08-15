@@ -28,12 +28,29 @@ export function serveHarnez(
 			? {}
 			: { contextBudget: options.contextBudget },
 	);
-	return Bun.serve({
+	const server = Bun.serve({
 		hostname: "127.0.0.1",
 		port: options.port ?? 7432,
 		idleTimeout: 0,
 		fetch: (request) => fetchHarnez(harnez, request),
 	});
+	// Without this, stdio MCP servers outlive the process that spawned them.
+	let shuttingDown = false;
+	for (const signal of ["SIGINT", "SIGTERM"] as const)
+		process.once(signal, () => {
+			if (shuttingDown) return;
+			shuttingDown = true;
+			const hardExit = setTimeout(() => process.exit(0), 3_000);
+			hardExit.unref?.();
+			void harnez.close().then(
+				() => process.exit(0),
+				(error) => {
+					log.error({ err: error }, "graceful shutdown failed");
+					process.exit(1);
+				},
+			);
+		});
+	return server;
 }
 
 async function fetchHarnez(

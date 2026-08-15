@@ -1,7 +1,11 @@
 @import "tailwindcss";
+@import "@fontsource-variable/inter";
 @import "@fontsource-variable/jetbrains-mono";
 
 @theme {
+	--font-sans:
+		"Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+		sans-serif;
 	--font-mono:
 		"JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas,
 		monospace;
@@ -30,8 +34,15 @@ body {
 	margin: 0;
 	background: var(--color-bg);
 	color: var(--color-fg);
-	font-family: var(--font-mono);
+	font-family: var(--font-sans);
 	-webkit-font-smoothing: antialiased;
+}
+
+code,
+kbd,
+pre,
+samp {
+	font-family: var(--font-mono);
 }
 
 a {
@@ -46,8 +57,8 @@ a {
 /* Rendered markdown content */
 .docs-prose {
 	color: var(--color-fg-dim);
-	font-size: 0.9375rem;
-	line-height: 1.75;
+	font-size: 1rem;
+	line-height: 1.7;
 }
 
 .docs-prose > :first-child {

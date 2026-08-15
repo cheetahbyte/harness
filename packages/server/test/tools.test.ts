@@ -52,11 +52,20 @@ test("registers class-backed tools and runs their file operations", async () => 
 	await execute(tools, "write", { path: "note.txt", content: "before" }, signal);
 	await execute(
 		tools,
+		"write",
+		{ path: "nested/note.txt", content: "nested" },
+		signal,
+	);
+	await execute(
+		tools,
 		"edit",
 		{ path: "note.txt", oldText: "before", newText: "after" },
 		signal,
 	);
 	expect(await execute(tools, "read", { path: "note.txt" }, signal)).toBe("after");
+	expect(await execute(tools, "read", { path: "nested/note.txt" }, signal)).toBe(
+		"nested",
+	);
 	writeFileSync(join(workspace, "twice.txt"), "x x");
 	await expect(
 		execute(

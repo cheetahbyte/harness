@@ -1,5 +1,5 @@
 import type { SessionStore } from "../sessions/store";
-import { tokenCost } from "../token-cost";
+import { tokenCost as computeTokenCost } from "../token-cost";
 import {
 	episodeStates,
 	replayEpisodes,
@@ -58,6 +58,19 @@ const lifecycles = new Set<ContextLifecycle>([
 	"retained",
 	"archived",
 ]);
+
+export const PRESSURE_NOTE_REASON = "working-context pressure";
+export const PRESSURE_NOTE =
+	"Context is under compaction pressure: older tool output is being archived to observation:// references, which recall_observation reads back. Use episode to bound work that continues past this point, and pin_context for anything later steps must not lose.";
+export const PRESSURE_NOTE_TOKENS = computeTokenCost(PRESSURE_NOTE);
+
+/** Marker reason identifying the single live rolling summary item. */
+export const ROLLING_SUMMARY_REASON = "rolling summary";
+const ROLLING_SUMMARY_PREFIX = "Earlier messages:\n";
+/** Cap on a rolling summary's projected size; keeps replacements bounded. */
+const ROLLING_SUMMARY_MAX_TOKENS = 400;
+/** Most recent pre-submission user messages kept verbatim in task assemblies. */
+const RECENT_USER_MESSAGES_KEPT = 2;
 
 type AssemblyOptions = {
 	budget: number;
@@ -300,37 +313,59 @@ export class ContextManager {
 		return episodeStates(items, snapshots);
 	}
 
-	/** Retains only user-visible task continuity for future top-level tasks. */
+	/**
+	 * Retains the completed task's tail as reclaimable context, preserving the
+	 * terminal user-visible assistant message for future top-level tasks. The
+	 * original terminal message is reused when its payload is already
+	 * user-visible clean; a stripped clone is recorded only when tool-call
+	 * blocks must be removed.
+	 */
 	terminalizeTask(sessionId: string, afterSequence: number): string[] {
 		const scoped = this.store
 			.contextItems(sessionId)
 			.filter((item) => item.sequence > afterSequence);
-		const terminal = [...scoped]
-			.reverse()
+		const terminal = scoped
+			.toReversed()
 			.find((item) => item.kind === "assistant" && assistantText(item.payload));
 		let terminalId: string | undefined;
 		for (const item of scoped) {
-			if (item.kind === "user" || item.kind === "system") continue;
+			if (
+				item.kind === "user" ||
+				item.kind === "system" ||
+				item.lifecycle === "archived"
+			)
+				continue;
+			const payload =
+				item.kind === "assistant"
+					? userVisibleAssistant(item.payload)
+					: undefined;
+			if (payload && JSON.stringify(payload) === JSON.stringify(item.payload)) {
+				this.store.setContextLifecycle(
+					item.id,
+					"retained",
+					item.projection,
+					"completed top-level task",
+				);
+				if (item.id === terminal?.id) terminalId = item.id;
+				continue;
+			}
 			this.store.setContextLifecycle(
 				item.id,
 				"archived",
 				"omitted",
 				"top-level task terminated",
 			);
-		}
-		if (terminal) {
-			const payload = userVisibleAssistant(terminal.payload);
-			if (payload) {
-				terminalId = this.record({
-					sessionId,
-					kind: "assistant",
-					payload,
-					tokenCost: tokenCost(payload, 1),
-					lifecycle: "retained",
-					reason: "predecessor terminal user-visible message",
-					groupId: terminal.groupId ?? crypto.randomUUID(),
-				}).id;
-			}
+			if (!payload) continue;
+			const clone = this.record({
+				sessionId,
+				kind: "assistant",
+				payload,
+				tokenCost: computeTokenCost(payload, 1),
+				lifecycle: "retained",
+				reason: "completed top-level assistant prose",
+				groupId: item.groupId ?? crypto.randomUUID(),
+			});
+			if (item.id === terminal?.id) terminalId = clone.id;
 		}
 		this.activeEpisodes.delete(sessionId);
 		return terminalId ? [terminalId] : [];
@@ -347,7 +382,7 @@ export class ContextManager {
 			sessionId,
 			kind: "observation",
 			payload: exactOutput,
-			tokenCost: tokenCost(exactOutput),
+			tokenCost: computeTokenCost(exactOutput),
 			lifecycle: "archived",
 			projection: "omitted",
 			reason: "externalized observation",
@@ -406,13 +441,56 @@ export class ContextManager {
 				sessionId,
 				kind: "pinned-note",
 				payload,
-				tokenCost: tokenCost(text),
+				tokenCost: computeTokenCost(text),
 				lifecycle: "pinned",
 				reason: `pinned ${kind}`,
 			},
 			options,
 		);
 		return item;
+	}
+
+	/**
+	 * Compaction is otherwise invisible to the model: the placeholders it leaves
+	 * behind read as ordinary output, and the budget it works against is never
+	 * quoted. Without this note the system prompt's instruction to reach for
+	 * episodes under pressure has no observable trigger to fire on.
+	 *
+	 * Stored rather than synthesized per assembly so it is said exactly once —
+	 * a session over budget stays over budget, so a note derived from the live
+	 * pressure flag would repeat on every turn for the rest of the session.
+	 * Pinned, because the one message explaining the placeholders must not
+	 * become a placeholder itself.
+	 *
+	 * Skipped unless the assembled context can afford it. Pinned weight is
+	 * never reclaimed, so a note taken on credit would raise the floor of
+	 * every later assembly — advice about a tight budget is not worth being
+	 * the reason that budget stops being satisfiable.
+	 */
+	private notePressure(
+		sessionId: string,
+		estimatedTokens: number,
+		budget: number,
+	): void {
+		if (estimatedTokens + PRESSURE_NOTE_TOKENS > budget) return;
+		if (
+			this.store
+				.contextItems(sessionId)
+				.some((item) => item.reason === PRESSURE_NOTE_REASON)
+		)
+			return;
+		this.record({
+			sessionId,
+			kind: "pinned-note",
+			payload: {
+				role: "user",
+				content: PRESSURE_NOTE,
+				timestamp: Date.now(),
+			},
+			tokenCost: PRESSURE_NOTE_TOKENS,
+			lifecycle: "pinned",
+			reason: PRESSURE_NOTE_REASON,
+		});
 	}
 
 	assemble(
@@ -442,7 +520,17 @@ export class ContextManager {
 				archivedEpisodeIds,
 			);
 		if (underPressure && state.estimatedTokens > options.budget)
+			state = this.compactPinned(sessionId, state, options, evictedIds);
+		if (underPressure && state.estimatedTokens > options.budget)
 			throw new ContextBudgetError(state.estimatedTokens, options.budget);
+		/**
+		 * After the archiving pass, never before it: a note about scarce budget
+		 * that competed for that same budget could be the weight that pushes an
+		 * assembly past its target. It reaches the model on the next assembly,
+		 * which a turn under pressure always performs.
+		 */
+		if (underPressure)
+			this.notePressure(sessionId, state.estimatedTokens, options.budget);
 		return {
 			payloads: [
 				...projectedPayloads(state.items),
@@ -520,6 +608,79 @@ export class ContextManager {
 		return state;
 	}
 
+	/**
+	 * Pinned content is the last reclaimable layer: collapse the oldest pinned
+	 * user history and notes into one rolling summary until the hard budget
+	 * fits, keeping the newest content longest (truncation drops the oldest
+	 * text first). Nothing is mutated unless a replacement summary can be
+	 * seated, so the caller's ContextBudgetError still fires for genuinely
+	 * impossible budgets.
+	 */
+	private compactPinned(
+		sessionId: string,
+		state: AssemblyState,
+		options: AssemblyOptions,
+		evictedIds: string[],
+	): AssemblyState {
+		const candidates = state.items
+			.filter(
+				(item) =>
+					item.lifecycle === "pinned" &&
+					(item.kind === "user" || item.kind === "pinned-note") &&
+					item.reason !== ROLLING_SUMMARY_REASON,
+			)
+			.toSorted((a, b) => a.sequence - b.sequence);
+		const existing = [...state.items]
+			.toReversed()
+			.find(
+				(item) =>
+					item.reason === ROLLING_SUMMARY_REASON &&
+					item.lifecycle !== "archived",
+			);
+		if (!candidates.length && !existing) return state;
+		const prior = candidates.length ? existing : undefined;
+		if (!candidates.length && existing) candidates.push(existing);
+		const priorText = prior ? userText(prior.payload) : undefined;
+		const priorCost = prior ? projectionCost(prior) : 0;
+		const collapsed: ContextItem[] = [];
+		const texts: string[] = [];
+		let collapsedCost = 0;
+		let content: string | undefined;
+		for (const item of candidates) {
+			collapsedCost += projectionCost(item);
+			collapsed.push(item);
+			texts.push(userText(item.payload));
+			const room =
+				options.budget - (state.estimatedTokens - collapsedCost - priorCost);
+			const candidate = rollingSummaryContent(
+				priorText,
+				texts,
+				ROLLING_SUMMARY_MAX_TOKENS,
+			);
+			if (candidate !== undefined && computeTokenCost(candidate) <= room) {
+				content = rollingSummaryContent(priorText, texts, room);
+				break;
+			}
+		}
+		if (content === undefined) {
+			const room =
+				options.budget - (state.estimatedTokens - collapsedCost - priorCost);
+			content = rollingSummaryContent(priorText, texts, room);
+		}
+		if (content === undefined) return state;
+		for (const item of collapsed) {
+			this.store.setContextLifecycle(
+				item.id,
+				"archived",
+				"omitted",
+				"collapsed into rolling summary",
+			);
+			evictedIds.push(item.id);
+		}
+		this.appendRollingSummary(sessionId, prior, content);
+		return this.assemblyState(sessionId, options.overheadTokens);
+	}
+
 	private assemblyState(
 		sessionId: string,
 		overheadTokens: number,
@@ -546,14 +707,17 @@ export class ContextManager {
 	} {
 		const compaction = this.assemble(sessionId, options);
 		const terminal = new Set(options.predecessorTerminalIds);
-		const items = this.store
-			.contextItems(sessionId)
-			.filter(
-				(item) =>
-					item.sequence <= options.submissionWatermark ||
-					item.sequence > options.taskStartSequence ||
-					terminal.has(item.id),
-			);
+		const inWindow = (item: ContextItem) =>
+			item.sequence <= options.submissionWatermark ||
+			item.sequence > options.taskStartSequence ||
+			terminal.has(item.id);
+		this.collapseTaskHistory(
+			sessionId,
+			this.store.contextItems(sessionId).filter(inWindow),
+			options,
+			compaction.evictedIds,
+		);
+		const items = this.store.contextItems(sessionId).filter(inWindow);
 		const estimatedTokens = items.reduce(
 			(total, item) => total + projectionCost(item),
 			options.overheadTokens,
@@ -575,6 +739,87 @@ export class ContextManager {
 		};
 	}
 
+	/**
+	 * Collapses pre-submission user messages (all but the most recent
+	 * RECENT_USER_MESSAGES_KEPT) into one rolling summary within the task
+	 * window, archiving the replaced originals and any prior summary instead
+	 * of accumulating summaries.
+	 */
+	private collapseTaskHistory(
+		sessionId: string,
+		window: ContextItem[],
+		options: TaskAssemblyOptions,
+		evictedIds: string[],
+	): void {
+		const users = window.filter(
+			(item) =>
+				item.kind === "user" &&
+				item.sequence < options.submissionWatermark &&
+				item.lifecycle !== "archived" &&
+				item.reason !== ROLLING_SUMMARY_REASON,
+		);
+		if (users.length <= RECENT_USER_MESSAGES_KEPT) return;
+		const targets = users.slice(0, users.length - RECENT_USER_MESSAGES_KEPT);
+		const texts = targets.map((item) => userText(item.payload));
+		const prior = [...window]
+			.toReversed()
+			.find(
+				(item) =>
+					item.reason === ROLLING_SUMMARY_REASON &&
+					item.lifecycle !== "archived",
+			);
+		const priorText = prior ? userText(prior.payload) : undefined;
+		const priorCost = prior ? projectionCost(prior) : 0;
+		const targetCost = targets.reduce(
+			(total, item) => total + projectionCost(item),
+			0,
+		);
+		const baseCost = window.reduce(
+			(total, item) => total + projectionCost(item),
+			options.overheadTokens,
+		);
+		const content = rollingSummaryContent(
+			priorText,
+			texts,
+			options.budget - (baseCost - targetCost - priorCost),
+		);
+		if (content === undefined) return;
+		for (const target of targets) {
+			this.store.setContextLifecycle(
+				target.id,
+				"archived",
+				"omitted",
+				"collapsed into rolling summary",
+			);
+			evictedIds.push(target.id);
+		}
+		this.appendRollingSummary(sessionId, prior, content);
+	}
+
+	/** Archives the replaced summary (if any) and appends its replacement. */
+	private appendRollingSummary(
+		sessionId: string,
+		prior: ContextItem | undefined,
+		content: string,
+	): void {
+		if (prior)
+			this.store.setContextLifecycle(
+				prior.id,
+				"archived",
+				"omitted",
+				"replaced by rolling summary",
+			);
+		this.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content },
+			tokenCost: computeTokenCost(content),
+			lifecycle: "pinned",
+			projection: "full",
+			reason: ROLLING_SUMMARY_REASON,
+		});
+	}
+
 	recordSubagentResult(
 		sessionId: string,
 		result: SubagentResult,
@@ -590,8 +835,8 @@ export class ContextManager {
 			kind: "subagent-handoff",
 			payload: result,
 			compactPayload,
-			tokenCost: tokenCost(result),
-			compactTokenCost: tokenCost(compactPayload),
+			tokenCost: computeTokenCost(result),
+			compactTokenCost: computeTokenCost(compactPayload),
 			lifecycle: "retained",
 			projection: "compact",
 			reason: "structured subagent handoff",
@@ -678,4 +923,38 @@ function projectedPayloads(
 		const payload = projectedPayload(item);
 		return payload == null ? [] : [payload];
 	});
+}
+
+function userText(payload: unknown): string {
+	if (typeof payload === "string") return payload;
+	if (!payload || typeof payload !== "object") return "";
+	const content = (payload as { content?: unknown }).content;
+	return typeof content === "string" ? content : JSON.stringify(payload);
+}
+
+/**
+ * Deterministic rolling summary: the marker prefix plus the most recent text
+ * that fits in `maxTokens` (oldest content is dropped first). Returns
+ * undefined when even the bare marker cannot fit.
+ */
+function rollingSummaryContent(
+	priorText: string | undefined,
+	texts: string[],
+	maxTokens: number,
+): string | undefined {
+	const joined = [priorText, ...texts]
+		.filter((text): text is string => text !== undefined && text.length > 0)
+		.join("\n");
+	if (joined.length === 0) return undefined;
+	const content = `${ROLLING_SUMMARY_PREFIX}${joined}`;
+	const maxChars = Math.min(maxTokens, ROLLING_SUMMARY_MAX_TOKENS) * 4;
+	if (maxChars < 1) return undefined;
+	if (content.length <= maxChars) return content;
+	if (maxChars <= ROLLING_SUMMARY_PREFIX.length) return undefined;
+	return (
+		ROLLING_SUMMARY_PREFIX +
+		content
+			.slice(ROLLING_SUMMARY_PREFIX.length)
+			.slice(-(maxChars - ROLLING_SUMMARY_PREFIX.length))
+	);
 }

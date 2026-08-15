@@ -54,6 +54,7 @@ token set or an API key. Harnez writes the file with `0o600` permissions, and
     { "provider": "anthropic", "model": "claude-opus-4-5", "thinkingLevel": "high" }
   ],
   "disableThinkingBlocks": false,
+  "disabledMcpServers": ["spokenly"],
   "session": {
     "title": {
       "generated": true,
@@ -89,6 +90,14 @@ restores it. Entries whose model is unavailable are skipped while cycling.
 The picker writes the whole list, so an entry whose model is missing from it —
 for example while that provider is signed out — is dropped when you save.
 Cycling never drops entries; it only skips the ones it cannot resolve.
+
+`disabledMcpServers` is what [`/mcp`](/docs/advanced/mcp#switching-servers-on-and-off)
+switched off, by server name. It lists exclusions rather than inclusions, so a
+server added to `mcp.json` later starts out connected. It follows the same
+layering as every other setting: the list lands in the project's
+`.harnez/settings.json` when that file exists, and in the global file
+otherwise — where, because the entries are plain server names, it applies to
+every workspace that has a server by that name.
 
 New sessions are titled from their first prompt by default. Set
 `session.title.generated` to `false` to disable this. `session.title.source`

@@ -1,10 +1,13 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+
 import { Type } from "@earendil-works/pi-ai";
-import { WorkspaceTool } from "./tool";
+
+import { EvictionPriority, WorkspaceTool } from "./tool";
 
 export class WriteTool extends WorkspaceTool {
 	readonly name = "write";
-	override readonly evictionPriority = "early" as const;
+	override readonly evictionPriority = EvictionPriority.Early;
 	readonly description = "Write a text file in the workspace.";
 	readonly schema = Type.Object({
 		path: Type.String({ minLength: 1 }),
@@ -22,6 +25,7 @@ export class WriteTool extends WorkspaceTool {
 		const path = this.path(input["path"]);
 		await this.withWriteLock(path, async () => {
 			if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+			await mkdir(dirname(path), { recursive: true });
 			await writeFile(path, content);
 		});
 		return `wrote ${input["path"]}`;

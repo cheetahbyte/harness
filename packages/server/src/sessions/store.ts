@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+
 import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
 import type {
 	ContextEpisodeEvent,

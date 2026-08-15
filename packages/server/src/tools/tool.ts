@@ -1,20 +1,31 @@
 import { relative, resolve } from "node:path";
+
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { TSchema } from "@earendil-works/pi-ai";
+
 import type { EffectClass } from "../capabilities/types";
 
 const writeLocks = new Map<string, Promise<void>>();
 
+export const EvictionPriority = {
+	Early: "early",
+	Normal: "normal",
+	Late: "late",
+} as const;
+
+export type EvictionPriority =
+	(typeof EvictionPriority)[keyof typeof EvictionPriority];
+
 export type ToolContextMetadata = {
 	toolName: string;
-	evictionPriority: "early" | "normal" | "late";
+	evictionPriority: EvictionPriority;
 };
 
 export abstract class WorkspaceTool {
 	abstract readonly name: string;
 	abstract readonly description: string;
 	abstract readonly schema: TSchema;
-	readonly evictionPriority: ToolContextMetadata["evictionPriority"] = "normal";
+	readonly evictionPriority: EvictionPriority = EvictionPriority.Normal;
 	readonly effect: EffectClass = "mutating";
 
 	constructor(protected readonly workspace: string) {}
@@ -34,8 +45,8 @@ export abstract class WorkspaceTool {
 	): Promise<T> {
 		const previous = writeLocks.get(path) ?? Promise.resolve();
 		let release!: () => void;
-		const current = new Promise<void>((resolve) => {
-			release = resolve;
+		const current = new Promise<void>((releaseLock) => {
+			release = releaseLock;
 		});
 		writeLocks.set(path, current);
 		await previous;

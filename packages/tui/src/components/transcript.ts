@@ -8,17 +8,20 @@ import {
 	TextRenderable,
 	t,
 } from "@opentui/core";
+
 import {
 	expandsAt,
 	slashCommandPattern,
 } from "../../../shared/src/slash-command";
-import type { TranscriptEntry } from "../store";
+import { isMcpTool, mcpToolName, type TranscriptEntry } from "../store";
 import {
 	ACCENT,
 	DIM,
 	ERROR,
 	TEXT,
 	USER_BACKGROUND,
+	USER_PROMPT,
+	USER_PROMPT_PENDING,
 	USER_TEXT,
 	WARNING,
 } from "./theme";
@@ -86,7 +89,6 @@ export class TranscriptView {
 					: formatEntry(entry, this.skillNames, this.promptNames),
 				fg: toolCall ? ACCENT : entryColor(entry),
 				flexGrow: 1,
-				...(entry.kind === "user" ? { marginTop: 1, marginBottom: 1 } : {}),
 			});
 			const row = new BoxRenderable(this.renderer, {
 				width: "100%",
@@ -103,9 +105,9 @@ export class TranscriptView {
 			const gutter =
 				entry.kind === "user"
 					? new TextRenderable(this.renderer, {
-							content: "▌\n▌\n▌",
+							content: "❯",
 							width: 1,
-							fg: entry.pending ? DIM : ACCENT,
+							fg: entry.pending ? USER_PROMPT_PENDING : USER_PROMPT,
 							marginRight: 1,
 						})
 					: undefined;
@@ -141,7 +143,7 @@ export class TranscriptView {
 			if (rendered.detail && toolCall)
 				rendered.detail.content = formatToolDetails(entry.tools);
 			if (rendered.gutter && entry.kind === "user")
-				rendered.gutter.fg = entry.pending ? DIM : ACCENT;
+				rendered.gutter.fg = entry.pending ? USER_PROMPT_PENDING : USER_PROMPT;
 		});
 	}
 }
@@ -200,39 +202,112 @@ function formatEntry(
 }
 
 function formatToolTitle(entries: TranscriptEntry[]) {
-	const counts = new Map<string, number>();
-	for (const entry of entries)
-		counts.set(entry.text, (counts.get(entry.text) ?? 0) + 1);
+	const groups = new Map<string, TranscriptEntry[]>();
+	for (const entry of entries) {
+		const key = summaryKey(entry.text);
+		groups.set(key, [...(groups.get(key) ?? []), entry]);
+	}
 	return new StyledText(
-		[...counts].flatMap(([name, count], index) => {
-			const [verb, noun] = toolSummary(name, count);
-			const label = index ? verb : `${verb[0]?.toUpperCase()}${verb.slice(1)}`;
-			return t`${index ? ", " : ""}${fg(ACCENT)(label)} ${bold(fg(WARNING)(String(count)))} ${fg(TEXT)(noun)}`
+		[...groups.values()].flatMap((group, index) => {
+			const separator = index ? ", " : "";
+			const capitalize = (verb: string) =>
+				index ? verb : `${verb[0]?.toUpperCase()}${verb.slice(1)}`;
+			/**
+			 * A catalog search is about its query, not how many searches ran, so it
+			 * reads as the question asked rather than a count of questions.
+			 */
+			if (group[0]?.text === "capabilities_search") {
+				const queries = group
+					.map((entry) => entry.subject)
+					.filter((query): query is string => !!query)
+					.map((query) => `"${query}"`)
+					.join(", ");
+				return t`${separator}${fg(ACCENT)(capitalize("searched"))} ${fg(TEXT)(queries ? `for ${queries}` : "the catalog")}`
+					.chunks;
+			}
+			const [verb, noun] = toolSummary(group[0]?.text ?? "", group.length);
+			return t`${separator}${fg(ACCENT)(capitalize(verb))} ${bold(fg(WARNING)(String(group.length)))} ${fg(TEXT)(noun)}`
 				.chunks;
 		}),
 	);
 }
 
+/**
+ * One indented line per call naming what it acted on. A failure is the
+ * exception: its output is the only thing that explains itself, so it replaces
+ * the subject rather than being dropped with the rest of the output.
+ */
 function formatToolDetails(entries: TranscriptEntry[]) {
-	const details = entries.filter((entry) => entry.detail);
-	if (!details.length) return "";
-	return new StyledText(
-		details.flatMap((entry, index) => {
-			const output = entry.detail?.replace(/\s+/g, " ").trim() ?? "";
-			const preview = output.length > 50 ? `${output.slice(0, 50)}...` : output;
-			return t`${fg(entry.error ? ERROR : DIM)(`${index ? "\n" : ""}╰ ${preview}`)}`
-				.chunks;
+	/**
+	 * Loading a tool that is then called in the same group says it twice. The
+	 * call's subject carries its argument too, so the names are compared rather
+	 * than the whole line.
+	 */
+	const called = new Set(
+		entries.flatMap((entry) => {
+			const mcp = mcpToolName(entry.text);
+			return mcp ? [`${mcp.server}: ${mcp.tool}`] : [];
 		}),
 	);
+	const lines = entries.flatMap((entry) => {
+		if (entry.error && entry.detail) {
+			const output = entry.detail.replace(/\s+/g, " ").trim();
+			return [
+				{
+					error: true,
+					text: output.length > 50 ? `${output.slice(0, 50)}...` : output,
+				},
+			];
+		}
+		// A search states its query in the title already.
+		if (!entry.subject || entry.text === "capabilities_search") return [];
+		if (entry.text === "tools_load" && called.has(entry.subject)) return [];
+		return [{ error: false, text: truncateSubject(entry.subject, entry.text) }];
+	});
+	if (!lines.length) return "";
+	return new StyledText(
+		lines.flatMap(
+			(line, index) =>
+				t`${fg(line.error ? ERROR : DIM)(`${index ? "\n" : ""}  ╰ ${line.text}`)}`
+					.chunks,
+		),
+	);
+}
+
+const SUBJECT_WIDTH = 60;
+/** Only a path is identified by its tail; everything else reads from the start. */
+const TAIL_TOOLS = new Set(["read", "write", "edit"]);
+
+function truncateSubject(subject: string, tool: string): string {
+	const flat = subject.replace(/\s+/g, " ").trim();
+	if (flat.length <= SUBJECT_WIDTH) return flat;
+	if (TAIL_TOOLS.has(tool))
+		return `…${flat.slice(flat.length - (SUBJECT_WIDTH - 1))}`;
+	/** A trailing quote survives the cut so the line still reads as a quotation. */
+	const closing = flat.endsWith('"') ? '"' : "";
+	return `${flat.slice(0, SUBJECT_WIDTH - 1 - closing.length)}…${closing}`;
+}
+
+/** MCP tools share one bucket so a turn reads "used 2 tools", not two names. */
+function summaryKey(name: string): string {
+	return isMcpTool(name) ? " mcp" : name;
 }
 
 function toolSummary(name: string, count: number): [string, string] {
 	const plural = count === 1 ? "" : "s";
+	if (isMcpTool(name)) return ["used", `tool${plural}`];
 	return ({
 		bash: ["ran", `shell command${plural}`],
 		read: ["read", `file${plural}`],
 		write: ["wrote", `file${plural}`],
 		edit: ["edited", `file${plural}`],
+		tools_load: ["loaded", `tool${plural}`],
+		skills_activate: ["activated", `skill${plural}`],
+		capabilities_inspect: [
+			"inspected",
+			`capabilit${count === 1 ? "y" : "ies"}`,
+		],
+		capabilities_list: ["listed", `catalog page${plural}`],
 	}[name] ?? ["used", `${name}${plural}`]) as [string, string];
 }
 

@@ -2,8 +2,10 @@ import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
 import { loadSkills, type Skill } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+
 import type {
 	CapabilityContext,
 	TokenAccountant,
@@ -78,7 +80,7 @@ export async function scanSkills(
 		}
 		for (const directory of directories
 			.filter((entry) => entry.isDirectory())
-			.sort((a, b) => a.name.localeCompare(b.name))) {
+			.toSorted((a, b) => a.name.localeCompare(b.name))) {
 			const path = join(root, directory.name, "SKILL.md");
 			let buffer: Buffer;
 			try {
@@ -178,7 +180,7 @@ export async function availableSkills(
 	const byName = new Map<string, Skill>();
 	for (const skill of skills)
 		if (!byName.has(skill.name)) byName.set(skill.name, skill);
-	return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+	return [...byName.values()].toSorted((a, b) => a.name.localeCompare(b.name));
 }
 
 type StrictSkillManifest = {

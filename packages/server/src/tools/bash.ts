@@ -1,9 +1,10 @@
 import { Type } from "@earendil-works/pi-ai";
-import { WorkspaceTool } from "./tool";
+
+import { EvictionPriority, WorkspaceTool } from "./tool";
 
 export class BashTool extends WorkspaceTool {
 	readonly name = "bash";
-	override readonly evictionPriority = "late" as const;
+	override readonly evictionPriority = EvictionPriority.Late;
 	readonly description = "Run a shell command in the workspace.";
 	readonly schema = Type.Object({ command: Type.String({ minLength: 1 }) });
 
