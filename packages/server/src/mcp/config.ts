@@ -14,9 +14,6 @@ import { globalHarnezPath, projectHarnezPath } from "../settings-store";
 export const MCP_SCHEMA_ID =
 	"https://agent-plugins.org/schemas/1.0.0/mcp.schema.json";
 
-/** Transports harnez connects. `sse` parses but is reported unsupported (§7.2.1). */
-export type McpTransport = "stdio" | "streamable-http";
-
 /** Which file declared a server, so a menu can say where it came from. */
 export type McpScope = "global" | "project";
 
@@ -31,7 +28,7 @@ export type ResolvedStdioServer = {
 	pluginRoot: string;
 	pluginData: string;
 };
-export type ResolvedHttpServer = {
+type ResolvedHttpServer = {
 	name: string;
 	scope: McpScope;
 	transport: "streamable-http";
@@ -68,7 +65,7 @@ type ConfigSource = {
  * Global first, project second: later sources win, matching how `SettingsStore`
  * layers project settings over global ones.
  */
-export function mcpConfigSources(workspace: string): ConfigSource[] {
+function mcpConfigSources(workspace: string): ConfigSource[] {
 	const global = globalHarnezPath("mcp.json");
 	const paths = [global, projectHarnezPath("mcp.json", workspace)];
 	return [...new Set(paths)].map((path) => ({
@@ -79,7 +76,7 @@ export function mcpConfigSources(workspace: string): ConfigSource[] {
 }
 
 /** `PLUGIN_DATA` (§9.1): client-managed, per-server, outlives package contents. */
-export function defaultDataRoot(server: string): string {
+function defaultDataRoot(server: string): string {
 	return globalHarnezPath(join("mcp-data", server));
 }
 

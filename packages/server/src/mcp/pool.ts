@@ -263,7 +263,7 @@ export class McpConnectionPool {
  * `PLUGIN_DATA`, which is derived from the name, keeps genuinely separate
  * installations apart.
  */
-export function connectionKey(server: ResolvedServer): string {
+function connectionKey(server: ResolvedServer): string {
 	if (server.transport === "streamable-http")
 		return JSON.stringify([
 			"streamable-http",

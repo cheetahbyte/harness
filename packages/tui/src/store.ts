@@ -482,7 +482,7 @@ function capabilityName(id: string | undefined): string | undefined {
  * transcript, while the file touched or the query asked for is what a person
  * scans back through a session looking for.
  */
-export function toolSubject(name: string, input: unknown): string | undefined {
+function toolSubject(name: string, input: unknown): string | undefined {
 	const fields = (input ?? {}) as Record<string, unknown>;
 	const text = (key: string): string | undefined =>
 		typeof fields[key] === "string" && fields[key] ? fields[key] : undefined;

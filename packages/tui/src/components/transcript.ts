@@ -20,6 +20,8 @@ import {
 	ERROR,
 	TEXT,
 	USER_BACKGROUND,
+	USER_PROMPT,
+	USER_PROMPT_PENDING,
 	USER_TEXT,
 	WARNING,
 } from "./theme";
@@ -87,7 +89,6 @@ export class TranscriptView {
 					: formatEntry(entry, this.skillNames, this.promptNames),
 				fg: toolCall ? ACCENT : entryColor(entry),
 				flexGrow: 1,
-				...(entry.kind === "user" ? { marginTop: 1, marginBottom: 1 } : {}),
 			});
 			const row = new BoxRenderable(this.renderer, {
 				width: "100%",
@@ -104,9 +105,9 @@ export class TranscriptView {
 			const gutter =
 				entry.kind === "user"
 					? new TextRenderable(this.renderer, {
-							content: "▌\n▌\n▌",
+							content: "❯",
 							width: 1,
-							fg: entry.pending ? DIM : ACCENT,
+							fg: entry.pending ? USER_PROMPT_PENDING : USER_PROMPT,
 							marginRight: 1,
 						})
 					: undefined;
@@ -142,7 +143,7 @@ export class TranscriptView {
 			if (rendered.detail && toolCall)
 				rendered.detail.content = formatToolDetails(entry.tools);
 			if (rendered.gutter && entry.kind === "user")
-				rendered.gutter.fg = entry.pending ? DIM : ACCENT;
+				rendered.gutter.fg = entry.pending ? USER_PROMPT_PENDING : USER_PROMPT;
 		});
 	}
 }

@@ -9,6 +9,8 @@ import {
 	DIM,
 	TEXT,
 	USER_BACKGROUND,
+	USER_PROMPT,
+	USER_PROMPT_PENDING,
 	USER_TEXT,
 	thinkingColor,
 } from "../src/components/theme";
@@ -353,6 +355,16 @@ describe("OpenTUI app", () => {
 		try {
 			await view.flush();
 			expect(view.captureCharFrame()).toContain("medium");
+			/** A live setting, so it reads at full strength beside the dim provider. */
+			const footer = view.captureSpans().lines.flatMap((line) => line.spans);
+			expect(
+				footer.find((span) => span.text.includes("medium"))?.fg.equals(TEXT),
+			).toBe(true);
+			expect(
+				footer
+					.find((span) => span.text.includes("openai-codex"))
+					?.fg.equals(DIM),
+			).toBe(true);
 			const composer = (
 				app as unknown as {
 					composer: { inputRow: { borderColor: RGBA } };
@@ -869,7 +881,7 @@ describe("OpenTUI app", () => {
 		}
 	});
 
-	test("uses the accent for processed messages and their skills", async () => {
+	test("marks processed messages with a prompt chevron and accents their skills", async () => {
 		const store = createTuiStore("session-1");
 		const view = await createTestRenderer({
 			width: 72,
@@ -885,9 +897,9 @@ describe("OpenTUI app", () => {
 			store.getState().addUser("Use /codebase-design");
 			await view.flush();
 			const spans = view.captureSpans().lines.flatMap((line) => line.spans);
-			const gutter = spans.filter((span) => span.text === "▌");
-			expect(gutter).toHaveLength(3);
-			expect(gutter.every((span) => span.fg.equals(ACCENT))).toBe(true);
+			const gutter = spans.filter((span) => span.text === "❯");
+			expect(gutter).toHaveLength(1);
+			expect(gutter.every((span) => span.fg.equals(USER_PROMPT))).toBe(true);
 			expect(
 				spans.find((span) => span.text === "/codebase-design")?.fg.equals(ACCENT),
 			).toBe(true);
@@ -899,10 +911,17 @@ describe("OpenTUI app", () => {
 				.lines.findIndex((line) =>
 					line.spans.some((span) => span.text.includes("Use")),
 				);
-			for (const line of view.captureSpans().lines.slice(messageLine - 1, messageLine + 2))
-				expect(line.spans.some((span) => span.bg.equals(USER_BACKGROUND))).toBe(
-					true,
-				);
+			/** The tint hugs the message rather than padding a row above or below it. */
+			const lines = view.captureSpans().lines;
+			expect(
+				lines[messageLine]?.spans.some((span) =>
+					span.bg.equals(USER_BACKGROUND),
+				),
+			).toBe(true);
+			for (const line of [lines[messageLine - 1], lines[messageLine + 1]])
+				expect(
+					line?.spans.some((span) => span.bg.equals(USER_BACKGROUND)) ?? false,
+				).toBe(false);
 		} finally {
 			app.destroy();
 			view.renderer.destroy();
@@ -1387,8 +1406,8 @@ describe("OpenTUI app", () => {
 			await view.flush();
 			let spans = view.captureSpans().lines.flatMap((line) => line.spans);
 			expect(
-				spans.find((span) => span.text === "▌")?.fg.equals(
-					DIM,
+				spans.find((span) => span.text === "❯")?.fg.equals(
+					USER_PROMPT_PENDING,
 				),
 			).toBe(true);
 			expect(
@@ -1406,8 +1425,8 @@ describe("OpenTUI app", () => {
 			await view.flush();
 			spans = view.captureSpans().lines.flatMap((line) => line.spans);
 			expect(
-				spans.find((span) => span.text === "▌")?.fg.equals(
-					ACCENT,
+				spans.find((span) => span.text === "❯")?.fg.equals(
+					USER_PROMPT,
 				),
 			).toBe(true);
 		} finally {

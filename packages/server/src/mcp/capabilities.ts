@@ -4,7 +4,7 @@ import type { ToolCapabilityInput } from "../capabilities/types";
 import type { McpToolDescriptor } from "./registry";
 
 /** Provider ids are namespaced per server so one server can be disabled alone. */
-export const MCP_PROVIDER_PREFIX = "mcp:";
+const MCP_PROVIDER_PREFIX = "mcp:";
 
 export function isMcpProvider(providerId: string): boolean {
 	return providerId.startsWith(MCP_PROVIDER_PREFIX);
