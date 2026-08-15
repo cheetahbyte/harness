@@ -89,7 +89,7 @@ function CopyCommand(props: { command: string }) {
 			onClick={onCopy}
 			class="flex w-full max-w-xl items-center justify-between rounded-lg border border-border bg-bg-raised px-5 py-4 text-left transition-colors hover:border-border-strong"
 		>
-			<span class="text-[14px]">
+			<span class="font-mono text-[14px]">
 				<span class="text-fg-faint">$ </span>
 				<span class="font-bold text-fg">{props.command}</span>
 			</span>
