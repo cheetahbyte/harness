@@ -651,6 +651,14 @@ model's tool list: an MCP tool is a catalog entry until `tools_load` admits it,
 so the permanent request surface does not grow with the number of connected
 servers. Idle servers may be stopped later to reduce resource use.
 
+An operator can switch a server off from `/mcp`, which disconnects it and stops
+its stdio child; switching it back on reconnects immediately, so the menu can
+report the outcome instead of deferring it to the next prompt. The exclusions
+are stored in `settings.json` as `disabledMcpServers` and consulted on every
+connection round. Because connections are process-wide rather than per session,
+they are read from the workspace the process started in. A running task keeps
+the catalog it was built with.
+
 `sse` is parsed and reported as an unsupported transport, which the
 specification permits. Credentials belong in the ambient environment that stdio
 servers inherit, never in `env` or `headers`, which are visible configuration.

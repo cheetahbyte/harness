@@ -143,6 +143,31 @@ annotations becomes a read-only capability. Anything else counts as mutating.
 Harnez connects to servers when it starts rather than on first use, because a
 task's catalog is built from the tool metadata each server reports.
 
+## Switching servers on and off
+
+`/mcp` lists every configured server with its transport, how many tools it
+reported, and roughly what carrying that metadata costs:
+
+```text
+MCP Servers · 1/2 connected · ~702 tokens
+
+  [x] duckduckgo · stdio · 2 tools · ~702 tokens
+  [ ] spokenly · streamable-http · off
+```
+
+`Space` switches a server on or off, `Enter` saves, and `Esc` closes the menu.
+Typing filters the list. Saving takes effect immediately: a server switched off
+is disconnected and its stdio child is stopped, and one switched on connects
+before the menu redraws with the result — including the reason if it failed. A
+server that is off contributes no tools and no tokens to the catalog.
+
+The choice is stored in `settings.json` as `disabledMcpServers`, so it survives
+a restart. Because the list records exclusions, a server added to `mcp.json`
+later starts out connected.
+
+A task already running keeps the tools it started with; the change applies to
+the next task, which builds a fresh catalog.
+
 ## When something fails
 
 A problem with one server never affects the others, and none of these stop a

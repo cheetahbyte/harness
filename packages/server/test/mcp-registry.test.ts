@@ -39,7 +39,11 @@ function pluginRoot(server: string = FIXTURE): string {
 	return root;
 }
 
-function registry(root: string, servers: Record<string, unknown>): McpRegistry {
+function registry(
+	root: string,
+	servers: Record<string, unknown>,
+	enabled?: (server: string) => boolean,
+): McpRegistry {
 	writeFileSync(
 		join(root, "mcp.json"),
 		JSON.stringify({ $schema: MCP_SCHEMA_ID, mcpServers: servers }),
@@ -49,7 +53,9 @@ function registry(root: string, servers: Record<string, unknown>): McpRegistry {
 			sources: [{ path: join(root, "mcp.json"), root }],
 			dataRoot: (name) => join(root, "state", name),
 		});
-	const created = new McpRegistry(root, load);
+	const created = enabled
+		? new McpRegistry(root, load, enabled)
+		: new McpRegistry(root, load);
 	registries.push(created);
 	return created;
 }
@@ -163,4 +169,64 @@ test("marks read-only tools so they do not count as mutating effects", async () 
 	);
 	expect(effects["mcp__echo__launch_report"]).toBe("read_only");
 	expect(effects["mcp__echo__shout"]).toBe("mutating");
+}, 30_000);
+
+test("skips a server that is switched off and connects it again on demand", async () => {
+	const root = pluginRoot();
+	const off = new Set(["echo"]);
+	const mcp = registry(
+		root,
+		{ echo: { type: "stdio", command: "./bin/server" } },
+		(server) => !off.has(server),
+	);
+
+	// A disabled server is still listed, or the menu would have no way back.
+	expect(await mcp.list()).toEqual([
+		{
+			name: "echo",
+			transport: "stdio",
+			enabled: false,
+			connected: false,
+			tools: 0,
+			tokens: 0,
+		},
+	]);
+	expect((await mcp.snapshot()).tools).toEqual([]);
+
+	off.delete("echo");
+	await mcp.setEnabled((server) => !off.has(server));
+	const [status] = await mcp.list();
+	expect(status?.enabled).toBe(true);
+	expect(status?.connected).toBe(true);
+	expect(status?.tools).toBe(3);
+	expect(status?.tokens).toBeGreaterThan(0);
+	expect((await mcp.snapshot()).tools).toHaveLength(3);
+
+	// Switching it back off stops the child and withdraws its tools.
+	await mcp.setEnabled(() => false);
+	expect((await mcp.snapshot()).tools).toEqual([]);
+	await expect(
+		mcp.call("echo", "shout", { text: "hi" }, AbortSignal.timeout(5_000)),
+	).rejects.toThrow("MCP server not connected: echo");
+}, 30_000);
+
+test("reports a failed server in the listing and clears it on a retry", async () => {
+	const root = pluginRoot();
+	const enabled = new Set<string>(["broken"]);
+	const mcp = registry(
+		root,
+		{ broken: { type: "stdio", command: "./bin/missing" } },
+		(server) => enabled.has(server),
+	);
+
+	const [failed] = await mcp.list();
+	expect(failed?.connected).toBe(false);
+	expect(failed?.error).toContain("failed to connect");
+
+	// Switching a broken server off retires the failure with it.
+	enabled.delete("broken");
+	await mcp.setEnabled((server) => enabled.has(server));
+	const [disabled] = await mcp.list();
+	expect(disabled?.error).toBeUndefined();
+	expect((await mcp.snapshot()).diagnostics).toEqual([]);
 }, 30_000);

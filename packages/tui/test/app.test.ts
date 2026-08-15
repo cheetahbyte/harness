@@ -1352,4 +1352,92 @@ describe("OpenTUI app", () => {
 			view.renderer.destroy();
 		}
 	});
+
+	test("switches MCP servers off and on from the /mcp menu", async () => {
+		const store = createTuiStore("session-1");
+		const sent: unknown[] = [];
+		const view = await createTestRenderer({
+			width: 80,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(view.renderer, store, async (command) => {
+			sent.push(command);
+		});
+		try {
+			await view.renderOnce();
+			await view.mockInput.typeText("/mcp ");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent.at(-1)).toEqual({ type: "list-mcp-servers" });
+			store.getState().apply({
+				type: "mcp-servers",
+				servers: [
+					{
+						name: "duckduckgo",
+						transport: "stdio",
+						enabled: true,
+						connected: true,
+						tools: 2,
+						tokens: 702,
+					},
+					{
+						name: "spokenly",
+						transport: "streamable-http",
+						enabled: true,
+						connected: false,
+						tools: 0,
+						tokens: 0,
+						error: "failed to connect: refused",
+					},
+				],
+			});
+			await view.flush();
+			const frame = view.captureCharFrame();
+			expect(frame).toContain("[x] duckduckgo · stdio · 2 tools · ~702 tokens");
+			// A server that would not start says so rather than vanishing.
+			expect(frame).toContain(
+				"[x] spokenly · streamable-http · failed to connect: refused",
+			);
+			expect(frame).toContain("1/2 connected · ~702 tokens");
+
+			view.mockInput.pressArrow("down");
+			view.mockInput.pressKey(" ");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(sent.at(-1)).toEqual({
+				type: "set-mcp-enabled",
+				servers: ["duckduckgo"],
+			});
+			// The refreshed listing redraws the menu with the outcome of the toggle.
+			store.getState().apply({
+				type: "mcp-servers",
+				servers: [
+					{
+						name: "duckduckgo",
+						transport: "stdio",
+						enabled: true,
+						connected: true,
+						tools: 2,
+						tokens: 702,
+					},
+					{
+						name: "spokenly",
+						transport: "streamable-http",
+						enabled: false,
+						connected: false,
+						tools: 0,
+						tokens: 0,
+					},
+				],
+			});
+			await view.flush();
+			expect(view.captureCharFrame()).toContain(
+				"[ ] spokenly · streamable-http · off",
+			);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
 });

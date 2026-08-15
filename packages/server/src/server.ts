@@ -23,6 +23,7 @@ import { HarnezAgentRuntime } from "./agent/runtime";
 import { ContextManager } from "./context/manager";
 import type { SubagentResult } from "./context/types";
 import { log } from "./logger";
+import { loadMcpConfig } from "./mcp/config";
 import { McpRegistry } from "./mcp/registry";
 import { scanPrompts } from "./prompts";
 import {
@@ -97,7 +98,15 @@ export class HarnezServer {
 			(id, event) => this.publish(id, event, false),
 		);
 		this.context = new ContextManager(this.store);
-		this.mcp = new McpRegistry(this.defaultWorkspace);
+		/**
+		 * Connections are process-wide, so which servers are switched off is read
+		 * from the default workspace's settings rather than per session.
+		 */
+		this.mcp = new McpRegistry(
+			this.defaultWorkspace,
+			loadMcpConfig,
+			(server) => !this.defaultSettings.disabledMcpServers().includes(server),
+		);
 		// Connecting starts now so the first prompt does not pay for the handshake.
 		this.mcp.start();
 		this.runtime = new HarnezAgentRuntime({
@@ -231,6 +240,12 @@ export class HarnezServer {
 				return;
 			case "list-prompts":
 				await this.listPrompts(id);
+				return;
+			case "list-mcp-servers":
+				await this.listMcpServers(id);
+				return;
+			case "set-mcp-enabled":
+				await this.setMcpEnabled(id, command.servers);
 				return;
 			case "set-session-title": {
 				const title =
@@ -706,6 +721,31 @@ export class HarnezServer {
 		this.publish(id, { type: "prompts", prompts }, false);
 	}
 
+	private async listMcpServers(id: string): Promise<void> {
+		this.publish(
+			id,
+			{ type: "mcp-servers", servers: await this.mcp.list() },
+			false,
+		);
+	}
+
+	/**
+	 * The menu sends back the servers that stay on, so a server added to
+	 * `mcp.json` while the menu was open is never switched off by an answer that
+	 * predates it: only servers the operator actually saw can be excluded.
+	 */
+	private async setMcpEnabled(id: string, servers: string[]): Promise<void> {
+		const enabled = new Set(servers);
+		const listed = await this.mcp.list();
+		const disabled = listed
+			.map((server) => server.name)
+			.filter((name) => !enabled.has(name));
+		this.defaultSettings.setDisabledMcpServers(disabled);
+		const off = new Set(disabled);
+		await this.mcp.setEnabled((server) => !off.has(server));
+		await this.listMcpServers(id);
+	}
+
 	private run(
 		id: string,
 		command: string | QueuedTask | PendingSteer,
@@ -794,6 +834,8 @@ function isImmediateCommand(type: ClientCommand["type"]): boolean {
 		type === "list-models" ||
 		type === "list-skills" ||
 		type === "list-prompts" ||
+		type === "list-mcp-servers" ||
+		type === "set-mcp-enabled" ||
 		type === "set-session-title" ||
 		type === "set-fast-cycle" ||
 		type === "set-disable-thinking-blocks" ||

@@ -5,6 +5,7 @@ import type {
 	AuthPromptEvent,
 	ClientCommand,
 	FastCycleEntry,
+	McpServerOption,
 	ModelConfig,
 	ModelOption,
 	PromptOption,
@@ -59,6 +60,7 @@ export type WizardState =
 	| { kind: "idle" }
 	| { kind: "providers"; providers: ProviderOption[] }
 	| { kind: "models"; models: ModelOption[] }
+	| { kind: "mcp-servers"; servers: McpServerOption[] }
 	| { kind: "prompt"; prompt: AuthPromptEvent }
 	| { kind: "notice"; notification: AuthNotifyEvent }
 	| { kind: "completed"; provider: string }
@@ -188,6 +190,10 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 					});
 				if (event.type === "models")
 					return set({ wizard: { kind: "models", models: event.models } });
+				if (event.type === "mcp-servers")
+					return set({
+						wizard: { kind: "mcp-servers", servers: event.servers },
+					});
 				if (event.type === "auth-prompt")
 					return set({ wizard: { kind: "prompt", prompt: event.prompt } });
 				if (event.type === "auth-notify")

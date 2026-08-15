@@ -8,6 +8,7 @@ import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/typ
 
 import { VERSION } from "../../../shared/src/version";
 import { log } from "../logger";
+import { tokenCost } from "../token-cost";
 import {
 	loadMcpConfig,
 	type McpConfigScan,
@@ -37,6 +38,17 @@ export type McpSnapshot = {
 	diagnostics: McpDiagnostic[];
 };
 
+/** What the MCP menu needs to draw one row and toggle it. */
+export type McpServerStatus = {
+	name: string;
+	transport: ResolvedServer["transport"];
+	enabled: boolean;
+	connected: boolean;
+	tools: number;
+	tokens: number;
+	error?: string;
+};
+
 type Connection = {
 	server: ResolvedServer;
 	client: Client;
@@ -54,13 +66,19 @@ type Connection = {
  */
 export class McpRegistry {
 	private readonly connections = new Map<string, Connection>();
-	private diagnostics: McpDiagnostic[] = [];
+	/** Every server the configuration resolved, connected or not. */
+	private servers: ResolvedServer[] = [];
+	private configDiagnostics: McpDiagnostic[] = [];
+	/** Runtime failures, keyed by server so a later retry can clear them. */
+	private readonly failures = new Map<string, string>();
 	private ready: Promise<void> | undefined;
 	private closed = false;
 
 	constructor(
 		private readonly workspace: string,
 		private readonly load: (workspace: string) => McpConfigScan = loadMcpConfig,
+		/** Consulted on every connection round, so toggling takes effect live. */
+		private enabled: (server: string) => boolean = () => true,
 	) {}
 
 	/** Starts connecting in the background; safe to call more than once. */
@@ -80,8 +98,56 @@ export class McpRegistry {
 			tools: [...this.connections.values()].flatMap(
 				(connection) => connection.tools,
 			),
-			diagnostics: [...this.diagnostics],
+			diagnostics: this.allDiagnostics(),
 		};
+	}
+
+	/**
+	 * One row per configured server, including the ones switched off and the ones
+	 * that failed: a menu that hid either would leave the operator no way back.
+	 */
+	async list(): Promise<McpServerStatus[]> {
+		this.start();
+		await this.ready;
+		return this.servers.map((server) => {
+			const connection = this.connections.get(server.name);
+			const error = this.failures.get(server.name);
+			return {
+				name: server.name,
+				transport: server.transport,
+				enabled: this.enabled(server.name),
+				connected: !!connection,
+				tools: connection?.tools.length ?? 0,
+				tokens: connection ? tokens(connection.tools) : 0,
+				...(error ? { error } : {}),
+			};
+		});
+	}
+
+	/**
+	 * Applies a new enabled predicate: servers switched off are disconnected (a
+	 * stdio child is stopped), and servers switched on connect now rather than at
+	 * the next prompt, so the menu can report the outcome straight away.
+	 */
+	async setEnabled(enabled: (server: string) => boolean): Promise<void> {
+		this.start();
+		await this.ready;
+		this.enabled = enabled;
+		if (this.closed) return;
+		const work: Promise<void>[] = [];
+		for (const server of this.servers) {
+			const connection = this.connections.get(server.name);
+			if (enabled(server.name)) {
+				if (!connection) work.push(this.connect(server));
+				continue;
+			}
+			this.failures.delete(server.name);
+			if (!connection) continue;
+			this.connections.delete(server.name);
+			work.push(connection.client.close().catch(() => undefined));
+			log.info({ server: server.name }, "mcp server disabled");
+		}
+		await Promise.allSettled(work);
 	}
 
 	async call(
@@ -117,7 +183,8 @@ export class McpRegistry {
 
 	private async connectAll(): Promise<void> {
 		const scan = this.load(this.workspace);
-		this.diagnostics = [...scan.diagnostics];
+		this.servers = [...scan.servers];
+		this.configDiagnostics = [...scan.diagnostics];
 		for (const diagnostic of scan.diagnostics)
 			log.warn(
 				{
@@ -128,11 +195,17 @@ export class McpRegistry {
 				},
 				"mcp configuration ignored",
 			);
-		await Promise.all(scan.servers.map((server) => this.connect(server)));
+		await Promise.all(
+			scan.servers
+				.filter((server) => this.enabled(server.name))
+				.map((server) => this.connect(server)),
+		);
 	}
 
 	private async connect(server: ResolvedServer): Promise<void> {
 		if (this.closed) return;
+		// A retry starts from a clean slate; a stale failure would outlive its cause.
+		this.failures.delete(server.name);
 		const client = new Client({ name: "harnez", version: VERSION });
 		try {
 			/**
@@ -217,14 +290,38 @@ export class McpRegistry {
 	}
 
 	private report(server: string, error: string): void {
-		this.diagnostics.push({
-			path: `mcp:${server}`,
-			server,
-			state: "invalid",
-			error,
-		});
+		this.failures.set(server, error);
 		log.warn({ server, error }, "mcp server unavailable");
 	}
+
+	private allDiagnostics(): McpDiagnostic[] {
+		return [
+			...this.configDiagnostics,
+			...[...this.failures].map(([server, error]) => ({
+				path: `mcp:${server}`,
+				server,
+				state: "invalid" as const,
+				error,
+			})),
+		];
+	}
+}
+
+/**
+ * What the server's tool metadata costs the catalog, on the same crude
+ * characters-per-token basis the rest of harnez estimates with.
+ */
+function tokens(tools: readonly McpToolDescriptor[]): number {
+	return tools.reduce(
+		(total, tool) =>
+			total +
+			tokenCost({
+				name: tool.name,
+				description: tool.description,
+				inputSchema: tool.inputSchema,
+			}),
+		0,
+	);
 }
 
 /**

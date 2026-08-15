@@ -23,6 +23,7 @@ type Settings = {
 	model?: ModelConfig;
 	fastCycle?: FastCycleEntry[];
 	disableThinkingBlocks?: boolean;
+	disabledMcpServers?: string[];
 	session?: { title?: { generated?: boolean; source?: string } };
 	providers?: ProviderSettings;
 };
@@ -82,6 +83,20 @@ export class SettingsStore {
 
 	setFastCycle(entries: FastCycleEntry[]): void {
 		this.save("fastCycle", entries);
+	}
+
+	/**
+	 * Servers switched off in the MCP menu. The list is of exclusions rather than
+	 * inclusions so a server added to `mcp.json` later starts out connected.
+	 */
+	disabledMcpServers(): string[] {
+		return (
+			this.project.disabledMcpServers ?? this.global.disabledMcpServers ?? []
+		);
+	}
+
+	setDisabledMcpServers(servers: string[]): void {
+		this.save("disabledMcpServers", [...new Set(servers)].toSorted());
 	}
 
 	disableThinkingBlocks(): boolean {
