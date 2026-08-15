@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { CapabilityCatalog } from "../src/capabilities/catalog";
 import {
 	CapabilityContext,
+	describeRejection,
 	type TokenAccountant,
 } from "../src/capabilities/context";
 import { canonicalJson, structuredHash } from "../src/capabilities/hash";
@@ -199,6 +200,56 @@ describe("CapabilityContext", () => {
 		const candidate = context.items()[0];
 		if (!candidate) throw new Error("missing eviction candidate");
 		expect(rejected.evictionCandidates).toEqual([candidate.id]);
+	});
+
+	test("describes a rejection without leaking eviction bookkeeping", () => {
+		const snapshot = catalog().snapshot({ tool: execute, skill: activate });
+		const ref = snapshot.list().items[0]?.ref;
+		if (!ref) throw new Error("missing ref");
+		const context = new CapabilityContext(
+			{},
+			(_base, items) => items,
+			1_000,
+			10,
+		);
+		const rejected = context.admit({
+			capability: ref,
+			scope: "task",
+			contentHash: "one",
+			content: "x".repeat(4_000),
+			accountant,
+		});
+		if (rejected.status !== "rejected") throw new Error("expected rejection");
+		const message = describeRejection(rejected, "The humanizer skill");
+		expect(message).toStartWith(
+			"The humanizer skill does not fit the capability budget",
+		);
+		expect(message).toContain("1000-token ceiling");
+		expect(message).not.toContain(ref.id);
+		expect(message).not.toContain("evictionCandidates");
+	});
+
+	test("drops step content while retaining task content", () => {
+		const snapshot = catalog().snapshot({ tool: execute, skill: activate });
+		const refs = snapshot.list().items.map((item) => item.ref);
+		const context = new CapabilityContext({}, (_base, items) => items, 1_000, 10);
+		for (const [index, scope] of (["task", "step"] as const).entries()) {
+			const capability = refs[index];
+			if (!capability) throw new Error("missing ref");
+			expect(
+				context.admit({
+					capability,
+					scope,
+					contentHash: scope,
+					content: scope,
+					accountant,
+				}).status,
+			).toBe("admitted");
+		}
+
+		context.completeStep();
+
+		expect(context.items().map((item) => item.scope)).toEqual(["task"]);
 	});
 
 	test("destroys task-owned content and refuses later admission", () => {

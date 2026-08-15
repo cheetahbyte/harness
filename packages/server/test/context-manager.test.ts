@@ -8,6 +8,7 @@ import {
 	PRESSURE_NOTE,
 	PRESSURE_NOTE_REASON,
 	PRESSURE_NOTE_TOKENS,
+	ROLLING_SUMMARY_REASON,
 } from "../src/context/manager";
 import { MAX_OBSERVATION_RECALL_LIMIT } from "../src/context/recall";
 import { SessionStore } from "../src/sessions/store";
@@ -639,7 +640,46 @@ describe("ContextManager", () => {
 		store.db.close();
 	});
 
-	test("rejects an unsatisfiable pinned-only budget", () => {
+	test("compacts pinned-only overflow down to the hard budget", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "cannot remove" },
+			tokenCost: 11,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+
+		const assembly = manager.assemble(sessionId, {
+			budget: 10,
+			target: 8,
+			overheadTokens: 0,
+		});
+
+		expect(assembly.estimatedTokens).toBeLessThanOrEqual(10);
+		expect(assembly.payloads).toEqual([
+			expect.objectContaining({
+				role: "user",
+				content: expect.stringContaining("cannot remove"),
+			}),
+		]);
+		const items = store.contextItems(sessionId);
+		expect(items[0]).toMatchObject({
+			lifecycle: "archived",
+			projection: "omitted",
+		});
+		expect(items[1]).toMatchObject({
+			kind: "user",
+			lifecycle: "pinned",
+			reason: ROLLING_SUMMARY_REASON,
+		});
+		store.db.close();
+	});
+
+	test("still rejects budgets that cannot seat even the smallest summary", () => {
 		const store = new SessionStore(storePath());
 		const sessionId = store.create();
 		const manager = new ContextManager(store);
@@ -656,9 +696,245 @@ describe("ContextManager", () => {
 			manager.assemble(sessionId, {
 				budget: 10,
 				target: 8,
-				overheadTokens: 0,
+				overheadTokens: 11,
 			}),
 		).toThrow(ContextBudgetError);
+		expect(store.contextItems(sessionId)[0]?.lifecycle).toBe("pinned");
+		store.db.close();
+	});
+
+	test("terminalizes completed task prose as retained and reclaimable", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		const objective = manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "objective" },
+			tokenCost: 5,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+		const terminal = manager.record({
+			sessionId,
+			kind: "assistant",
+			payload: {
+				role: "assistant",
+				content: [{ type: "text", text: "done the work" }],
+			},
+			tokenCost: 40,
+			groupId: "exchange-1",
+			lifecycle: "active",
+			reason: "work",
+		});
+		const tool = manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "large output" },
+			compactPayload: { role: "user", content: "observation://old" },
+			tokenCost: 60,
+			compactTokenCost: 5,
+			groupId: "exchange-1",
+			lifecycle: "active",
+			reason: "tool result",
+			source: { toolCallId: "call-1", toolName: "read" },
+		});
+
+		/** The original terminal message is reused rather than cloned. */
+		expect(manager.terminalizeTask(sessionId, objective.sequence)).toEqual([
+			terminal.id,
+		]);
+		expect(
+			store
+				.contextItems(sessionId)
+				.some(
+					(item) =>
+						item.reason === "predecessor terminal user-visible message",
+				),
+		).toBe(false);
+		expect(store.contextItem(terminal.id)?.lifecycle).toBe("retained");
+		expect(store.contextItem(tool.id)?.lifecycle).toBe("archived");
+
+		/** Retained prose is reclaimable by ordinary budget eviction. */
+		const assembly = manager.assemble(sessionId, {
+			budget: 20,
+			target: 10,
+			overheadTokens: 0,
+		});
+		expect(assembly.evictedIds).toEqual([terminal.id]);
+		expect(store.contextItem(terminal.id)?.projection).toBe("omitted");
+		expect(store.contextItem(tool.id)?.projection).toBe("omitted");
+
+		/** Tool-call blocks still get stripped into a clean clone. */
+		const toolCall = manager.record({
+			sessionId,
+			kind: "assistant",
+			payload: {
+				role: "assistant",
+				content: [
+					{ type: "text", text: "calling read" },
+					{ type: "toolCall", id: "call-9" },
+				],
+			},
+			tokenCost: 10,
+			lifecycle: "active",
+			reason: "work",
+		});
+		const ids = manager.terminalizeTask(sessionId, toolCall.sequence - 1);
+		expect(ids).toHaveLength(1);
+		expect(ids[0]).not.toBe(toolCall.id);
+		expect(store.contextItem(ids[0]!)?.payload).toEqual({
+			role: "assistant",
+			content: [{ type: "text", text: "calling read" }],
+		});
+		expect(store.contextItem(toolCall.id)?.lifecycle).toBe("archived");
+		store.db.close();
+	});
+
+	test("rolls old pre-submission user messages into a replacing summary", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		const users = [
+			"first request",
+			"second request",
+			"third request",
+			"fourth request",
+			"fifth request",
+		].map((content) =>
+			manager.record({
+				sessionId,
+				kind: "user",
+				payload: { role: "user", content },
+				tokenCost: 10,
+				lifecycle: "pinned",
+				reason: "user input",
+			}),
+		);
+		const user = (index: number) => users[index]!;
+
+		const first = manager.assembleTask(sessionId, {
+			budget: 500,
+			target: 400,
+			overheadTokens: 0,
+			submissionWatermark: user(4).sequence,
+			taskStartSequence: user(4).sequence,
+			predecessorTerminalIds: [],
+		});
+
+		expect(first.evictedIds).toEqual([user(0).id, user(1).id]);
+		expect(first.payloads).toContainEqual(
+			expect.objectContaining({
+				content: expect.stringContaining("first request"),
+			}),
+		);
+		/** The most recent pre-submission messages stay verbatim. */
+		expect(first.payloads).toContainEqual({
+			role: "user",
+			content: "third request",
+		});
+		expect(first.payloads).toContainEqual({
+			role: "user",
+			content: "fourth request",
+		});
+		expect(store.contextItem(user(0).id)?.lifecycle).toBe("archived");
+		expect(store.contextItem(user(1).id)?.lifecycle).toBe("archived");
+
+		/** A later task replaces the summary instead of stacking a new one. */
+		const sixth = manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "sixth request" },
+			tokenCost: 10,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+		const second = manager.assembleTask(sessionId, {
+			budget: 500,
+			target: 400,
+			overheadTokens: 0,
+			submissionWatermark: sixth.sequence,
+			taskStartSequence: sixth.sequence,
+			predecessorTerminalIds: [],
+		});
+
+		expect(second.evictedIds).toEqual([user(2).id]);
+		const summaries = store
+			.contextItems(sessionId)
+			.filter((item) => item.reason === ROLLING_SUMMARY_REASON);
+		expect(
+			summaries.filter((item) => item.lifecycle !== "archived"),
+		).toHaveLength(1);
+		expect(
+			store
+				.contextItems(sessionId)
+				.some(
+					(item) => item.reason === "replaced by rolling summary",
+				),
+		).toBe(true);
+		const live = summaries.find((item) => item.lifecycle !== "archived");
+		expect(live?.payload).toEqual(
+			expect.objectContaining({
+				content: expect.stringContaining("first request"),
+			}),
+		);
+		expect(live?.payload).toEqual(
+			expect.objectContaining({
+				content: expect.stringContaining("third request"),
+			}),
+		);
+		expect(store.contextItem(user(3).id)?.lifecycle).toBe("pinned");
+		expect(store.contextItem(user(2).id)?.lifecycle).toBe("archived");
+		store.db.close();
+	});
+
+	test("compacts pinned history oldest-first while preserving system content", () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "system",
+			payload: { role: "system", content: "instructions" },
+			tokenCost: 5,
+			lifecycle: "pinned",
+			reason: "system prompt",
+		});
+		const old = manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "old request" },
+			tokenCost: 50,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+		const recent = manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "newest request" },
+			tokenCost: 50,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+
+		const assembly = manager.assemble(sessionId, {
+			budget: 60,
+			target: 50,
+			overheadTokens: 0,
+		});
+
+		expect(assembly.estimatedTokens).toBeLessThanOrEqual(60);
+		expect(assembly.evictedIds).toEqual([old.id, recent.id]);
+		/** System content is never folded into a summary. */
+		expect(store.contextItems(sessionId)[0]).toMatchObject({
+			kind: "system",
+			lifecycle: "pinned",
+		});
+		expect(assembly.payloads).toContainEqual(
+			expect.objectContaining({
+				content: expect.stringContaining("newest request"),
+			}),
+		);
 		store.db.close();
 	});
 
@@ -862,7 +1138,7 @@ describe("ContextManager", () => {
 			manager.pin(sessionId, "decision", "another", {
 				budget: 2,
 				target: 2,
-				overheadTokens: 0,
+				overheadTokens: 3,
 			}),
 		).toThrow(ContextBudgetError);
 		expect(store.contextItems(sessionId)).toEqual(before);
@@ -876,7 +1152,7 @@ describe("ContextManager", () => {
 					lifecycle: "pinned",
 					reason: "user input",
 				},
-				{ budget: 2, target: 2, overheadTokens: 0 },
+				{ budget: 2, target: 2, overheadTokens: 3 },
 			),
 		).toThrow(ContextBudgetError);
 		expect(store.contextItems(sessionId)).toEqual(before);

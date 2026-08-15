@@ -116,7 +116,6 @@ export class HarnezServer {
 			store: this.store,
 			context: this.context,
 			mcpFor: (sessionId) => this.mcpFor(sessionId),
-			capabilityBudget: 8_000,
 			workspace: (sessionId) => this.workspace(sessionId),
 			modelConfig: (sessionId) => this.modelConfig(sessionId),
 			emit: (sessionId, event) => this.publish(sessionId, event),

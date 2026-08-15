@@ -37,6 +37,25 @@ export type AdmissionResult =
 			evictionCandidates: string[];
 			accounting: TokenAccounting;
 	  };
+export type AdmissionRejection = Extract<
+	AdmissionResult,
+	{ status: "rejected" }
+>;
+
+/**
+ * A rejection used to reach the user as `JSON.stringify(admission)`: a wall of
+ * item uuids fronting the two numbers that actually explain the outcome. The
+ * uuids are eviction bookkeeping and belong in the log, so the message keeps
+ * the size, the ceiling, and the gap between them.
+ */
+export function describeRejection(
+	rejection: AdmissionRejection,
+	subject: string,
+): string {
+	const ceiling = rejection.accounting.admittedInputCeiling;
+	return `${subject} does not fit the capability budget: it needs ~${rejection.estimatedRequiredTokens} tokens (${rejection.accounting.estimatedInputTokens} estimated plus a ${rejection.safetyMarginTokens} safety margin) against a ${ceiling}-token ceiling, ${rejection.estimatedRequiredTokens - ceiling} over.`;
+}
+
 export type ContextAdmission = {
 	capability: CapabilityRef;
 	scope: CapabilityContextItem["scope"];
@@ -66,6 +85,10 @@ export class CapabilityContext {
 
 	items(): CapabilityContextItem[] {
 		return this.active.map((item) => structuredClone(item));
+	}
+
+	completeStep(): void {
+		this.active = this.active.filter((item) => item.scope === "task");
 	}
 
 	admit(input: ContextAdmission): AdmissionResult {

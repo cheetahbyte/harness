@@ -4,6 +4,7 @@ import {
 	type SelectOption,
 } from "@opentui/core";
 
+import { restartServer } from "../../cli/src/server-command";
 import { abortableSleep } from "../../shared/src/abortable-sleep";
 import { TuiApp } from "./app";
 import { HarnezClient, type SessionSummary } from "./client";
@@ -64,6 +65,9 @@ export async function runTui(
 			} finally {
 				clearInProgress = undefined;
 			}
+		},
+		async () => {
+			await restartServer();
 		},
 	);
 	/** Reconnect a specific session; old streams can never write into a new one. */

@@ -54,6 +54,7 @@ export class TuiApp {
 		store: StoreApi<TuiState>,
 		private readonly send: (command: ClientCommand) => Promise<void>,
 		private readonly clearSession: () => Promise<void> = async () => {},
+		private readonly reloadServer: () => Promise<void> = async () => {},
 	) {
 		this.store = store;
 		this.root = new BoxRenderable(renderer, {
@@ -73,6 +74,15 @@ export class TuiApp {
 				run: (args) => {
 					if (args.trim()) throw new Error("/clear does not accept arguments");
 					return this.clearSession();
+				},
+			},
+			{
+				name: "/reload",
+				description: "Reload the server and refresh integrations",
+				kind: "command",
+				run: (args) => {
+					if (args.trim()) throw new Error("/reload does not accept arguments");
+					return this.reloadServer();
 				},
 			},
 			{

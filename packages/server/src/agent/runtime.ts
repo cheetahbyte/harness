@@ -59,6 +59,8 @@ export type AgentRunTiming = {
 export const SYSTEM_PROMPT =
 	"You are Harnez, a coding agent. Your tool list is partial: more tools and skills, including any MCP servers the user connected, wait in a catalog. Before saying you lack a capability, call capabilities_search. Never conclude that a tool is unavailable from your tool list alone, and prefer a catalog tool over improvising with bash. tools_load makes one callable from the next turn. Use the provided tools to inspect and change the current workspace. Batch independent tool calls, including related reads, writes, and edits, in the same turn. Tool output carrying an observation:// reference was archived, not lost: read it back with recall_observation instead of running the tool again. Use episodes and pin_context once context is reported to be under compaction pressure, or when the work ahead will span many tool calls; skip episodes and pin_context for short tasks. Runtime context belongs only to the current task.";
 const DEFAULT_CONTEXT_BUDGET = 80_000;
+/** Floor for models that cannot be resolved, and the old fixed ceiling. */
+const FALLBACK_CAPABILITY_BUDGET = 8_000;
 
 /** Pi is contained here: server code only sees Harnez events and model configuration. */
 export class HarnezAgentRuntime {
@@ -171,6 +173,32 @@ export class HarnezAgentRuntime {
 		};
 	}
 
+	/**
+	 * Tool contracts and skill bodies have to follow the model the same way the
+	 * transcript does. A fixed ceiling made the outcome depend on which constant
+	 * was compiled in rather than on what the model could hold: under the 8k
+	 * literal this replaces, a mid-sized skill could not be activated at all on a
+	 * 200k model. An unconfigured or unresolvable model falls back to that
+	 * constant, since the run is about to fail on the missing model anyway.
+	 */
+	capabilityBudget(sessionId: string, config: ModelConfig | undefined): number {
+		if (!config) return FALLBACK_CAPABILITY_BUDGET;
+		try {
+			const { model } = providerModels(
+				config,
+				this.credentials,
+				this.modelsFor(sessionId),
+			);
+			return this.contextOptions(model).budget;
+		} catch (error) {
+			log.warn(
+				{ err: error, sessionId, model: config.model },
+				"capability budget falling back to the default ceiling",
+			);
+			return FALLBACK_CAPABILITY_BUDGET;
+		}
+	}
+
 	steer(sessionId: string, text: string, callbacks: QueueCallbacks): boolean {
 		const entry = this.agents.get(sessionId);
 		if (
@@ -275,7 +303,11 @@ export class HarnezAgentRuntime {
 				}),
 				messages: this.messages(sessionId, model, task),
 			},
-			transformContext: async () => managed(),
+			transformContext: async () => {
+				const messages = managed();
+				task.context.completeStep();
+				return messages;
+			},
 			prepareNextTurnWithContext: (turn) => {
 				this.context.completeTurn(
 					sessionId,

@@ -744,6 +744,39 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("reloads the server with /reload", async () => {
+		const store = createTuiStore("session-1");
+		let reloads = 0;
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(
+			view.renderer,
+			store,
+			async () => {},
+			undefined,
+			async () => {
+				reloads++;
+			},
+		);
+		try {
+			await view.mockInput.typeText("/relo");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain(
+				"/reload  Reload the server and refresh integrations",
+			);
+			view.mockInput.pressTab();
+			view.mockInput.pressEnter();
+			await Promise.resolve();
+			expect(reloads).toBe(1);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("sets the current session name", async () => {
 		const store = createTuiStore("session-1");
 		const sent: unknown[] = [];

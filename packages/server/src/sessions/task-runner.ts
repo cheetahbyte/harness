@@ -8,6 +8,7 @@ import {
 } from "../capabilities/catalog";
 import {
 	CapabilityContext,
+	describeRejection,
 	type TokenAccountant,
 } from "../capabilities/context";
 import type { ContextManager } from "../context/manager";
@@ -48,7 +49,6 @@ type RunnerOptions = {
 	context: ContextManager;
 	/** Per workspace: two sessions in different projects see different servers. */
 	mcpFor: (sessionId: string) => Pick<McpRegistry, "snapshot" | "call">;
-	capabilityBudget: number;
 	workspace: (sessionId: string) => string;
 	modelConfig: (sessionId: string) => ModelConfig | undefined;
 	emit: (sessionId: string, event: ServerEvent) => void;
@@ -373,7 +373,6 @@ export class SessionTaskRunner {
 		});
 		const { task, context, accountant } = this.createRuntime({
 			id,
-			text: expanded,
 			snapshot,
 			contextWatermark,
 			...(predecessor ? { predecessor } : {}),
@@ -381,7 +380,13 @@ export class SessionTaskRunner {
 		});
 		this.loadTools(task, snapshot, context, accountant);
 		const { prompt, selected } = selectedSkills(expanded, skills);
-		await this.activateSkills(selected, snapshot, context, accountant);
+		const skipped = await this.activateSkills(
+			id,
+			selected,
+			snapshot,
+			context,
+			accountant,
+		);
 		return {
 			controller,
 			task,
@@ -389,21 +394,19 @@ export class SessionTaskRunner {
 			skills,
 			mcpTools: mcp.tools,
 			mcp: registry,
-			prompt,
+			prompt: withSkippedSkills(prompt, skipped),
 			contextWatermark,
 		};
 	}
 
 	private createRuntime({
 		id,
-		text,
 		snapshot,
 		contextWatermark,
 		predecessor,
 		submissionWatermark,
 	}: {
 		id: string;
-		text: string;
 		snapshot: CapabilitySnapshot;
 		contextWatermark: number;
 		predecessor?: TaskRuntime;
@@ -415,16 +418,12 @@ export class SessionTaskRunner {
 	} {
 		const predecessorDigest = predecessor?.digest(snapshot);
 		const context = new CapabilityContext(
-			{
-				model: this.options.modelConfig(id),
-				userInput: text,
-				...(predecessorDigest ? { predecessorDigest } : {}),
-			},
+			{ model: this.options.modelConfig(id) },
 			(base, items) => ({
 				base,
 				capabilityContext: items.map(({ content }) => content),
 			}),
-			this.options.capabilityBudget,
+			this.options.runtime.capabilityBudget(id, this.options.modelConfig(id)),
 			512,
 		);
 		const task = new TaskRuntime(
@@ -483,26 +482,55 @@ export class SessionTaskRunner {
 					content: inspected.contract,
 					accountant,
 				});
-				if (admission.status === "rejected")
-					throw new Error(JSON.stringify(admission));
+				if (admission.status === "rejected") {
+					log.error(
+						{ tool: item.ref.id, admission },
+						"core tool did not fit the capability budget",
+					);
+					throw new Error(
+						describeRejection(admission, `The ${inspected.name} tool`),
+					);
+				}
 				task.load(item.ref);
 			}
 			cursor = page.nextCursor;
 		} while (cursor !== undefined);
 	}
 
+	/**
+	 * A skill that will not fit is the user's own `/name` failing, not a broken
+	 * session: losing the whole submission over it throws away the prompt too.
+	 * The turn runs without the skill and says so, and the caller folds the
+	 * reasons into the prompt so the model does not silently answer as though
+	 * the skill had been applied.
+	 */
 	private async activateSkills(
+		id: string,
 		selected: readonly SkillSnapshotEntry[],
 		snapshot: CapabilitySnapshot,
 		context: CapabilityContext,
 		accountant: TokenAccountant,
-	): Promise<void> {
+	): Promise<string[]> {
+		const skipped: string[] = [];
 		for (const entry of selected) {
 			const ref = snapshot.reference(entry.capability.id, "operator");
 			const admission = await activateSkill(entry, ref, context, accountant);
-			if (admission.status === "rejected")
-				throw new Error(JSON.stringify(admission));
+			if (admission.status !== "rejected") continue;
+			const reason = describeRejection(
+				admission,
+				`The ${entry.capability.name} skill`,
+			);
+			log.warn(
+				{ sessionId: id, skill: entry.capability.name, admission },
+				"skill activation rejected",
+			);
+			this.options.emit(id, {
+				type: "status",
+				text: `skipped ${entry.capability.name}: over capability budget`,
+			});
+			skipped.push(reason);
 		}
+		return skipped;
 	}
 
 	private completeTask(
@@ -551,6 +579,18 @@ export function pendingCommandType(
 ): QueuedTask["kind"] | PendingSteer["type"] | undefined {
 	if (!pending) return undefined;
 	return "kind" in pending ? pending.kind : pending.type;
+}
+
+/**
+ * The model is told which skills it is missing rather than left to answer as if
+ * it had them: a `/humanizer` that never activated otherwise reads to the user
+ * as a skill that ran badly.
+ */
+function withSkippedSkills(prompt: string, skipped: readonly string[]): string {
+	if (skipped.length === 0) return prompt;
+	return `${prompt}\n\n<system-reminder>\n${skipped.join(
+		"\n",
+	)}\nAnswer without it and tell the user it was not applied.\n</system-reminder>`;
 }
 
 function selectedSkills(

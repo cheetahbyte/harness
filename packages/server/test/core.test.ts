@@ -1730,7 +1730,7 @@ function episodeId(
 		});
 		try {
 			const output = "x".repeat(10_000);
-			const { dir, server } = harnez(1_500);
+			const { dir, server } = harnez(3_000);
 			writeFileSync(join(dir, "note.txt"), output);
 			const id = server.createSession();
 			await server.command(id, {
@@ -1757,7 +1757,7 @@ function episodeId(
 				dir,
 				undefined,
 				undefined,
-				{ contextBudget: 1_500 },
+				{ contextBudget: 3_000 },
 			);
 			await restarted.command(id, {
 				type: "prompt",
@@ -1768,7 +1768,7 @@ function episodeId(
 			const status = restarted.store
 				.events(id)
 				.findLast((event) => event.type === "context-status");
-			expect(status).toMatchObject({ type: "context-status", budget: 1_500 });
+			expect(status).toMatchObject({ type: "context-status", budget: 3_000 });
 			if (status?.type === "context-status") {
 				/** The externalized read output is history the prompt no longer pays for. */
 				expect(status.historyTokens).toBeGreaterThan(status.liveTokens);
@@ -1987,7 +1987,7 @@ function episodeId(
 			},
 		});
 		try {
-			const { dir, server } = harnez(1_600);
+			const { dir, server } = harnez(3_200);
 			writeFileSync(join(dir, "note.txt"), "auth uses JWT");
 			const id = server.createSession();
 			await server.command(id, {
@@ -2029,18 +2029,18 @@ function episodeId(
 		}
 	});
 
-	test("rejects an over-budget prompt before calling the provider", async () => {
+	test("summarizes an over-budget prompt before calling the provider", async () => {
 		process.env["HARNESS_OPENAI_API_KEY"] = "test";
 		let calls = 0;
 		const provider = Bun.serve({
 			port: 0,
 			fetch: () => {
 				calls++;
-				return new Response("unexpected provider request", { status: 500 });
+				return sseResponse(doneChunks());
 			},
 		});
 		try {
-			const { server } = harnez(500);
+			const { server } = harnez(3_000);
 			const id = server.createSession();
 			await server.command(id, {
 				type: "configure",
@@ -2052,17 +2052,16 @@ function episodeId(
 				type: "prompt",
 				text: "too much context ".repeat(500),
 			});
-			expect(calls).toBe(0);
+			expect(calls).toBe(1);
 			expect(
-				server.store.contextItems(id).filter((item) => item.kind === "user"),
-			).toHaveLength(0);
+				server.store
+					.contextItems(id)
+					.some((item) => item.reason === "rolling summary"),
+			).toBe(true);
 			expect(
 				server.store
 					.events(id)
-					.find((event) => event.type === "context-budget-error"),
-			).toMatchObject({ type: "context-budget-error", budget: 500 });
-			expect(
-				server.store.events(id).some((event) => event.type === "error"),
+					.some((event) => event.type === "context-budget-error"),
 			).toBe(false);
 		} finally {
 			provider.stop(true);
@@ -2070,7 +2069,7 @@ function episodeId(
 		}
 	});
 
-	test("compacts assistant turns without removing user-authored messages", async () => {
+	test("compacts assistant turns and rolls old user messages forward", async () => {
 		process.env["HARNESS_OPENAI_API_KEY"] = "test";
 		const bodies: unknown[] = [];
 		let calls = 0;
@@ -2083,7 +2082,7 @@ function episodeId(
 			},
 		});
 		try {
-			const { server } = harnez(1_200);
+			const { server } = harnez(3_000);
 			const id = server.createSession();
 			await server.command(id, {
 				type: "configure",
@@ -2102,11 +2101,13 @@ function episodeId(
 			expect(JSON.stringify(bodies.at(-1))).toContain("follow-up 4");
 			expect(JSON.stringify(bodies.at(-1))).not.toContain("reply-1-");
 			expect(JSON.stringify(server.store.contextItems(id))).toContain("reply-1-");
-			expect(
-				server.store
-					.contextItems(id)
-					.filter((item) => item.kind === "user" && item.lifecycle === "pinned"),
-			).toHaveLength(5);
+			const liveUsers = server.store
+				.contextItems(id)
+				.filter((item) => item.kind === "user" && item.lifecycle === "pinned");
+			expect(liveUsers).toHaveLength(4);
+			expect(liveUsers.some((item) => item.reason === "rolling summary")).toBe(
+				true,
+			);
 			const compaction = server.store
 				.events(id)
 				.find((event) => event.type === "context-compaction");

@@ -87,12 +87,15 @@ function scriptedModels(turns: readonly AssistantMessage["content"][]) {
 		reasoning: false,
 	};
 	let turn = 0;
+	const requests: unknown[] = [];
 	return {
+		requests,
 		getModel: () => model,
 		getProviders: () => [],
 		getProvider: () => undefined,
 		getAvailable: async () => [model],
-		streamSimple: (): AssistantMessageEventStream => {
+		streamSimple: (_model: unknown, context: unknown): AssistantMessageEventStream => {
+			requests.push(context);
 			const stream = createAssistantMessageEventStream();
 			const content = turns[Math.min(turn, turns.length - 1)] ?? [];
 			turn += 1;
@@ -117,6 +120,78 @@ function scriptedModels(turns: readonly AssistantMessage["content"][]) {
 		},
 	};
 }
+
+test("step capability context reaches one inference", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "harnez-runtime-step-"));
+	paths.push(dir);
+	const store = new SessionStore(join(dir, "state.sqlite"));
+	const sessionId = store.create(dir);
+	const context = new ContextManager(store);
+	const tools = new CoreTools(dir);
+	const catalog = new CapabilityCatalog(
+		tools.capabilities(GENERATION),
+		GENERATION,
+	);
+	const snapshot = catalog.snapshot({
+		tool: { maxLevel: "execute", confirmation: "none" },
+		skill: { maxLevel: "activate" },
+	});
+	const ref = snapshot.reference("tool:read");
+	const capabilityContext = new CapabilityContext(
+		{},
+		(base, items) => ({ base, items }),
+	);
+	capabilityContext.admit({
+		capability: ref,
+		scope: "step",
+		contentHash: "step",
+		content: "ONE-INFERENCE-INSTRUCTIONS",
+		accountant: {
+			modelId: "model-1",
+			serializerVersion: "test",
+			method: "conservative_estimate",
+			count: () => 1,
+		},
+	});
+	const task = new TaskRuntime(
+		snapshot,
+		capabilityContext,
+		crypto.getRandomValues(new Uint8Array(32)),
+	);
+	task.load(ref);
+	await Bun.write(join(dir, "note.txt"), "hello");
+	const models = scriptedModels([
+		[toolCall("read", "call-read", { path: "note.txt" })],
+		[{ type: "text", text: "done" }],
+	]);
+	const runtime = new HarnezAgentRuntime({
+		credentials: {} as CredentialStore,
+		modelsFor: () => models as never,
+		store,
+		context,
+	});
+
+	await runtime.run({
+		sessionId,
+		text: "read once",
+		config: { provider: "fake", model: "model-1" },
+		tools,
+		task,
+		skills: [],
+		mcpTools: [],
+		mcp: { call: async () => "" },
+		signal: new AbortController().signal,
+		emit: () => {},
+	});
+
+	expect(JSON.stringify(models.requests[0])).toContain(
+		"ONE-INFERENCE-INSTRUCTIONS",
+	);
+	expect(JSON.stringify(models.requests[1])).not.toContain(
+		"ONE-INFERENCE-INSTRUCTIONS",
+	);
+	expect(task.context.items()).toEqual([]);
+}, 30_000);
 
 test("a tool loaded mid-run is callable on the next turn of the same run", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "harnez-runtime-"));

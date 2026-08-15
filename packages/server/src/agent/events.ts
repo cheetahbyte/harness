@@ -317,30 +317,9 @@ export function managedMessages({
 	};
 	emit?: ((event: ServerEvent) => void) | undefined;
 }): AgentMessage[] {
-	if (
-		store.contextItems(sessionId).length === 0 &&
-		!task?.context.items().length
-	)
+	const capabilityItems = task?.context.items() ?? [];
+	if (store.contextItems(sessionId).length === 0 && !capabilityItems.length)
 		return [];
-	const assembly =
-		task?.submissionWatermark !== undefined &&
-		task.taskStartSequence !== undefined
-			? context.assembleTask(sessionId, {
-					...contextOptions(model),
-					submissionWatermark: task.submissionWatermark,
-					taskStartSequence: task.taskStartSequence,
-					predecessorTerminalIds: task.predecessorTerminalMessageIds,
-				})
-			: context.assemble(sessionId, contextOptions(model));
-	if (emit && assembly.evictedIds.length)
-		emit({
-			type: "context-compaction",
-			evictedCount: assembly.evictedIds.length,
-			tokensBefore: assembly.tokensBefore,
-			tokensAfter: assembly.tokensAfter,
-			episodesArchived: assembly.episodesArchived,
-		});
-	const messages = assembly.payloads as AgentMessage[];
 	const dynamic: AgentMessage[] = [
 		...(task?.predecessorDigest
 			? [
@@ -356,7 +335,7 @@ export function managedMessages({
 					},
 				]
 			: []),
-		...(task?.context.items().map((item): AgentMessage => ({
+		...capabilityItems.map((item): AgentMessage => ({
 			role: "user",
 			content: [
 				{
@@ -364,9 +343,30 @@ export function managedMessages({
 					text: `Task capability context (${item.capability.id}):\n${typeof item.content === "string" ? item.content : JSON.stringify(item.content)}`,
 				},
 			],
-			timestamp: new Date(task.startedAt).getTime(),
-		})) ?? []),
+			timestamp: task ? new Date(task.startedAt).getTime() : Date.now(),
+		})),
 	];
+	const options = contextOptions(model);
+	options.overheadTokens += dynamic.length ? tokenCost(dynamic) : 0;
+	const assembly =
+		task?.submissionWatermark !== undefined &&
+		task.taskStartSequence !== undefined
+			? context.assembleTask(sessionId, {
+					...options,
+					submissionWatermark: task.submissionWatermark,
+					taskStartSequence: task.taskStartSequence,
+					predecessorTerminalIds: task.predecessorTerminalMessageIds,
+				})
+			: context.assemble(sessionId, options);
+	if (emit && assembly.evictedIds.length)
+		emit({
+			type: "context-compaction",
+			evictedCount: assembly.evictedIds.length,
+			tokensBefore: assembly.tokensBefore,
+			tokensAfter: assembly.tokensAfter,
+			episodesArchived: assembly.episodesArchived,
+		});
+	const messages = assembly.payloads as AgentMessage[];
 	const lastUser = messages.findLastIndex((message) => message.role === "user");
 	return lastUser < 0
 		? [...messages, ...dynamic]

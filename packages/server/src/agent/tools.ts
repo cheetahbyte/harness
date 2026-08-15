@@ -6,7 +6,10 @@ import {
 	Type,
 } from "@earendil-works/pi-ai";
 
-import type { TokenAccountant } from "../capabilities/context";
+import {
+	describeRejection,
+	type TokenAccountant,
+} from "../capabilities/context";
 import type {
 	EffectClass,
 	InspectedCapability,
@@ -345,7 +348,9 @@ function loadTool(
 				accountant,
 			});
 			if (admission.status === "rejected")
-				throw new Error(JSON.stringify(admission));
+				throw new Error(
+					describeRejection(admission, `The ${inspected.name} tool`),
+				);
 			task.load(ref);
 			/**
 			 * Loading a core tool only admits its contract — it is already callable.
@@ -382,9 +387,12 @@ function activateSkillTool(
 				ref,
 				task.context,
 				accountant,
+				"step",
 			);
 			if (admission.status === "rejected")
-				throw new Error(JSON.stringify(admission));
+				throw new Error(
+					describeRejection(admission, `The ${entry.capability.name} skill`),
+				);
 			return {
 				content: [
 					{ type: "text" as const, text: `Activated ${entry.capability.name}` },
