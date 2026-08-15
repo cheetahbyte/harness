@@ -38,25 +38,47 @@ export async function runTui(
 		renderer.destroy();
 		throw error;
 	}
-	const store = createTuiStore(sessionId);
-	const controller = new AbortController();
-	const app = new TuiApp(renderer, store, (command) =>
-		client.send(sessionId, command),
+	let store = createTuiStore(sessionId);
+	let controller = new AbortController();
+	let stopped = false;
+	let clearInProgress: Promise<void> | undefined;
+	const app = new TuiApp(
+		renderer,
+		store,
+		(command) => client.send(sessionId, command),
+		async () => {
+			if (clearInProgress) return clearInProgress;
+			clearInProgress = (async () => {
+				// Do not abandon the current session unless its replacement was created.
+				const nextSessionId = await client.createSession(store.getState().pwd);
+				if (stopped) return;
+				controller.abort();
+				sessionId = nextSessionId;
+				store = createTuiStore(sessionId);
+				app.replaceStore(store);
+				controller = new AbortController();
+				void streamWithReconnect(sessionId, store, controller);
+			})();
+			try {
+				await clearInProgress;
+			} finally {
+				clearInProgress = undefined;
+			}
+		},
 	);
-	/**
-	 * The event stream carries every bit of agent output, so a drop must not be
-	 * terminal. Reconnect with backoff, resuming after the last cursor applied so
-	 * the transcript neither duplicates nor loses events. Only the first failure of
-	 * an outage is reported, to keep retries quiet.
-	 */
-	async function streamWithReconnect(): Promise<void> {
+	/** Reconnect a specific session; old streams can never write into a new one. */
+	async function streamWithReconnect(
+		id: string,
+		targetStore: ReturnType<typeof createTuiStore>,
+		streamController: AbortController,
+	): Promise<void> {
 		let cursor = 0;
 		let attempt = 0;
-		while (!controller.signal.aborted) {
+		while (!streamController.signal.aborted) {
 			try {
-				await client.stream(sessionId, {
-					signal: controller.signal,
-					onEvent: store.getState().apply,
+				await client.stream(id, {
+					signal: streamController.signal,
+					onEvent: targetStore.getState().apply,
 					onCursor: (seq) => {
 						cursor = seq;
 					},
@@ -66,40 +88,41 @@ export async function runTui(
 							{ type: "list-skills" },
 							{ type: "list-prompts" },
 						] as const)
-							void client.send(sessionId, command).catch(() => undefined);
+							void client.send(id, command).catch(() => undefined);
 					},
 					from: cursor,
 				});
 			} catch (error) {
-				if (controller.signal.aborted) return;
+				if (streamController.signal.aborted) return;
 				if (attempt === 0)
-					store.getState().apply({
+					targetStore.getState().apply({
 						type: "error",
 						message: `connection lost, reconnecting: ${
 							error instanceof Error ? error.message : String(error)
 						}`,
 					});
 			}
-			if (controller.signal.aborted) return;
+			if (streamController.signal.aborted) return;
 			await abortableSleep(
 				Math.min(
 					RECONNECT_BASE_DELAY_MS * 2 ** attempt,
 					RECONNECT_MAX_DELAY_MS,
 				),
-				controller.signal,
+				streamController.signal,
 			);
 			attempt++;
 		}
 	}
 
-	void streamWithReconnect();
-	/** Guarded on the signal so a late answer never touches a torn-down renderer. */
+	void streamWithReconnect(sessionId, store, controller);
+	/** Guarded on shutdown so a late answer never touches a torn-down renderer. */
 	void options.notice
 		?.then((text) => {
-			if (text && !controller.signal.aborted) app.setNotice(text);
+			if (text && !stopped) app.setNotice(text);
 		})
 		.catch(() => undefined);
 	await new Promise<void>((resolve) => renderer.once("destroy", resolve));
+	stopped = true;
 	app.destroy();
 	controller.abort();
 }

@@ -43,16 +43,19 @@ export class TuiApp {
 	private readonly wizard: WizardView;
 	private readonly footer: FooterView;
 	private readonly commands: readonly AppCommand[];
-	private readonly unsubscribe: () => void;
+	private unsubscribe: () => void;
+	private store: StoreApi<TuiState>;
 	private flow: WizardFlow | undefined;
 	private renderedWizard: WizardState | undefined;
 	private authUrl: string | undefined;
 
 	constructor(
 		private readonly renderer: CliRenderer,
-		private readonly store: StoreApi<TuiState>,
+		store: StoreApi<TuiState>,
 		private readonly send: (command: ClientCommand) => Promise<void>,
+		private readonly clearSession: () => Promise<void> = async () => {},
 	) {
+		this.store = store;
 		this.root = new BoxRenderable(renderer, {
 			width: "100%",
 			height: "100%",
@@ -63,6 +66,15 @@ export class TuiApp {
 		this.header = new HeaderView(renderer);
 		this.transcript = new TranscriptView(renderer);
 		this.commands = [
+			{
+				name: "/clear",
+				description: "Start a new session",
+				kind: "command",
+				run: (args) => {
+					if (args.trim()) throw new Error("/clear does not accept arguments");
+					return this.clearSession();
+				},
+			},
 			{
 				name: "/login",
 				description: "Configure provider authentication",
@@ -171,6 +183,13 @@ export class TuiApp {
 	setNotice(text: { full: string; short: string }) {
 		this.header.setNotice(text);
 		this.renderer.requestRender();
+	}
+
+	replaceStore(store: StoreApi<TuiState>) {
+		this.unsubscribe();
+		this.store = store;
+		this.unsubscribe = store.subscribe(() => this.sync());
+		this.sync();
 	}
 
 	destroy() {

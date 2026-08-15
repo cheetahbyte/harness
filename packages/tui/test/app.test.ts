@@ -714,6 +714,36 @@ describe("OpenTUI app", () => {
 		}
 	});
 
+	test("starts a new session with /clear", async () => {
+		const store = createTuiStore("session-1");
+		let clears = 0;
+		const view = await createTestRenderer({
+			width: 72,
+			height: 20,
+			kittyKeyboard: true,
+		});
+		const app = new TuiApp(
+			view.renderer,
+			store,
+			async () => {},
+			async () => {
+				clears++;
+			},
+		);
+		try {
+			await view.mockInput.typeText("/cle");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("/clear  Start a new session");
+			view.mockInput.pressTab();
+			view.mockInput.pressEnter();
+			await Promise.resolve();
+			expect(clears).toBe(1);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("sets the current session name", async () => {
 		const store = createTuiStore("session-1");
 		const sent: unknown[] = [];
