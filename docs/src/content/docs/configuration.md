@@ -91,10 +91,13 @@ The picker writes the whole list, so an entry whose model is missing from it —
 for example while that provider is signed out — is dropped when you save.
 Cycling never drops entries; it only skips the ones it cannot resolve.
 
-`disabledMcpServers` is what [`/mcp`](/docs/mcp#switching-servers-on-and-off)
+`disabledMcpServers` is what [`/mcp`](/docs/advanced/mcp#switching-servers-on-and-off)
 switched off, by server name. It lists exclusions rather than inclusions, so a
-server added to `mcp.json` later starts out connected. MCP connections are
-process-wide, so this is read from the workspace Harnez started in.
+server added to `mcp.json` later starts out connected. It follows the same
+layering as every other setting: the list lands in the project's
+`.harnez/settings.json` when that file exists, and in the global file
+otherwise — where, because the entries are plain server names, it applies to
+every workspace that has a server by that name.
 
 New sessions are titled from their first prompt by default. Set
 `session.title.generated` to `false` to disable this. `session.title.source`

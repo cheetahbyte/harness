@@ -17,8 +17,12 @@ export const MCP_SCHEMA_ID =
 /** Transports harnez connects. `sse` parses but is reported unsupported (§7.2.1). */
 export type McpTransport = "stdio" | "streamable-http";
 
+/** Which file declared a server, so a menu can say where it came from. */
+export type McpScope = "global" | "project";
+
 export type ResolvedStdioServer = {
 	name: string;
+	scope: McpScope;
 	transport: "stdio";
 	command: string;
 	args: string[];
@@ -29,6 +33,7 @@ export type ResolvedStdioServer = {
 };
 export type ResolvedHttpServer = {
 	name: string;
+	scope: McpScope;
 	transport: "streamable-http";
 	url: string;
 	headers: Record<string, string>;
@@ -55,6 +60,8 @@ type ConfigSource = {
 	path: string;
 	/** `PLUGIN_ROOT`: the directory holding it, which becomes the plugin root later. */
 	root: string;
+	/** Defaults to `project`, the scope a caller-supplied source usually models. */
+	scope?: McpScope;
 };
 
 /**
@@ -62,11 +69,13 @@ type ConfigSource = {
  * layers project settings over global ones.
  */
 export function mcpConfigSources(workspace: string): ConfigSource[] {
-	const paths = [
-		globalHarnezPath("mcp.json"),
-		projectHarnezPath("mcp.json", workspace),
-	];
-	return [...new Set(paths)].map((path) => ({ path, root: dirname(path) }));
+	const global = globalHarnezPath("mcp.json");
+	const paths = [global, projectHarnezPath("mcp.json", workspace)];
+	return [...new Set(paths)].map((path) => ({
+		path,
+		root: dirname(path),
+		scope: path === global ? ("global" as const) : ("project" as const),
+	}));
 }
 
 /** `PLUGIN_DATA` (§9.1): client-managed, per-server, outlives package contents. */
@@ -135,7 +144,13 @@ function loadSource(
 		return result;
 	}
 	for (const [name, entry] of servers) {
-		const resolved = resolveServer(name, entry, source.root, dataRoot);
+		const resolved = resolveServer(
+			name,
+			entry,
+			source.root,
+			source.scope ?? "project",
+			dataRoot,
+		);
 		if (typeof resolved === "string")
 			result.diagnostics.push({
 				path: source.path,
@@ -186,13 +201,15 @@ function resolveServer(
 	name: string,
 	entry: Record<string, unknown>,
 	root: string,
+	scope: McpScope,
 	dataRoot: (server: string) => string,
 ): ResolvedServer | string {
 	if (!SERVER_NAME.test(name))
 		return `server name must be alphanumeric with . or - separators`;
 	const type = entry["type"];
-	if (type === "stdio") return resolveStdio(name, entry, root, dataRoot(name));
-	if (type === "streamable-http") return resolveHttp(name, entry, type);
+	if (type === "stdio")
+		return resolveStdio(name, entry, root, scope, dataRoot(name));
+	if (type === "streamable-http") return resolveHttp(name, entry, scope, type);
 	if (type === "sse")
 		// Supporting `sse` is OPTIONAL; skipping the entry is conformant (§7.2.2.4).
 		return "unsupported transport: sse";
@@ -205,6 +222,7 @@ function resolveStdio(
 	name: string,
 	entry: Record<string, unknown>,
 	root: string,
+	scope: McpScope,
 	data: string,
 ): ResolvedStdioServer | string {
 	const unknown = Object.keys(entry).filter((key) => !STDIO_FIELDS.has(key));
@@ -257,6 +275,7 @@ function resolveStdio(
 
 	return {
 		name,
+		scope,
 		transport: "stdio",
 		command: resolvedCommand,
 		args,
@@ -301,6 +320,7 @@ const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 function resolveHttp(
 	name: string,
 	entry: Record<string, unknown>,
+	scope: McpScope,
 	transport: "streamable-http",
 ): ResolvedHttpServer | string {
 	const unknown = Object.keys(entry).filter((key) => !HTTP_FIELDS.has(key));
@@ -339,7 +359,7 @@ function resolveHttp(
 			headers[key] = value;
 		}
 	}
-	return { name, transport, url: url.toString(), headers };
+	return { name, scope, transport, url: url.toString(), headers };
 }
 
 function isLoopback(hostname: string): boolean {

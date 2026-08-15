@@ -45,6 +45,8 @@ export type AgentRunInput = {
 	task: TaskRuntime;
 	skills: readonly SkillSnapshotEntry[];
 	mcpTools: readonly McpToolDescriptor[];
+	/** The workspace's registry: MCP is per workspace, not per process. */
+	mcp: Pick<McpRegistry, "call">;
 	signal: AbortSignal;
 	emit: (event: ServerEvent) => void;
 };
@@ -66,21 +68,18 @@ export class HarnezAgentRuntime {
 	private readonly store: SessionStore;
 	private readonly context: ContextManager;
 	private readonly contextBudget: number;
-	private readonly mcp: Pick<McpRegistry, "call">;
 
 	constructor(options: {
 		credentials: CredentialStore;
 		modelsFor: (sessionId: string) => Models;
 		store: SessionStore;
 		context: ContextManager;
-		mcp: Pick<McpRegistry, "call">;
 		contextBudget?: number;
 	}) {
 		this.credentials = options.credentials;
 		this.modelsFor = options.modelsFor;
 		this.store = options.store;
 		this.context = options.context;
-		this.mcp = options.mcp;
 		this.contextBudget = options.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
 	}
 
@@ -92,6 +91,7 @@ export class HarnezAgentRuntime {
 		task,
 		skills,
 		mcpTools,
+		mcp,
 		signal,
 		emit,
 	}: AgentRunInput): Promise<AgentRunTiming> {
@@ -118,6 +118,7 @@ export class HarnezAgentRuntime {
 				task,
 				skills,
 				mcpTools,
+				mcp,
 			});
 			created.agent.subscribe((event) =>
 				translateAgentEvent({
@@ -212,6 +213,7 @@ export class HarnezAgentRuntime {
 		task,
 		skills,
 		mcpTools,
+		mcp,
 	}: {
 		sessionId: string;
 		key: string;
@@ -222,6 +224,7 @@ export class HarnezAgentRuntime {
 		task: TaskRuntime;
 		skills: readonly SkillSnapshotEntry[];
 		mcpTools: readonly McpToolDescriptor[];
+		mcp: Pick<McpRegistry, "call">;
 	}): AgentEntry {
 		ensureSystem({
 			sessionId,
@@ -264,7 +267,7 @@ export class HarnezAgentRuntime {
 					task,
 					skills,
 					mcpTools,
-					mcp: this.mcp,
+					mcp,
 					admit,
 					context: this.context,
 					contextOptions: this.contextOptions.bind(this),

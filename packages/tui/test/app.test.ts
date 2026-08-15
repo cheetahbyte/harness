@@ -1375,31 +1375,33 @@ describe("OpenTUI app", () => {
 				servers: [
 					{
 						name: "duckduckgo",
+						scope: "global",
 						transport: "stdio",
 						enabled: true,
 						connected: true,
+						idle: false,
 						tools: 2,
-						tokens: 702,
 					},
 					{
 						name: "spokenly",
+						scope: "project",
 						transport: "streamable-http",
 						enabled: true,
 						connected: false,
+						idle: false,
 						tools: 0,
-						tokens: 0,
 						error: "failed to connect: refused",
 					},
 				],
 			});
 			await view.flush();
 			const frame = view.captureCharFrame();
-			expect(frame).toContain("[x] duckduckgo · stdio · 2 tools · ~702 tokens");
+			expect(frame).toContain("[x] duckduckgo · global · stdio · 2 tools");
 			// A server that would not start says so rather than vanishing.
 			expect(frame).toContain(
-				"[x] spokenly · streamable-http · failed to connect: refused",
+				"[x] spokenly · project · streamable-http · failed to connect: refused",
 			);
-			expect(frame).toContain("1/2 connected · ~702 tokens");
+			expect(frame).toContain("1/2 connected");
 
 			view.mockInput.pressArrow("down");
 			view.mockInput.pressKey(" ");
@@ -1415,26 +1417,29 @@ describe("OpenTUI app", () => {
 				servers: [
 					{
 						name: "duckduckgo",
+						scope: "global",
 						transport: "stdio",
 						enabled: true,
 						connected: true,
+						idle: true,
 						tools: 2,
-						tokens: 702,
 					},
 					{
 						name: "spokenly",
+						scope: "project",
 						transport: "streamable-http",
 						enabled: false,
 						connected: false,
+						idle: false,
 						tools: 0,
-						tokens: 0,
 					},
 				],
 			});
 			await view.flush();
-			expect(view.captureCharFrame()).toContain(
-				"[ ] spokenly · streamable-http · off",
-			);
+			const redrawn = view.captureCharFrame();
+			expect(redrawn).toContain("[ ] spokenly · project · streamable-http · off");
+			// An evicted server still counts as connected; only its child is gone.
+			expect(redrawn).toContain("[x] duckduckgo · global · stdio · 2 tools · idle");
 		} finally {
 			app.destroy();
 			view.renderer.destroy();

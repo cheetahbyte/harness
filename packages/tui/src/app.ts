@@ -527,15 +527,11 @@ export class TuiApp {
 				"No servers configured. Add them to mcp.json.",
 			);
 		const connected = servers.filter((server) => server.connected);
-		const tokens = connected.reduce(
-			(total, server) => total + server.tokens,
-			0,
-		);
 		this.composer.setActive(false);
 		this.wizard.show(
 			{
 				kind: "multiselect",
-				title: `MCP Servers · ${connected.length}/${servers.length} connected · ~${tokens.toLocaleString()} tokens`,
+				title: `MCP Servers · ${connected.length}/${servers.length} connected`,
 				options: servers.map((server) => ({
 					name: server.name,
 					description: describeMcpServer(server),
@@ -670,12 +666,12 @@ export class TuiApp {
 }
 
 function describeMcpServer(server: McpServerOption): string {
-	if (!server.enabled) return `${server.transport} · off`;
-	if (!server.connected)
-		return `${server.transport} · ${server.error ?? "not connected"}`;
-	return `${server.transport} · ${server.tools} tool${
-		server.tools === 1 ? "" : "s"
-	} · ~${server.tokens.toLocaleString()} tokens`;
+	const where = `${server.scope} · ${server.transport}`;
+	if (!server.enabled) return `${where} · off`;
+	if (!server.connected) return `${where} · ${server.error ?? "not connected"}`;
+	return `${where} · ${server.tools} tool${server.tools === 1 ? "" : "s"}${
+		server.idle ? " · idle" : ""
+	}`;
 }
 
 function modelKey(config: { provider: string; model: string }): string {

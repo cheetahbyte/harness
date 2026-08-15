@@ -151,7 +151,7 @@ Harnez should:
 * stream large outputs
 * externalize completed execution state
 * release completed subagent state
-* lazily start MCP servers
+* stop idle MCP servers and revive them on demand
 * avoid retaining full historical transcripts in live objects
 * expose memory/resource diagnostics
 
@@ -649,15 +649,47 @@ Servers connect eagerly because a task's capability catalog is built from tool
 metadata, which cannot be known without a handshake. What stays lazy is the
 model's tool list: an MCP tool is a catalog entry until `tools_load` admits it,
 so the permanent request surface does not grow with the number of connected
-servers. Idle servers may be stopped later to reduce resource use.
+servers.
 
-An operator can switch a server off from `/mcp`, which disconnects it and stops
-its stdio child; switching it back on reconnects immediately, so the menu can
-report the outcome instead of deferring it to the next prompt. The exclusions
-are stored in `settings.json` as `disabledMcpServers` and consulted on every
-connection round. Because connections are process-wide rather than per session,
-they are read from the workspace the process started in. A running task keeps
-the catalog it was built with.
+### Workspace scope
+
+`mcp.json` is resolved per workspace, not per process. The server is a daemon
+shared by every project on the machine, and its own working directory is an
+accident of whichever client started it, so binding configuration to it would
+let one project's `mcp.json` — and the binaries its relative `command` resolves
+to — run inside another project's session.
+
+Each workspace therefore owns a registry: the servers its files declare, and
+which of them the operator left switched on. Sessions carry their workspace
+already, which is how skills, prompt templates, and the core tools resolve, and
+MCP now follows the same rule.
+
+### One connection per server
+
+Registries do not own connections; a process-wide pool does, keyed by what a
+server *is* — transport, command, arguments, environment, and roots — rather
+than by the name a workspace gave it. Two projects configuring the same server
+share one child process. `PLUGIN_DATA` is derived from the configured name, so
+two genuinely separate installations still key apart.
+
+The pool refcounts holders. A server switched off in one workspace is released
+there and keeps running for any workspace that still holds it; the child stops
+when the last holder lets go.
+
+### Idle eviction
+
+A connection nobody has called for an idle interval is closed, but its tool
+metadata is kept. A catalog built after an eviction still describes the server
+accurately, and only a call pays to bring the process back — so an idle daemon
+does not sit on a dozen stdio children, and the model never sees a capability
+appear or vanish because of it.
+
+### Switching servers off
+
+`/mcp` lists a workspace's servers, marked by the file that declared them, and
+`Space` switches one off or on. The exclusions are stored in `settings.json` as
+`disabledMcpServers` and consulted on every connection round. A running task
+keeps the catalog it was built with; the change applies to the next one.
 
 `sse` is parsed and reported as an unsupported transport, which the
 specification permits. Credentials belong in the ambient environment that stdio
@@ -737,7 +769,6 @@ The following still require concrete design work:
 8. SQLite schema and event representation.
 9. Artifact retention defaults.
 10. Exact global/project configuration hierarchy.
-11. MCP idle lifecycle behavior.
 12. Whether and when Code Mode-style tool composition should supplement `batch_tools`.
 13. TUI rendering and navigation details beyond the steering semantics already established.
 14. Research/university-specific first-class capabilities required beyond tools and skills.

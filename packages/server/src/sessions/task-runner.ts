@@ -36,6 +36,8 @@ export type RunningTask = {
 	tools: CoreTools;
 	skills: SkillSnapshotEntry[];
 	mcpTools: McpToolDescriptor[];
+	/** The workspace's registry, kept for the calls this task's tools make. */
+	mcp: Pick<McpRegistry, "call">;
 	prompt: string;
 	contextWatermark: number;
 };
@@ -44,7 +46,8 @@ type RunnerOptions = {
 	runtime: HarnezAgentRuntime;
 	store: SessionStore;
 	context: ContextManager;
-	mcp: Pick<McpRegistry, "snapshot">;
+	/** Per workspace: two sessions in different projects see different servers. */
+	mcpFor: (sessionId: string) => Pick<McpRegistry, "snapshot" | "call">;
 	capabilityBudget: number;
 	workspace: (sessionId: string) => string;
 	modelConfig: (sessionId: string) => ModelConfig | undefined;
@@ -93,6 +96,7 @@ export class SessionTaskRunner {
 				task: running.task,
 				skills: running.skills,
 				mcpTools: running.mcpTools,
+				mcp: running.mcp,
 				signal: controller.signal,
 				emit: (event) => this.options.emit(id, event),
 			});
@@ -325,10 +329,11 @@ export class SessionTaskRunner {
 		const contextWatermark = this.options.store.contextSequence(id);
 		const workspace = this.options.workspace(id);
 		const tools = new CoreTools(workspace);
+		const registry = this.options.mcpFor(id);
 		const [scanned, prompts, mcp] = await Promise.all([
 			scanSkills(workspace, undefined, bindingGeneration),
 			scanPrompts(workspace),
-			this.options.mcp.snapshot(),
+			registry.snapshot(),
 		]);
 		const skills = [...scanned.discoverable, ...scanned.operatorOnly];
 		for (const diagnostic of scanned.diagnostics)
@@ -383,6 +388,7 @@ export class SessionTaskRunner {
 			tools,
 			skills,
 			mcpTools: mcp.tools,
+			mcp: registry,
 			prompt,
 			contextWatermark,
 		};

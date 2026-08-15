@@ -129,7 +129,7 @@ function startServer(): McpRegistry {
 			sources: [{ path: join(root, "mcp.json"), root }],
 			dataRoot: (name) => join(root, "state", name),
 		});
-	const registry = new McpRegistry(root, load);
+	const registry = new McpRegistry(root, { load });
 	registries.push(registry);
 	return registry;
 }

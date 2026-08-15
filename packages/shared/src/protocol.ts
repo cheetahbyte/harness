@@ -21,14 +21,16 @@ export type SkillOption = { name: string; description: string };
 /** One configured MCP server, as the server menu shows it. */
 export type McpServerOption = {
 	name: string;
+	/** Which file declared it: `~/.config/harnez` or the workspace's `.harnez`. */
+	scope: "global" | "project";
 	transport: "stdio" | "streamable-http";
 	/** Whether the operator has left the server switched on. */
 	enabled: boolean;
 	/** An enabled server that failed to start or list its tools is not connected. */
 	connected: boolean;
+	/** Connected, but its child was stopped while idle; the next call revives it. */
+	idle: boolean;
 	tools: number;
-	/** Rough cost of carrying this server's tool metadata in the catalog. */
-	tokens: number;
 	error?: string;
 };
 

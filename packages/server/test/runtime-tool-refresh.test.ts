@@ -154,12 +154,6 @@ test("a tool loaded mid-run is callable on the next turn of the same run", async
 		modelsFor: () => models as never,
 		store,
 		context,
-		mcp: {
-			call: async (server, tool) => {
-				calls.push(`${server}/${tool}`);
-				return "SHOUTED";
-			},
-		},
 	});
 
 	const results: string[] = [];
@@ -171,6 +165,12 @@ test("a tool loaded mid-run is callable on the next turn of the same run", async
 		task,
 		skills: [],
 		mcpTools: [descriptor],
+		mcp: {
+			call: async (server: string, tool: string) => {
+				calls.push(`${server}/${tool}`);
+				return "SHOUTED";
+			},
+		},
 		signal: new AbortController().signal,
 		emit: (event) => {
 			if (event.type === "tool-result") results.push(event.output);

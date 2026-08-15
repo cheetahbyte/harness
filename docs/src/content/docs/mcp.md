@@ -24,7 +24,8 @@ Harnez reads two files:
 | Project | `<repo>/.harnez/mcp.json` |
 
 Both are optional. When both define a server under the same name, the project
-file wins.
+file wins. The project file is the one belonging to the session's workspace, not
+to whatever directory the Harnez server happens to have been started from.
 
 MCP configuration sits in its own file instead of `settings.json` because the
 format is defined by the specification, not by Harnez.
@@ -55,8 +56,10 @@ format is defined by the specification, not by Harnez.
 allowed. Harnez matches `$schema` against the exact identifier above to pick its
 validation rules. It never fetches the URL.
 
-Start a new task after editing the file. Running tasks keep the capability
-snapshot they started with.
+Restart the server with `harnez server restart` after editing the file. Each
+workspace scans its configuration once, when its first session opens, so an
+edit is not picked up by starting another task. `/mcp` switches a configured
+server on or off without a restart.
 
 ## Transports
 
@@ -140,30 +143,60 @@ Tools are named `mcp__<server>__<tool>`, so two servers can expose the same tool
 name without colliding. A tool that declares itself read-only in its MCP
 annotations becomes a read-only capability. Anything else counts as mutating.
 
-Harnez connects to servers when it starts rather than on first use, because a
-task's catalog is built from the tool metadata each server reports.
+Harnez connects to a workspace's servers when a session in it opens, rather than
+on first use, because a task's catalog is built from the tool metadata each
+server reports.
+
+## Servers belong to a workspace
+
+The Harnez server is one daemon shared by every project on the machine, but
+`mcp.json` is resolved per workspace. A session opened in one project sees that
+project's `.harnez/mcp.json` plus your user file, never another project's — and
+never another project's binaries, which is what a relative `command` in it would
+resolve to.
+
+Two projects that configure the same server share one child process rather than
+running it twice. Harnez matches on what the server *is* — its transport,
+command, arguments, environment, and roots — not on the name you gave it, so the
+same server named `gh` in one project and `github` in another is still one
+process. Its `PLUGIN_DATA` directory is derived from the configured name, so
+deliberately separate installations stay separate.
+
+## Idle servers
+
+A connection nobody has used for fifteen minutes is closed, and its tools stay
+in the catalog. The next call to one of them starts the server again, paying the
+handshake once. Nothing about this is visible to the model: an idle server has
+exactly the same capabilities as a running one, and `/mcp` marks it `idle`.
 
 ## Switching servers on and off
 
-`/mcp` lists every configured server with its transport, how many tools it
-reported, and roughly what carrying that metadata costs:
+`/mcp` lists every server configured for the current workspace — user file and
+project file alike — with where it came from and how many tools it reported:
 
 ```text
-MCP Servers · 1/2 connected · ~702 tokens
+MCP Servers · 2/3 connected
 
-  [x] duckduckgo · stdio · 2 tools · ~702 tokens
-  [ ] spokenly · streamable-http · off
+  [x] duckduckgo · global · stdio · 2 tools
+  [x] github · project · streamable-http · 4 tools · idle
+  [ ] spokenly · project · stdio · off
 ```
 
 `Space` switches a server on or off, `Enter` saves, and `Esc` closes the menu.
 Typing filters the list. Saving takes effect immediately: a server switched off
-is disconnected and its stdio child is stopped, and one switched on connects
-before the menu redraws with the result — including the reason if it failed. A
-server that is off contributes no tools and no tokens to the catalog.
+is released, and its child stops unless another workspace still has it on. One
+switched on connects before the menu redraws with the result — including the
+reason if it failed. A server that is off contributes nothing to the catalog.
 
-The choice is stored in `settings.json` as `disabledMcpServers`, so it survives
-a restart. Because the list records exclusions, a server added to `mcp.json`
-later starts out connected.
+The tool count is what a server costs during discovery: entries the model pages
+through when it searches. It is not a per-turn cost. MCP tools stay out of every
+request until `tools_load` admits one, and only that tool's schema joins the
+list, for the rest of that task.
+
+The choice is stored in `settings.json` as
+[`disabledMcpServers`](/docs/configuration), so it survives a restart. Because
+the list records exclusions, a server added to `mcp.json` later starts out
+connected.
 
 A task already running keeps the tools it started with; the change applies to
 the next task, which builds a fresh catalog.
@@ -178,7 +211,7 @@ session:
 | Invalid JSON, wrong `$schema`, or an unknown top-level field | That file is ignored. The other file still loads. |
 | Invalid server entry | That server is skipped. The other servers still load. |
 | Unsupported transport | That server is skipped. |
-| Server will not start or connect | That server is skipped and reported. |
+| Server will not start or connect | That server is skipped, reported in the log, and shown with its error in `/mcp`. |
 
 Each case is logged with the file, the server name, and the reason.
 
@@ -195,7 +228,10 @@ If a server's tools do not appear:
    directory to confirm it speaks MCP over stdio.
 5. Check the server logs for the reason. Harnez logs every file and entry it
    skips.
-6. Start a new task. Configuration is read when a task starts.
+6. Confirm the server is in `/mcp` and switched on. A server missing from that
+   list was never resolved; one shown as off was switched off.
+7. Restart the server with `harnez server restart`. Configuration is read once
+   per workspace, when its first session opens.
 
 If the tools appear in `capabilities_search` but the model does not use them,
 that is expected until it calls `tools_load`. See

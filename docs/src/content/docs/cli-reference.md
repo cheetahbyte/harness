@@ -102,7 +102,7 @@ Typed directly into the TUI composer.
 | `/model [provider]` | Open the model picker for a provider, or the current one if omitted. A configured model can also be selected directly: `/model ollama qwen3-coder:30b`. |
 | `/model <provider> <model> [base-url]` | Set the active provider, model, and optional custom endpoint directly, without the wizard. The legacy one-off form remains `/model openai-compatible <model> <base-url>`. |
 | `/fast-cycle` | Open the fast-cycle picker. `Space` checks or unchecks a model, `Enter` saves the selection. |
-| `/mcp` | Open the [MCP server menu](/docs/mcp#switching-servers-on-and-off). `Space` switches a server on or off, `Enter` saves and reconnects, `Esc` closes. |
+| `/mcp` | Open the [MCP server menu](/docs/advanced/mcp#switching-servers-on-and-off). `Space` switches a server on or off, `Enter` saves and reconnects, `Esc` closes. |
 | `/session-name <name>` | Set the current session name. Automatic naming will not replace a name you set. |
 | `/<skill-name>` | Invoke a skill loaded from `.harnez/skills` or `.agents/skills`. Available skills appear in autocomplete with their own description. |
 | `/<prompt-name>` | Expand a prompt template from `.harnez/prompts` or `.agents/prompts` into the prompt. Only recognized as the first word; trailing text is appended to the template. |

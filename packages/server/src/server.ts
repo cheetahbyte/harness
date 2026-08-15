@@ -23,7 +23,7 @@ import { HarnezAgentRuntime } from "./agent/runtime";
 import { ContextManager } from "./context/manager";
 import type { SubagentResult } from "./context/types";
 import { log } from "./logger";
-import { loadMcpConfig } from "./mcp/config";
+import { McpConnectionPool } from "./mcp/pool";
 import { McpRegistry } from "./mcp/registry";
 import { scanPrompts } from "./prompts";
 import {
@@ -61,9 +61,12 @@ export class HarnezServer {
 	private readonly models: ModelRegistry;
 	private readonly injectedModels: boolean;
 	private readonly workspaceModels = new Map<string, ModelRegistry>();
+	private readonly workspaceSettings = new Map<string, SettingsStore>();
+	private readonly workspaceMcp = new Map<string, McpRegistry>();
 	private readonly defaultWorkspace: string;
 	private readonly context: ContextManager;
-	private readonly mcp: McpRegistry;
+	/** Shared by every workspace, so one server is one child process. */
+	private readonly mcpPool = new McpConnectionPool();
 	private readonly taskRunner: SessionTaskRunner;
 	private readonly authentication: SessionAuthentication;
 	private readonly namer: SessionNamer;
@@ -98,23 +101,12 @@ export class HarnezServer {
 			(id, event) => this.publish(id, event, false),
 		);
 		this.context = new ContextManager(this.store);
-		/**
-		 * Connections are process-wide, so which servers are switched off is read
-		 * from the default workspace's settings rather than per session.
-		 */
-		this.mcp = new McpRegistry(
-			this.defaultWorkspace,
-			loadMcpConfig,
-			(server) => !this.defaultSettings.disabledMcpServers().includes(server),
-		);
-		// Connecting starts now so the first prompt does not pay for the handshake.
-		this.mcp.start();
+		this.workspaceSettings.set(this.defaultWorkspace, this.defaultSettings);
 		this.runtime = new HarnezAgentRuntime({
 			credentials: this.credentials,
 			modelsFor: (id) => this.modelsFor(id) as Models,
 			store: this.store,
 			context: this.context,
-			mcp: this.mcp,
 			...(options.contextBudget === undefined
 				? {}
 				: { contextBudget: options.contextBudget }),
@@ -123,7 +115,7 @@ export class HarnezServer {
 			runtime: this.runtime,
 			store: this.store,
 			context: this.context,
-			mcp: this.mcp,
+			mcpFor: (sessionId) => this.mcpFor(sessionId),
 			capabilityBudget: 8_000,
 			workspace: (sessionId) => this.workspace(sessionId),
 			modelConfig: (sessionId) => this.modelConfig(sessionId),
@@ -133,12 +125,17 @@ export class HarnezServer {
 
 	/** Releases process-level resources; stdio MCP servers are child processes. */
 	async close(): Promise<void> {
-		await this.mcp.close();
+		const registries = [...this.workspaceMcp.values()];
+		this.workspaceMcp.clear();
+		await Promise.allSettled(registries.map((registry) => registry.close()));
+		await this.mcpPool.close();
 	}
 
 	createSession(workspace = this.defaultWorkspace): string {
 		const id = this.store.create(workspacePath(workspace));
 		this.sessions.set(id, new Session());
+		// Connecting starts now so the first prompt does not pay for the handshake.
+		this.mcpFor(id);
 		log.info({ sessionId: id }, "session created");
 		return id;
 	}
@@ -724,7 +721,7 @@ export class HarnezServer {
 	private async listMcpServers(id: string): Promise<void> {
 		this.publish(
 			id,
-			{ type: "mcp-servers", servers: await this.mcp.list() },
+			{ type: "mcp-servers", servers: await this.mcpFor(id).list() },
 			false,
 		);
 	}
@@ -736,13 +733,13 @@ export class HarnezServer {
 	 */
 	private async setMcpEnabled(id: string, servers: string[]): Promise<void> {
 		const enabled = new Set(servers);
-		const listed = await this.mcp.list();
-		const disabled = listed
+		const registry = this.mcpFor(id);
+		const disabled = (await registry.list())
 			.map((server) => server.name)
 			.filter((name) => !enabled.has(name));
-		this.defaultSettings.setDisabledMcpServers(disabled);
+		this.settingsFor(id).setDisabledMcpServers(disabled);
 		const off = new Set(disabled);
-		await this.mcp.setEnabled((server) => !off.has(server));
+		await registry.setEnabled((server) => !off.has(server));
 		await this.listMcpServers(id);
 	}
 
@@ -772,14 +769,42 @@ export class HarnezServer {
 		return this.store.modelConfig(id) ?? this.settingsFor(id).modelConfig();
 	}
 
+	/**
+	 * Memoized per workspace: a store caches what it read, so handing out a fresh
+	 * one per call would lose writes made through an earlier instance — which is
+	 * exactly what the MCP toggle does when it saves and then re-reads.
+	 */
 	private settingsFor(id: string): SettingsStore {
 		const workspace = this.workspace(id);
-		return workspace === this.defaultWorkspace
-			? this.defaultSettings
-			: new SettingsStore(
-					globalHarnezPath("settings.json"),
-					projectHarnezPath("settings.json", resolve(workspace)),
-				);
+		let settings = this.workspaceSettings.get(workspace);
+		if (!settings) {
+			settings = new SettingsStore(
+				globalHarnezPath("settings.json"),
+				projectHarnezPath("settings.json", resolve(workspace)),
+			);
+			this.workspaceSettings.set(workspace, settings);
+		}
+		return settings;
+	}
+
+	/**
+	 * The session's own MCP registry. Servers are declared per workspace, so a
+	 * session in one project must never inherit another project's `mcp.json` —
+	 * nor the binaries a relative `command` in it resolves to.
+	 */
+	private mcpFor(id: string): McpRegistry {
+		const workspace = this.workspace(id);
+		let registry = this.workspaceMcp.get(workspace);
+		if (!registry) {
+			const settings = this.settingsFor(id);
+			registry = new McpRegistry(workspace, {
+				enabled: (server) => !settings.disabledMcpServers().includes(server),
+				pool: this.mcpPool,
+			});
+			this.workspaceMcp.set(workspace, registry);
+			registry.start();
+		}
+		return registry;
 	}
 
 	private modelsFor(id: string): ModelRegistry {

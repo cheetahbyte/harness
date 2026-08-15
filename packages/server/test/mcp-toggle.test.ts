@@ -33,10 +33,10 @@ afterEach(async () => {
  * A workspace whose `.harnez` holds both the MCP configuration and the launcher
  * it names, so the toggle is exercised against a server that really starts.
  */
-function workspace(): string {
+function workspace(server = "echo"): string {
 	const root = mkdtempSync(join(tmpdir(), "harnez-mcp-toggle-"));
 	paths.push(root);
-	process.env["XDG_CONFIG_HOME"] = join(root, "config");
+	process.env["XDG_CONFIG_HOME"] ??= join(root, "config");
 	const harnez = join(root, ".harnez");
 	mkdirSync(join(harnez, "bin"), { recursive: true });
 	const launcher = join(harnez, "bin/server");
@@ -49,7 +49,7 @@ function workspace(): string {
 		join(harnez, "mcp.json"),
 		JSON.stringify({
 			$schema: MCP_SCHEMA_ID,
-			mcpServers: { echo: { type: "stdio", command: "./bin/server" } },
+			mcpServers: { [server]: { type: "stdio", command: "./bin/server" } },
 		}),
 	);
 	return root;
@@ -85,11 +85,11 @@ test("lists MCP servers and switches one off and on again", async () => {
 	await server.command(id, { type: "list-mcp-servers" });
 	const [connected] = listings(events).at(-1) ?? [];
 	expect(connected?.name).toBe("echo");
+	expect(connected?.scope).toBe("project");
 	expect(connected?.transport).toBe("stdio");
 	expect(connected?.enabled).toBe(true);
 	expect(connected?.connected).toBe(true);
 	expect(connected?.tools).toBe(3);
-	expect(connected?.tokens).toBeGreaterThan(0);
 
 	// An empty selection switches off every server the menu listed.
 	await server.command(id, { type: "set-mcp-enabled", servers: [] });
@@ -129,4 +129,36 @@ test("does not connect a server that settings switched off before startup", asyn
 	expect(status?.enabled).toBe(false);
 	expect(status?.connected).toBe(false);
 	expect(status?.tools).toBe(0);
+}, 30_000);
+
+test("gives each workspace the servers its own mcp.json declares", async () => {
+	const first = workspace("alpha");
+	const second = workspace("beta");
+	// One process, two projects: the daemon's own cwd must not decide either.
+	const server = harnez(first);
+	const here = server.createSession(first);
+	const there = server.createSession(second);
+	const events: ServerEvent[] = [];
+	server.subscribe(here, (event) => events.push(event));
+	server.subscribe(there, (event) => events.push(event));
+
+	await server.command(here, { type: "list-mcp-servers" });
+	expect(listings(events).at(-1)?.map((entry) => entry.name)).toEqual(["alpha"]);
+	await server.command(there, { type: "list-mcp-servers" });
+	expect(listings(events).at(-1)?.map((entry) => entry.name)).toEqual(["beta"]);
+
+	// Switching one project's server off leaves the other project untouched.
+	await server.command(here, { type: "set-mcp-enabled", servers: [] });
+	expect(listings(events).at(-1)?.[0]).toMatchObject({
+		name: "alpha",
+		enabled: false,
+		connected: false,
+	});
+	await server.command(there, { type: "list-mcp-servers" });
+	expect(listings(events).at(-1)?.[0]).toMatchObject({
+		name: "beta",
+		enabled: true,
+		connected: true,
+		tools: 3,
+	});
 }, 30_000);
