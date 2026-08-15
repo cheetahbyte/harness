@@ -78,16 +78,17 @@ unresolved. The parent never imports a child's raw transcript.
 
 Harnez separates the lossless session history from the bounded working set
 sent to a model. Every context item is tracked as `pinned`, `active`,
-`retained`, or `archived`; system instructions, user messages, and explicit
-pins are protected from being dropped. Tool output is externalized at
-creation. The model sees a bounded preview and a reference it can use to
-recall the exact result later.
+`retained`, or `archived`. System instructions remain protected; user messages
+and explicit pins collapse into one bounded rolling summary only as a final
+fallback. Tool output is externalized at creation. The model sees a bounded
+preview and a reference it can use to recall the exact result later.
 
 When the context budget is crossed, one deterministic cleanup pass runs:
-completed tool exchanges retire first, then completed work archives in a
-fixed order, oldest first. Nothing is silently rewritten or deleted; the full
-event history persists independently of what's currently in the model's
-context.
+completed tool exchanges retire first, completed work archives in a fixed
+order, then the oldest pinned user content rolls into a summary if necessary.
+Capability content is charged against the same final input budget. Nothing is
+deleted; the full event history persists independently of what's currently in
+the model's context.
 
 ## Tool discovery
 

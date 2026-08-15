@@ -93,9 +93,15 @@ snapshot. Activation reads `SKILL.md` again and verifies both hashes. If the
 file changed, activation fails with `STALE_CAPABILITY`; start a new task to use
 the edited version.
 
-The full skill body must fit the task capability-context budget. An activation
-that does not fit is rejected without evicting another skill. Activated
-instructions stay in task context until the task ends.
+The full skill body must fit the model-derived capability-context ceiling. An
+activation that does not fit is rejected without evicting another skill. A
+manually requested `/name` skill is skipped with a status message so the task
+can continue without it.
+
+Skills activated by the model are available for the next model step and then
+leave context. Manually requested skills are task-scoped and remain until the
+task ends. In final request assembly, skill bodies and conversation history
+share the same model input budget.
 
 Only the `SKILL.md` body is admitted automatically. Other files in the skill
 directory are not loaded with it.

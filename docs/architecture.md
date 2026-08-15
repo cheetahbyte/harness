@@ -416,10 +416,12 @@ to assemble every provider request through Pi's context hooks, and replaces the
 live Pi transcript with the same managed projection after a turn. Restarting a
 server reconstructs context from SQLite rather than from UI event deltas.
 
-System instructions, user-authored messages, and explicit decisions or
-constraints created by `pin_context` are mechanically protected. Unknown work
-also fails toward retention. If protected content alone cannot fit, Harnez
-returns a context-budget error before calling the provider.
+System instructions remain mechanically protected. User-authored messages and
+explicit decisions or constraints created by `pin_context` stay pinned until a
+final fallback collapses the oldest eligible items into one bounded rolling
+summary. Unknown work also fails toward retention. Harnez returns a
+context-budget error only when fixed overhead and the smallest valid protected
+projection still cannot fit.
 
 Tool output is externalized at creation. SQLite retains the exact observation;
 the active model receives a bounded head/tail preview and an
@@ -445,8 +447,10 @@ Cleanup first retires completed tool exchanges in a fixed reconstructability
 order. If that is insufficient, it archives the oldest completed action
 episode. A completed exploration becomes eligible only after every dependent
 action is archived; its detailed trace leaves the prompt while its conclusion
-remains. Assistant tool calls and results move as one group, and raw payloads
-are never rewritten or deleted.
+remains. As a hard-budget fallback, pinned user messages and notes collapse
+oldest-first into one rolling summary; task assembly keeps the two most recent
+pre-submission user messages verbatim. Assistant tool calls and results move as
+one group, and raw payloads are never rewritten or deleted.
 
 Compact subagent results cross the parent boundary as validated structured
 handoffs with external `subagent://...` transcript references. The parent never
@@ -456,10 +460,11 @@ fake producer against this same boundary.
 `GET /sessions/:id/context` exposes projected token cost, lifecycle counts,
 episode state, and item-level reasons without returning archived payloads.
 
-LLM-generated historical summaries, arbitrary item-level dependency graphs,
-nested episodes, learned policies, and artifact garbage collection remain
-future work. They should extend this lifecycle model rather than replace the
-immutable event history.
+LLM-generated historical summaries remain future work; the current rolling
+summary is deterministic and locally truncated. Arbitrary item-level dependency
+graphs, nested episodes, learned policies, and artifact garbage collection also
+remain future work. They should extend this lifecycle model rather than replace
+the immutable event history.
 
 ---
 
@@ -769,6 +774,6 @@ The following still require concrete design work:
 8. SQLite schema and event representation.
 9. Artifact retention defaults.
 10. Exact global/project configuration hierarchy.
-12. Whether and when Code Mode-style tool composition should supplement `batch_tools`.
-13. TUI rendering and navigation details beyond the steering semantics already established.
-14. Research/university-specific first-class capabilities required beyond tools and skills.
+11. Whether and when Code Mode-style tool composition should supplement `batch_tools`.
+12. TUI rendering and navigation details beyond the steering semantics already established.
+13. Research/university-specific first-class capabilities required beyond tools and skills.
