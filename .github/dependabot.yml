@@ -5,6 +5,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 2
     labels:
       - "dependencies"
     commit-message:
@@ -28,6 +30,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 2
     labels:
       - "dependencies"
     commit-message:
