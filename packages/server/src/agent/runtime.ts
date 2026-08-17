@@ -362,7 +362,11 @@ export class HarnezAgentRuntime {
 		target: number;
 		overheadTokens: number;
 	} {
-		const hardInput = model.contextWindow - model.maxTokens;
+		const outputReserve = Math.min(
+			model.maxTokens,
+			Math.floor(model.contextWindow / 2),
+		);
+		const hardInput = model.contextWindow - outputReserve;
 		if (!Number.isFinite(hardInput) || hardInput <= 0)
 			throw new HarnezProviderError(
 				`model ${model.id} has no usable input context window`,
