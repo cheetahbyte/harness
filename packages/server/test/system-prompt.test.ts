@@ -9,8 +9,11 @@ import { SessionStore } from "../src/sessions/store";
 import { tokenCost } from "../src/token-cost";
 
 const roots: string[] = [];
+const originalConfigHome = process.env["XDG_CONFIG_HOME"];
 afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+	if (originalConfigHome === undefined) delete process.env["XDG_CONFIG_HOME"];
+	else process.env["XDG_CONFIG_HOME"] = originalConfigHome;
 });
 
 function setup() {
@@ -52,7 +55,7 @@ test("keeps an empty override but ignores empty appends", () => {
 	put(join(home, ".config/harnez/SYSTEM.md"), " \n\t");
 	put(join(home, ".config/harnez/APPEND_SYSTEM.md"), " \n");
 	put(join(workspace, ".harnez/APPEND_SYSTEM.md"), " project ");
-	expect(resolveSystemPrompt(workspace, home)).toBe("\n\nproject");
+	expect(resolveSystemPrompt(workspace, home)).toBe("project");
 });
 
 test("fails with the path for invalid UTF-8 and read errors", () => {

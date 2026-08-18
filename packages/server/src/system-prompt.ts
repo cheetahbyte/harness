@@ -14,11 +14,9 @@ export function resolveSystemPrompt(workspace: string, home?: string): string {
 		override === undefined ? SYSTEM_PROMPT : override,
 		readOptional(globalHarnezPath("APPEND_SYSTEM.md", home)),
 		readOptional(projectHarnezPath("APPEND_SYSTEM.md", workspace)),
-	].flatMap((body, index) =>
-		body === undefined || (index > 0 && body.trim() === "")
-			? []
-			: [body.trim()],
-	);
+	]
+		.flatMap((body) => (body === undefined ? [] : [body.trim()]))
+		.filter((body) => body !== "");
 	return segments.join("\n\n");
 }
 
