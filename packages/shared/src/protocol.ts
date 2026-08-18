@@ -49,7 +49,7 @@ export type ImageAttachment = {
 	data: string;
 };
 
-export type UserInput = { text: string; images?: ImageAttachment[] };
+type UserInput = { text: string; images?: ImageAttachment[] };
 
 export function displayUserInput(
 	text: string,

@@ -1,8 +1,8 @@
 import type { ImageAttachment } from "../../shared/src/protocol";
 
-export const IMAGE_MAX_BYTES = 8 * 1024 * 1024;
-export const MESSAGE_MAX_IMAGE_BYTES = 20 * 1024 * 1024;
-export const MAX_IMAGES = 4;
+const IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+const MESSAGE_MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_IMAGES = 4;
 const MIME_TYPES = [
 	"image/png",
 	"image/jpeg",
