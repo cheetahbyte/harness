@@ -152,8 +152,6 @@ Closing the TUI therefore does not discard completed conversation history.
 Back up the database before moving it between Harnez versions. A binary refuses
 to open a database whose schema is newer than it supports.
 
-## Current limits
-
 ## Pasting images
 
 Paste PNG, JPEG, GIF, or WebP images directly into the composer. Each message
@@ -163,6 +161,8 @@ starts over for every submitted message, and image bytes are not written to
 the event log. Images require a configured vision-capable model. Remote and
 headless clipboard access, file pickers, drag-and-drop, thumbnails, and image
 editing are not supported.
+
+## Current limits
 
 You cannot yet regenerate or delete a session title manually. Title changes are
 saved for future listings, but the open TUI does not receive them as live

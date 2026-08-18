@@ -594,7 +594,10 @@ export class HarnezServer {
 			...(inputImages(command).length ? { images: inputImages(command) } : {}),
 		};
 		if (!session.running) {
-			this.maybeTitleSession(id, command.text);
+			this.maybeTitleSession(
+				id,
+				displayInput(command.text, inputImages(command)),
+			);
 			await this.run(id, pending);
 			return;
 		}
@@ -631,7 +634,7 @@ export class HarnezServer {
 		text: string,
 		attachments: ImageAttachment[] = [],
 	): Promise<void> {
-		this.maybeTitleSession(id, text);
+		this.maybeTitleSession(id, displayInput(text, attachments));
 		if (!session.running) {
 			await this.run(id, {
 				text,
@@ -931,6 +934,16 @@ function isUserSubmission(command: ClientCommand): boolean {
 
 function inputImages(command: { images?: unknown }): ImageAttachment[] {
 	return validateImages(command.images);
+}
+
+function displayInput(
+	text: string,
+	images: readonly ImageAttachment[],
+): string {
+	if (!images.length) return text;
+	const body = text.trim();
+	const labels = images.map((_, index) => `[Image #${index + 1}]`).join("\n");
+	return body ? `${body}\n\n${labels}` : labels;
 }
 
 function isActiveControl(type: ClientCommand["type"]): boolean {

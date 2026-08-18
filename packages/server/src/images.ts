@@ -22,6 +22,8 @@ export function validateImages(images: unknown): ImageAttachment[] {
 		const image = candidate as Partial<ImageAttachment>;
 		if (typeof image.id !== "string" || !image.id)
 			throw new Error(`image ${index + 1} id is required`);
+		if (!UUID.test(image.id))
+			throw new Error(`image ${index + 1} id must be a UUID`);
 		if (!MIME_TYPES.includes(image.mimeType as (typeof MIME_TYPES)[number]))
 			throw new Error(`image ${index + 1} MIME type is unsupported`);
 		if (typeof image.data !== "string" || !isCanonicalBase64(image.data))
@@ -42,6 +44,9 @@ export function validateImages(images: unknown): ImageAttachment[] {
 		} as ImageAttachment;
 	});
 }
+
+const UUID =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function isCanonicalBase64(value: string): boolean {
 	return (
