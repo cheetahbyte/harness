@@ -151,10 +151,16 @@ export type ServerEvent =
 	  }
 	| {
 			type: "context-compaction";
+			sessionId?: string;
+			taskId?: string;
+			turnId?: number;
+			assemblyId?: number;
 			evictedCount: number;
 			tokensBefore: number;
 			tokensAfter: number;
 			episodesArchived: number;
+			trigger?: "automatic" | "explicit";
+			milestone?: string;
 	  }
 	| { type: "context-budget-error"; estimatedTokens: number; budget: number }
 	| {

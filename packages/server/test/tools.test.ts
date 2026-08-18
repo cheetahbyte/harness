@@ -2,8 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { contextCapabilities } from "../src/agent/tools";
+import { agentTools, contextCapabilities } from "../src/agent/tools";
 import { CapabilityCatalog } from "../src/capabilities/catalog";
+import { ContextManager } from "../src/context/manager";
+import { SessionStore } from "../src/sessions/store";
 import { CoreTools } from "../src/tools";
 
 async function execute(
@@ -142,6 +144,7 @@ test("registers every context tool as a discoverable capability", () => {
 	});
 
 	expect(snapshot.list().items.map((item) => item.ref.id)).toEqual([
+		"tool:condense_context",
 		"tool:episode",
 		"tool:pin_context",
 		"tool:recall_observation",
@@ -155,4 +158,42 @@ test("registers every context tool as a discoverable capability", () => {
 	expect(snapshot.inspect(recall!.ref).contract).toMatchObject({
 		effect: "read_only",
 	});
+});
+
+test("condense_context reports mutation details, suppresses no-op events, and rejects active episodes", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "harnez-tool-condense-"));
+	const store = new SessionStore(join(dir, "state.sqlite"));
+	const sessionId = store.create();
+	const telemetry: unknown[] = [];
+	const context = new ContextManager(store, (event) => telemetry.push(event));
+	for (let index = 0; index < 6; index++)
+		context.record({ sessionId, kind: "tool-result", payload: `work-${index}`, tokenCost: 1_000, lifecycle: "retained", projection: "full", reason: "done", groupId: `group-${index}` });
+	const events: unknown[] = [];
+	const tools = agentTools({
+		sessionId,
+		model: { id: "model" } as never,
+		tools: { agentTools: () => [], contextMetadata: () => ({}) } as never,
+		task: { id: "task-1", taskStartSequence: undefined, predecessorTerminalMessageIds: [], snapshot: {} } as never,
+		skills: [], mcpTools: [], mcp: { call: async () => "" }, admit: () => {},
+		context, contextOptions: () => ({ budget: 20_000, target: 20_000, overheadTokens: 0 }), previewLimit: () => 100,
+		emit: (event) => events.push(event),
+	});
+	const tool = tools.find((candidate) => candidate.name === "condense_context")!;
+	const result = await tool.execute("call", { milestone: "done", completedWork: ["work"], strategies: [], environmentChanges: [], constraints: [], openQuestions: [], references: [] }, new AbortController().signal);
+	expect(result.details).toMatchObject({ noOp: false, archivedItems: 2 });
+	expect(JSON.stringify(result.details)).not.toContain("work");
+	const memory = store.contextItems(sessionId).find((item) => item.kind === "long-term-memory" && item.lifecycle !== "archived");
+	expect(memory).toMatchObject({ lifecycle: "pinned", projection: "full", reason: "agent context condensation" });
+	expect(memory?.payload).toMatchObject({ role: "user" });
+	expect(memory?.payload).toHaveProperty("content");
+	expect(String((memory?.payload as { content: string }).content)).toContain("<harnez-long-term-memory>\n{");
+	expect(events).toHaveLength(1);
+	const assembly = telemetry.find((event) => (event as { type?: string }).type === "context.assembly.completed") as Record<string, unknown>;
+	expect(assembly).toMatchObject({ budget: 20_000, target: 20_000, taskId: "task-1" });
+	const noop = await tool.execute("call-2", { milestone: "short", completedWork: ["x"], strategies: [], environmentChanges: [], constraints: [], openQuestions: [], references: [] }, new AbortController().signal);
+	expect(noop.content[0]).toMatchObject({ text: "No context was condensed." });
+	expect(events).toHaveLength(1);
+	context.startEpisode(sessionId, { name: "active", kind: "exploration" });
+	await expect(tool.execute("call-3", { milestone: "blocked", completedWork: ["x"], strategies: [], environmentChanges: [], constraints: [], openQuestions: [], references: [] }, new AbortController().signal)).rejects.toThrow("episode is active");
+	rmSync(dir, { recursive: true, force: true });
 });

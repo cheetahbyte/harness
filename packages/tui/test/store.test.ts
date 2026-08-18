@@ -314,6 +314,19 @@ describe("TUI protocol store", () => {
 				text: "retired 12 items and 1 episode · 38k ↦ 4.1k · all recallable",
 			},
 		]);
+		store.getState().apply({
+			type: "context-compaction",
+			trigger: "explicit",
+			milestone: "tests complete",
+			evictedCount: 2,
+			tokensBefore: 2_000,
+			tokensAfter: 500,
+			episodesArchived: 0,
+		});
+		expect(store.getState().entries.at(-1)).toEqual({
+			kind: "compaction",
+			text: "⋯ condensed context at tests complete: 2k → 500 tokens",
+		});
 		store.getState().apply({ type: "status", text: "running" });
 		expect(store.getState().running).toBe(true);
 		store.getState().apply({

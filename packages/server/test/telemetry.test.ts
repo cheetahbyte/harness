@@ -81,7 +81,7 @@ describe("telemetry configuration", () => {
 		emit({ type: "tool.call.completed", sessionId: "s", taskId: "t", callId: 1, timestamp, tool: "bash", source: "harnez", durationMs: 12 });
 		emit({ type: "tool.call.failed", sessionId: "s", taskId: "t", callId: 2, timestamp, tool: "read", source: "harnez", error: "cancelled" });
 		emit({ type: "context.assembly.completed", sessionId: "s", taskId: "t", assemblyId: 1, timestamp, trigger: "shrink", scope: "task", tokensBefore: 100, tokensAfter: 80, budget: 90, target: 70, liveTokens: 80, historyTokens: 20, pressureStreak: 2, agentContinued: true });
-		emit({ type: "context.compaction.completed", sessionId: "s", taskId: "t", assemblyId: 1, timestamp, trigger: "automatic" });
+		emit({ type: "context.compaction.completed", sessionId: "s", taskId: "t", assemblyId: 1, timestamp, trigger: "explicit", milestone: "tests" });
 		emit({ type: "task.completed", sessionId: "s", taskId: "t", timestamp });
 		emit({ type: "session.completed", sessionId: "s", timestamp });
 		await telemetry.shutdown();

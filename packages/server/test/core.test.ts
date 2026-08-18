@@ -12,6 +12,8 @@ import type { AuthType, ServerEvent } from "../../shared/src/protocol";
 import type { AuthInteraction } from "@earendil-works/pi-ai";
 import { createHarnezModels, JsonCredentialStore } from "../src/provider";
 import { HarnezServer } from "../src/server";
+import { managedMessages } from "../src/agent/events";
+import { ContextManager } from "../src/context/manager";
 import { SessionStore } from "../src/sessions/store";
 import { SettingsStore } from "../src/settings-store";
 import { BashTool } from "../src/tools/bash";
@@ -97,6 +99,26 @@ async function until(assertion: () => void): Promise<void> {
 }
 
 describe("first milestone", () => {
+	test("proactive condensation reaches the next provider assembly and preserves recall", () => {
+		const dir = mkdtempSync(join(tmpdir(), "harnez-core-condensation-"));
+		paths.push(dir);
+		const store = new SessionStore(join(dir, "state.sqlite"));
+		const sessionId = store.create(dir);
+		const context = new ContextManager(store);
+		context.record({ sessionId, kind: "system", payload: "stable semantics", tokenCost: 2, lifecycle: "pinned", projection: "full", reason: "system" });
+		context.record({ sessionId, kind: "user", payload: { role: "user", content: "objective" }, tokenCost: 2, lifecycle: "pinned", projection: "full", reason: "user" });
+		for (let index = 0; index < 6; index++) context.record({ sessionId, kind: "tool-result", payload: { role: "toolResult", content: `recent-${index}` }, tokenCost: 1_000, lifecycle: "retained", projection: "full", reason: "done", groupId: `group-${index}` });
+		context.recordObservation(sessionId, "exact archived output", { observationId: "obs-core" });
+		const condensed = context.condense(sessionId, { milestone: "subtask done", completedWork: ["implemented"], strategies: [], environmentChanges: [], constraints: [], openQuestions: [], references: ["observation://obs-core"] }, { budget: 20_000, target: 16_000 });
+		expect(condensed.noOp).toBe(false);
+		const messages = managedMessages({ sessionId, store, context, model: {} as never, contextOptions: () => ({ budget: 20_000, target: 16_000, overheadTokens: 0 }) });
+		const serialized = JSON.stringify(messages);
+		expect(serialized).toContain("<harnez-long-term-memory>");
+		expect(serialized).toContain("recent-5");
+		expect(context.recall(sessionId, "observation://obs-core").text).toBe("exact archived output");
+		const automatic = context.assemble(sessionId, { budget: 1_000, target: 800, overheadTokens: 0 });
+		expect(automatic.tokensAfter).toBeLessThanOrEqual(automatic.tokensBefore);
+	});
 	test("does not list a session until a user submits a message", async () => {
 		const { server } = harnez();
 		const id = server.createSession();
