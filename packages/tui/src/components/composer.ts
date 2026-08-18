@@ -440,7 +440,7 @@ export class ComposerView {
 	private async submit(followUp: boolean) {
 		const text = this.input.plainText.replace(/\[Image #\d+\]/g, "").trim();
 		if (!text.trim() && !this.images.length) return;
-		const snapshot = { text, images: this.attachments };
+		const snapshot = { text: this.input.plainText, images: this.attachments };
 		this.setValue("");
 		this.images = [];
 		try {

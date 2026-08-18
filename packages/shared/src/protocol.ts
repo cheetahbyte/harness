@@ -51,6 +51,16 @@ export type ImageAttachment = {
 
 export type UserInput = { text: string; images?: ImageAttachment[] };
 
+export function displayUserInput(
+	text: string,
+	images: readonly ImageAttachment[] = [],
+): string {
+	if (!images.length) return text;
+	const body = text.replace(/\[Image #\d+\]/g, "").trim();
+	const labels = images.map((_, index) => `[Image #${index + 1}]`).join("\n");
+	return body ? `${body}\n\n${labels}` : labels;
+}
+
 /** One entry of the `Ctrl+P` fast cycle: a model plus its own reasoning level. */
 export type FastCycleEntry = ModelConfig;
 

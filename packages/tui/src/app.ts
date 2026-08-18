@@ -18,6 +18,7 @@ import type {
 	ProviderOption,
 	ImageAttachment,
 } from "../../shared/src/protocol";
+import { displayUserInput } from "../../shared/src/protocol";
 import { type CommandHint, ComposerView } from "./components/composer";
 import { FooterView } from "./components/footer";
 import { HeaderView } from "./components/header";
@@ -239,11 +240,11 @@ export class TuiApp {
 				text,
 				...(images.length ? { images } : {}),
 			};
-			this.store.getState().addFollowUp(id, text);
+			this.store.getState().addFollowUp(id, displayUserInput(text, images));
 		} else if (command.type === "steer") {
 			id = crypto.randomUUID();
 			command = { ...command, id, ...(images.length ? { images } : {}) };
-			this.store.getState().addSteering(id, text);
+			this.store.getState().addSteering(id, displayUserInput(text, images));
 		} else if (images.length && command.type === "prompt") {
 			command = { ...command, images };
 		}

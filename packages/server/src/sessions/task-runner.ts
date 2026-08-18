@@ -3,6 +3,7 @@ import type {
 	ModelConfig,
 	ServerEvent,
 } from "../../../shared/src/protocol";
+import { displayUserInput } from "../../../shared/src/protocol";
 import { slashCommandPattern } from "../../../shared/src/slash-command";
 import type { AgentRunTiming, HarnezAgentRuntime } from "../agent/runtime";
 import { contextCapabilities } from "../agent/tools";
@@ -615,9 +616,7 @@ function isInitialInput(command: object): command is InitialInput {
 
 function displayText(text: string, images: readonly ImageAttachment[]): string {
 	if (!images.length) return text;
-	const body = text.trim();
-	const labels = images.map((_, index) => `[Image #${index + 1}]`).join("\n");
-	return !labels ? body : body ? `${body}\n\n${labels}` : labels;
+	return displayUserInput(text, images);
 }
 
 export function pendingCommandType(

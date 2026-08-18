@@ -20,6 +20,7 @@ import type {
 	SkillOption,
 	ImageAttachment,
 } from "../../shared/src/protocol";
+import { displayUserInput } from "../../shared/src/protocol";
 import { HarnezAgentRuntime } from "./agent/runtime";
 import { ContextManager } from "./context/manager";
 import type { SubagentResult } from "./context/types";
@@ -596,7 +597,7 @@ export class HarnezServer {
 		if (!session.running) {
 			this.maybeTitleSession(
 				id,
-				displayInput(command.text, inputImages(command)),
+				displayUserInput(command.text, inputImages(command)),
 			);
 			await this.run(id, pending);
 			return;
@@ -634,7 +635,7 @@ export class HarnezServer {
 		text: string,
 		attachments: ImageAttachment[] = [],
 	): Promise<void> {
-		this.maybeTitleSession(id, displayInput(text, attachments));
+		this.maybeTitleSession(id, displayUserInput(text, attachments));
 		if (!session.running) {
 			await this.run(id, {
 				text,
@@ -934,16 +935,6 @@ function isUserSubmission(command: ClientCommand): boolean {
 
 function inputImages(command: { images?: unknown }): ImageAttachment[] {
 	return validateImages(command.images);
-}
-
-function displayInput(
-	text: string,
-	images: readonly ImageAttachment[],
-): string {
-	if (!images.length) return text;
-	const body = text.trim();
-	const labels = images.map((_, index) => `[Image #${index + 1}]`).join("\n");
-	return body ? `${body}\n\n${labels}` : labels;
 }
 
 function isActiveControl(type: ClientCommand["type"]): boolean {
