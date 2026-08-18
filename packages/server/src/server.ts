@@ -129,6 +129,12 @@ export class HarnezServer {
 
 	/** Releases process-level resources; stdio MCP servers are child processes. */
 	async close(): Promise<void> {
+		for (const id of this.sessions.keys())
+			this.telemetrySink?.({
+				type: "session.completed",
+				timestamp: new Date().toISOString(),
+				sessionId: id,
+			});
 		const registries = [...this.workspaceMcp.values()];
 		this.workspaceMcp.clear();
 		await Promise.allSettled(registries.map((registry) => registry.close()));

@@ -77,6 +77,14 @@ type AssemblyOptions = {
 	budget: number;
 	target: number;
 	overheadTokens: number;
+	taskId?: string;
+	turnId?: number;
+	trigger?:
+		| "initial"
+		| "transform-context"
+		| "prepare-next-turn"
+		| "shrink"
+		| "explicit";
 };
 type TaskAssemblyOptions = AssemblyOptions & {
 	submissionWatermark: number;
@@ -97,14 +105,19 @@ export class ContextManager {
 
 	private readonly pressureStreak = new Map<string, number>();
 	private readonly pressured = new Set<string>();
+	private readonly assemblyIds = new Map<string, number>();
 	constructor(
 		private readonly store: SessionStore,
 		private readonly sink?: RuntimeEventSink,
 	) {}
 
-	markAgentProgress(sessionId: string): void {
-		if (this.pressured.has(sessionId))
-			this.pressured.add(`${sessionId}:continued`);
+	markAgentProgress(scopeId: string): void {
+		if (this.pressured.has(scopeId)) this.pressured.add(`${scopeId}:continued`);
+	}
+	clearPressure(scopeId: string): void {
+		this.pressureStreak.delete(scopeId);
+		this.pressured.delete(scopeId);
+		this.pressured.delete(`${scopeId}:continued`);
 	}
 
 	record(input: RecordInput, options?: PinOptions): ContextItem {
@@ -515,6 +528,10 @@ export class ContextManager {
 		tokensAfter: number;
 		episodesArchived: number;
 	} {
+		const scopeId = options.taskId ?? sessionId;
+		const assemblyId =
+			(this.assemblyIds.set(scopeId, (this.assemblyIds.get(scopeId) ?? 0) + 1),
+			this.assemblyIds.get(scopeId)!);
 		let state = this.assemblyState(sessionId, options.overheadTokens);
 		const evictedIds: string[] = [];
 		const archivedEpisodeIds: string[] = [];
@@ -532,8 +549,21 @@ export class ContextManager {
 			);
 		if (underPressure && state.estimatedTokens > options.budget)
 			state = this.compactPinned(sessionId, state, options, evictedIds);
-		if (underPressure && state.estimatedTokens > options.budget)
+		if (underPressure && state.estimatedTokens > options.budget) {
+			this.sink?.({
+				type: "context.assembly.failed",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				...(options.taskId ? { taskId: options.taskId } : {}),
+				...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+				assemblyId,
+				budget: options.budget,
+				tokensBefore,
+				tokensAfter: state.estimatedTokens,
+				error: "budget",
+			});
 			throw new ContextBudgetError(state.estimatedTokens, options.budget);
+		}
 		/**
 		 * After the archiving pass, never before it: a note about scarce budget
 		 * that competed for that same budget could be the weight that pushes an
@@ -543,36 +573,47 @@ export class ContextManager {
 		if (underPressure)
 			this.notePressure(sessionId, state.estimatedTokens, options.budget);
 		const pressureStreak = underPressure
-			? (this.pressureStreak.get(sessionId) ?? 0) + 1
+			? (this.pressureStreak.get(scopeId) ?? 0) + 1
 			: 0;
-		if (underPressure) this.pressureStreak.set(sessionId, pressureStreak);
-		else this.pressureStreak.delete(sessionId);
-		if (underPressure) this.pressured.add(sessionId);
+		if (underPressure) this.pressureStreak.set(scopeId, pressureStreak);
+		else this.pressureStreak.delete(scopeId);
+		if (underPressure) this.pressured.add(scopeId);
 		this.sink?.({
 			type: "context.assembly.completed",
 			timestamp: new Date().toISOString(),
 			sessionId,
-			taskId: sessionId,
-			turnId: 0,
-			assemblyId: Date.now(),
+			...(options.taskId ? { taskId: options.taskId } : {}),
+			...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+			assemblyId,
+			trigger: options.trigger ?? "initial",
+			scope: options.taskId ? "task" : "session",
 			tokensBefore,
 			tokensAfter: state.estimatedTokens,
 			budget: options.budget,
 			target: options.target,
 			underPressure,
 			pressureStreak,
-			agentContinued: this.pressured.has(`${sessionId}:continued`),
+			agentContinued: this.pressured.has(`${scopeId}:continued`),
 			evictedItems: evictedIds.length,
 			archivedEpisodes: archivedEpisodeIds.length,
+			liveTokens: state.estimatedTokens,
+			historyTokens: this.store
+				.contextItems(sessionId)
+				.reduce((sum, item) => sum + item.tokenCost, 0),
+			rollingSummaryChanged: evictedIds.some(
+				(id) =>
+					this.store.contextItems(sessionId).find((item) => item.id === id)
+						?.reason === ROLLING_SUMMARY_REASON,
+			),
 		});
 		if (evictedIds.length)
 			this.sink?.({
 				type: "context.compaction.completed",
 				timestamp: new Date().toISOString(),
 				sessionId,
-				taskId: sessionId,
-				turnId: 0,
-				assemblyId: Date.now(),
+				...(options.taskId ? { taskId: options.taskId } : {}),
+				...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+				assemblyId,
 				trigger: "automatic",
 				evictedItems: evictedIds.length,
 			});

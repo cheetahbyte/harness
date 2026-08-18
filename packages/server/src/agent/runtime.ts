@@ -50,6 +50,7 @@ export type AgentRunInput = {
 	mcp: Pick<McpRegistry, "call">;
 	signal: AbortSignal;
 	emit: (event: ServerEvent) => void;
+	turnId?: number;
 };
 
 export type AgentRunTiming = {
@@ -101,6 +102,7 @@ export class HarnezAgentRuntime {
 		mcp,
 		signal,
 		emit,
+		turnId,
 	}: AgentRunInput): Promise<AgentRunTiming> {
 		if (!config)
 			throw new HarnezProviderError(
@@ -143,6 +145,7 @@ export class HarnezAgentRuntime {
 			entry = created;
 		}
 		entry.emit = emit;
+		entry.turnId = turnId ?? entry.turnId + 1;
 		const message: AgentMessage = {
 			role: "user",
 			content: [{ type: "text", text }],
@@ -156,47 +159,25 @@ export class HarnezAgentRuntime {
 			 * budget, so it has to carry the emitter too — otherwise the cleanup it
 			 * performs is silent and every later assembly finds nothing to report.
 			 */
-			this.messages(sessionId, entry.agent.state.model, entry.task, emit);
+			this.messages(
+				sessionId,
+				entry.agent.state.model,
+				entry.task,
+				emit,
+				turnId,
+			);
 		} catch (error) {
 			this.context.completeGroup(sessionId, entry.promptGroupId);
 			entry.promptGroupId = undefined;
 			throw error;
 		}
 		entry.preRecorded.add(messageKey(message));
-		this.context.markAgentProgress(sessionId);
-		const requestId = ++this.requestId;
-		this.sink?.({
-			type: "model.request.started",
-			timestamp: new Date().toISOString(),
-			sessionId,
-			taskId: task.id,
-			turnId: requestId,
-			requestId,
-			provider: config.provider,
-			model: config.model,
-		});
+		this.context.markAgentProgress(task.id);
 		const abort = () => entry?.agent.abort();
 		signal.addEventListener("abort", abort, { once: true });
 		try {
 			await entry.agent.prompt(message);
-			this.sink?.({
-				type: "model.request.completed",
-				timestamp: new Date().toISOString(),
-				sessionId,
-				taskId: task.id,
-				turnId: requestId,
-				requestId,
-			});
 		} catch (error) {
-			this.sink?.({
-				type: "model.request.failed",
-				timestamp: new Date().toISOString(),
-				sessionId,
-				taskId: task.id,
-				turnId: requestId,
-				requestId,
-				error: error instanceof Error ? error.message : String(error),
-			});
 			log.error({ err: error, sessionId }, "agent prompt failed");
 			if (!signal.aborted) throw normalizeProviderError(error);
 		} finally {
@@ -369,6 +350,27 @@ export class HarnezAgentRuntime {
 					options?.signal,
 					{ sessionId, provider: config.provider, model: config.model },
 					(durationMs) => (entry.timing.modelDurationMs += durationMs),
+					(phase, attempt, durationMs, error) => {
+						const requestId = this.requestId++;
+						this.sink?.({
+							type:
+								phase === "started"
+									? "model.request.started"
+									: phase === "failed"
+										? "model.request.failed"
+										: "model.request.completed",
+							timestamp: new Date().toISOString(),
+							sessionId,
+							taskId: task.id,
+							turnId: entry.turnId,
+							requestId,
+							attempt,
+							provider: config.provider,
+							model: config.model,
+							...(durationMs === undefined ? {} : { durationMs }),
+							...(error ? { error } : {}),
+						});
+					},
 				);
 			},
 			toolExecution: "parallel",
@@ -381,6 +383,7 @@ export class HarnezAgentRuntime {
 		model: Model<Api>,
 		task?: TaskRuntime,
 		emit?: ((event: ServerEvent) => void) | undefined,
+		turnId?: number,
 	): AgentMessage[] {
 		return managedMessages({
 			sessionId,
@@ -390,6 +393,7 @@ export class HarnezAgentRuntime {
 			context: this.context,
 			contextOptions: this.contextOptions.bind(this),
 			...(emit ? { emit } : {}),
+			...(turnId === undefined ? {} : { turnId }),
 		});
 	}
 	private contextOptions(model: Model<Api>): {
@@ -448,6 +452,12 @@ function streamWithRetry(
 	signal: AbortSignal | undefined,
 	context: { sessionId: string; provider: string; model: string },
 	onComplete: (durationMs: number) => void,
+	onAttempt?: (
+		phase: "started" | "completed" | "failed",
+		attempt: number,
+		durationMs: number | undefined,
+		error?: string,
+	) => void,
 ): AssistantMessageEventStream {
 	const out = createAssistantMessageEventStream();
 	void (async () => {
@@ -460,12 +470,20 @@ function streamWithRetry(
 				| Extract<AssistantMessageEvent, { type: "done" | "error" }>
 				| undefined;
 			const startedAt = performance.now();
+			onAttempt?.("started", attempt + 1, undefined);
 			try {
 				for await (const event of produce())
 					if (event.type === "done" || event.type === "error") terminal = event;
 					else out.push(event);
 			} finally {
-				onComplete(performance.now() - startedAt);
+				const durationMs = performance.now() - startedAt;
+				onComplete(durationMs);
+				onAttempt?.(
+					terminal?.type === "error" ? "failed" : "completed",
+					attempt + 1,
+					Math.round(durationMs),
+					terminal?.type === "error" ? terminal.error.errorMessage : undefined,
+				);
 			}
 			if (!terminal) {
 				log.warn(
@@ -548,5 +566,8 @@ function newAgentEntry(
 		},
 		emit: undefined,
 		sink,
+		turnId: 0,
+		callIds: new Map(),
+		callStarted: new Map(),
 	};
 }

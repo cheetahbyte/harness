@@ -1,59 +1,43 @@
-/** Internal lifecycle events. Payloads are deliberately absent by default. */
-type RuntimeEventBase = {
+/** Internal lifecycle events. Content fields are only present when explicitly captured. */
+export type RuntimeEvent = {
+	type:
+		| "session.started"
+		| "session.completed"
+		| "task.started"
+		| "task.completed"
+		| "turn.started"
+		| "turn.completed"
+		| `model.request.${"started" | "completed" | "failed"}`
+		| `tool.call.${"started" | "completed" | "failed"}`
+		| `skill.${"discovered" | "inspected" | "activated"}`
+		| "capability.snapshot.created"
+		| `context.assembly.${"completed" | "failed"}`
+		| "context.compaction.completed"
+		| `approval.${"requested" | "resolved"}`
+		| `subagent.${"started" | "completed" | "failed"}`;
 	timestamp: string;
 	sessionId: string;
+	taskId?: string;
+	turnId?: number;
+	requestId?: number;
+	callId?: number;
+	assemblyId?: number;
+	approvalId?: number;
+	status?: string;
+	durationMs?: number;
+	error?: string;
+	provider?: string;
+	model?: string;
+	tool?: string;
+	source?: string;
+	trigger?: string;
+	inputTokens?: number;
+	outputTokens?: number;
+	liveTokens?: number;
+	historyTokens?: number;
+	pressureStreak?: number;
 	[key: string]: unknown;
 };
-
-export type RuntimeEvent =
-	| (RuntimeEventBase & { type: "session.started" | "session.completed" })
-	| (RuntimeEventBase & {
-			type: "task.started" | "task.completed";
-			taskId: string;
-	  })
-	| (RuntimeEventBase & {
-			type: "turn.started" | "turn.completed";
-			taskId: string;
-			turnId: number;
-	  })
-	| (RuntimeEventBase & {
-			type: `model.request.${"started" | "completed" | "failed"}`;
-			taskId: string;
-			turnId: number;
-			requestId: number;
-	  })
-	| (RuntimeEventBase & {
-			type: `tool.call.${"started" | "completed" | "failed"}`;
-			taskId: string;
-			turnId: number;
-			callId: number;
-	  })
-	| (RuntimeEventBase & {
-			type: `skill.${"discovered" | "inspected" | "activated"}`;
-			taskId: string;
-	  })
-	| (RuntimeEventBase & { type: "capability.snapshot.created"; taskId: string })
-	| (RuntimeEventBase & {
-			type: `context.assembly.${"completed" | "failed"}`;
-			taskId: string;
-			turnId: number;
-			assemblyId: number;
-	  })
-	| (RuntimeEventBase & {
-			type: "context.compaction.completed";
-			taskId: string;
-			turnId: number;
-			assemblyId: number;
-	  })
-	| (RuntimeEventBase & {
-			type: `approval.${"requested" | "resolved"}`;
-			taskId: string;
-			approvalId: number;
-	  })
-	| (RuntimeEventBase & {
-			type: `subagent.${"started" | "completed" | "failed"}`;
-			taskId: string;
-	  });
 
 export type RuntimeEventSink = (event: RuntimeEvent) => void;
 
