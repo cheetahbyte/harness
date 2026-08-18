@@ -75,6 +75,18 @@ function registry(
 
 test("connects a stdio server and honors the subprocess contract", async () => {
 	const root = pluginRoot();
+	const telemetryEnvironment = {
+		OTEL_EXPORTER_OTLP_ENDPOINT: process.env["OTEL_EXPORTER_OTLP_ENDPOINT"],
+		OTEL_EXPORTER_OTLP_HEADERS: process.env["OTEL_EXPORTER_OTLP_HEADERS"],
+		HARNEZ_OTEL: process.env["HARNEZ_OTEL"],
+		HARNEZ_OTEL_CAPTURE_CONTENT: process.env["HARNEZ_OTEL_CAPTURE_CONTENT"],
+	};
+	Object.assign(process.env, {
+		OTEL_EXPORTER_OTLP_ENDPOINT: "http://secret.invalid",
+		OTEL_EXPORTER_OTLP_HEADERS: "authorization=secret",
+		HARNEZ_OTEL: "1",
+		HARNEZ_OTEL_CAPTURE_CONTENT: "prompts",
+	});
 	process.env["HARNEZ_MCP_TEST_AMBIENT"] = "from-parent";
 	const mcp = registry(root, {
 		echo: {
@@ -106,7 +118,15 @@ test("connects a stdio server and honors the subprocess contract", async () => {
 	expect(report.cwd).toBe(realpathSync(join(root, "state/echo")));
 	// The ambient environment is inherited so secrets can stay out of mcp.json.
 	expect(report.inherited).toBe("from-parent");
+	expect(report.otelEndpoint).toBeNull();
+	expect(report.otelHeaders).toBeNull();
+	expect(report.harnezOtel).toBeNull();
+	expect(report.captureContent).toBeNull();
 	delete process.env["HARNEZ_MCP_TEST_AMBIENT"];
+	for (const [key, value] of Object.entries(telemetryEnvironment)) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
 }, 30_000);
 
 test("passes arguments through and surfaces tool errors as failures", async () => {

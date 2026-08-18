@@ -1,5 +1,6 @@
 import { Type } from "@earendil-works/pi-ai";
 
+import { sanitizedChildEnvironment } from "../telemetry/runtime";
 import { EvictionPriority, WorkspaceTool } from "./tool";
 
 export class BashTool extends WorkspaceTool {
@@ -17,6 +18,7 @@ export class BashTool extends WorkspaceTool {
 			throw new Error("command must be a non-empty string");
 		const proc = Bun.spawn(["/bin/sh", "-lc", input["command"]], {
 			cwd: this.workspace,
+			env: sanitizedChildEnvironment(),
 			stdout: "pipe",
 			stderr: "pipe",
 		});

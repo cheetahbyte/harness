@@ -10,6 +10,7 @@ import { getFrontmatterSlug } from "./frontmatter";
 import installation from "./installation.md?raw";
 import introduction from "./introduction.md?raw";
 import mcp from "./mcp.md?raw";
+import observability from "./observability.md?raw";
 import promptTemplates from "./prompt-templates.md?raw";
 import sessions from "./sessions.md?raw";
 import skills from "./skills.md?raw";
@@ -68,6 +69,13 @@ export const docPages: DocPage[] = [
 			"Configure Harnez credentials, models, project overrides, environment variables, context budgets, and logging.",
 		section: "Guide",
 		source: configuration,
+	},
+	{
+		slug: getFrontmatterSlug(observability),
+		title: "Observability",
+		description: "Export privacy-controlled Harnez lifecycle traces and metrics with OpenTelemetry.",
+		section: "Advanced",
+		source: observability,
 	},
 	{
 		slug: getFrontmatterSlug(contextCompaction),

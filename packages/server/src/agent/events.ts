@@ -14,6 +14,7 @@ import { ContextBudgetError, type ContextInspection } from "../context/types";
 import type { SessionStore } from "../sessions/store";
 import { resolveSystemPrompt } from "../system-prompt";
 import type { TaskRuntime } from "../task-runtime";
+import type { RuntimeEventSink } from "../telemetry/events";
 import { tokenCost } from "../token-cost";
 import type { CoreTools } from "../tools";
 import { detailsRecord, messageKey } from "./message";
@@ -44,6 +45,10 @@ export type AgentEntry = {
 	};
 	/** Emitter for the in-flight run; context assembly reports compaction through it. */
 	emit: ((event: ServerEvent) => void) | undefined;
+	sink: RuntimeEventSink | undefined;
+	turnId: number;
+	callIds: Map<string, number>;
+	callStarted: Map<string, number>;
 };
 
 export function translateAgentEvent({
@@ -54,6 +59,7 @@ export function translateAgentEvent({
 	context,
 	shrink,
 	inspect,
+	sink,
 }: {
 	sessionId: string;
 	entry: AgentEntry;
@@ -62,6 +68,7 @@ export function translateAgentEvent({
 	context: ContextManager;
 	shrink: () => void;
 	inspect: () => ContextInspection;
+	sink?: RuntimeEventSink;
 }): void {
 	switch (event.type) {
 		case "message_start":
@@ -85,6 +92,20 @@ export function translateAgentEvent({
 			handleAgentEnd(sessionId, entry, context, shrink, emit);
 			return;
 		case "tool_execution_start":
+			entry.callStarted.set(event.toolCallId, performance.now());
+			sink?.({
+				type: "tool.call.started",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				taskId: entry.task.id,
+				source: event.toolName.startsWith("mcp__") ? "mcp" : "harnez",
+				turnId: entry.turnId,
+				callId:
+					entry.callIds.get(event.toolCallId) ??
+					(entry.callIds.set(event.toolCallId, entry.callIds.size + 1),
+					entry.callIds.size),
+				tool: event.toolName,
+			});
 			if (!entry.timing.activeToolCalls.size)
 				entry.timing.toolWindowStartedAt = performance.now();
 			entry.timing.activeToolCalls.add(event.toolCallId);
@@ -96,7 +117,23 @@ export function translateAgentEvent({
 			});
 			return;
 		case "tool_execution_end":
+			sink?.({
+				type: event.isError ? "tool.call.failed" : "tool.call.completed",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				taskId: entry.task.id,
+				source: event.toolName.startsWith("mcp__") ? "mcp" : "harnez",
+				turnId: entry.turnId,
+				callId: entry.callIds.get(event.toolCallId) ?? 0,
+				tool: event.toolName,
+				durationMs: Math.round(
+					performance.now() -
+						(entry.callStarted.get(event.toolCallId) ?? performance.now()),
+				),
+			});
 			entry.timing.activeToolCalls.delete(event.toolCallId);
+			entry.callIds.delete(event.toolCallId);
+			entry.callStarted.delete(event.toolCallId);
 			if (
 				!entry.timing.activeToolCalls.size &&
 				entry.timing.toolWindowStartedAt !== undefined
@@ -308,6 +345,7 @@ export function managedMessages({
 	context,
 	contextOptions,
 	emit,
+	turnId,
 }: {
 	sessionId: string;
 	model: Model<Api>;
@@ -320,6 +358,7 @@ export function managedMessages({
 		overheadTokens: number;
 	};
 	emit?: ((event: ServerEvent) => void) | undefined;
+	turnId?: number;
 }): AgentMessage[] {
 	const capabilityItems = task?.context.items() ?? [];
 	if (store.contextItems(sessionId).length === 0 && !capabilityItems.length)
@@ -357,11 +396,18 @@ export function managedMessages({
 		task.taskStartSequence !== undefined
 			? context.assembleTask(sessionId, {
 					...options,
+					taskId: task.id,
+					...(turnId === undefined ? {} : { turnId }),
+					trigger: "prepare-next-turn",
 					submissionWatermark: task.submissionWatermark,
 					taskStartSequence: task.taskStartSequence,
 					predecessorTerminalIds: task.predecessorTerminalMessageIds,
 				})
-			: context.assemble(sessionId, options);
+			: context.assemble(sessionId, {
+					...options,
+					...(task ? { taskId: task.id } : {}),
+					...(turnId === undefined ? {} : { turnId }),
+				});
 	if (emit && assembly.evictedIds.length)
 		emit({
 			type: "context-compaction",

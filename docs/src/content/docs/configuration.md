@@ -180,3 +180,8 @@ path in the error.
 | `HARNEZ_SHOW_STATUS` | Set to `1` to show status and token-usage rows in the TUI transcript. |
 | `XDG_CONFIG_HOME` | Overrides the base config directory in place of `~/.config`. |
 | `HARNEZ_OPENAI_API_KEY` / `OPENAI_API_KEY` | API key for the `openai-compatible` provider, checked in that order. |
+
+Set `HARNEZ_OTEL=1` to enable OpenTelemetry export. Harnez then uses the
+standard `OTEL_*` variables for endpoint, protocol, headers, service name,
+resource attributes, exporters, and sampling. Content capture is disabled by
+default; see [Observability](/docs/advanced/observability) before enabling it.

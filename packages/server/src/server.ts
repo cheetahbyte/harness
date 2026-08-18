@@ -57,8 +57,10 @@ import {
 } from "./settings-store";
 import { availableSkills } from "./skills";
 import type { TaskRuntime } from "./task-runtime";
+import type { RuntimeEventSink } from "./telemetry/events";
 
 export class HarnezServer {
+	private readonly telemetrySink: RuntimeEventSink | undefined;
 	private readonly sessions = new Map<string, Session>();
 	private readonly runtime: HarnezAgentRuntime;
 	private readonly credentials: CredentialStore;
@@ -84,8 +86,9 @@ export class HarnezServer {
 			globalHarnezPath("settings.json"),
 			projectHarnezPath("settings.json", resolve(workspace)),
 		),
-		options: { contextBudget?: number } = {},
+		options: { contextBudget?: number; telemetry?: RuntimeEventSink } = {},
 	) {
+		this.telemetrySink = options.telemetry;
 		if (
 			options.contextBudget !== undefined &&
 			(!Number.isSafeInteger(options.contextBudget) ||
@@ -104,7 +107,7 @@ export class HarnezServer {
 			(id) => this.modelsFor(id),
 			(id, event) => this.publish(id, event, false),
 		);
-		this.context = new ContextManager(this.store);
+		this.context = new ContextManager(this.store, options.telemetry);
 		this.workspaceSettings.set(this.defaultWorkspace, this.defaultSettings);
 		this.runtime = new HarnezAgentRuntime({
 			credentials: this.credentials,
@@ -114,6 +117,7 @@ export class HarnezServer {
 			...(options.contextBudget === undefined
 				? {}
 				: { contextBudget: options.contextBudget }),
+			...(options.telemetry ? { sink: options.telemetry } : {}),
 		});
 		this.taskRunner = new SessionTaskRunner({
 			runtime: this.runtime,
@@ -123,11 +127,18 @@ export class HarnezServer {
 			workspace: (sessionId) => this.workspace(sessionId),
 			modelConfig: (sessionId) => this.modelConfig(sessionId),
 			emit: (sessionId, event) => this.publish(sessionId, event),
+			...(options.telemetry ? { sink: options.telemetry } : {}),
 		});
 	}
 
 	/** Releases process-level resources; stdio MCP servers are child processes. */
 	async close(): Promise<void> {
+		for (const id of this.sessions.keys())
+			this.telemetrySink?.({
+				type: "session.completed",
+				timestamp: new Date().toISOString(),
+				sessionId: id,
+			});
 		const registries = [...this.workspaceMcp.values()];
 		this.workspaceMcp.clear();
 		await Promise.allSettled(registries.map((registry) => registry.close()));
@@ -139,6 +150,11 @@ export class HarnezServer {
 		this.sessions.set(id, new Session());
 		// Connecting starts now so the first prompt does not pay for the handshake.
 		this.mcpFor(id);
+		this.telemetrySink?.({
+			type: "session.started",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+		});
 		log.info({ sessionId: id }, "session created");
 		return id;
 	}

@@ -28,6 +28,7 @@ import { HarnezProviderError, providerModels } from "../provider";
 import type { SessionStore } from "../sessions/store";
 import type { SkillSnapshotEntry } from "../skills";
 import type { TaskRuntime } from "../task-runtime";
+import type { RuntimeEventSink } from "../telemetry/events";
 import type { CoreTools } from "../tools";
 import {
 	type AgentEntry,
@@ -55,6 +56,7 @@ export type AgentRunInput = {
 	mcp: Pick<McpRegistry, "call">;
 	signal: AbortSignal;
 	emit: (event: ServerEvent) => void;
+	turnId?: number;
 };
 
 export type AgentRunTiming = {
@@ -81,13 +83,17 @@ export class HarnezAgentRuntime {
 		store: SessionStore;
 		context: ContextManager;
 		contextBudget?: number;
+		sink?: RuntimeEventSink;
 	}) {
 		this.credentials = options.credentials;
 		this.modelsFor = options.modelsFor;
 		this.store = options.store;
 		this.context = options.context;
 		this.contextBudget = options.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
+		this.sink = options.sink;
 	}
+	private readonly sink: RuntimeEventSink | undefined;
+	private requestId = 0;
 
 	supportsImages(sessionId: string, config: ModelConfig | undefined): boolean {
 		if (!config) return false;
@@ -114,6 +120,7 @@ export class HarnezAgentRuntime {
 		mcp,
 		signal,
 		emit,
+		turnId,
 	}: AgentRunInput): Promise<AgentRunTiming> {
 		if (!config)
 			throw new HarnezProviderError(
@@ -149,12 +156,14 @@ export class HarnezAgentRuntime {
 					context: this.context,
 					shrink: () => this.shrink(sessionId, created),
 					inspect: () => this.inspect(sessionId),
+					...(this.sink ? { sink: this.sink } : {}),
 				}),
 			);
 			this.agents.set(sessionId, created);
 			entry = created;
 		}
 		entry.emit = emit;
+		entry.turnId = turnId ?? entry.turnId + 1;
 		const message: AgentMessage = {
 			role: "user",
 			content: [
@@ -175,13 +184,20 @@ export class HarnezAgentRuntime {
 			 * budget, so it has to carry the emitter too — otherwise the cleanup it
 			 * performs is silent and every later assembly finds nothing to report.
 			 */
-			this.messages(sessionId, entry.agent.state.model, entry.task, emit);
+			this.messages(
+				sessionId,
+				entry.agent.state.model,
+				entry.task,
+				emit,
+				turnId,
+			);
 		} catch (error) {
 			this.context.completeGroup(sessionId, entry.promptGroupId);
 			entry.promptGroupId = undefined;
 			throw error;
 		}
 		entry.preRecorded.add(messageKey(message));
+		this.context.markAgentProgress(task.id);
 		const abort = () => entry?.agent.abort();
 		signal.addEventListener("abort", abort, { once: true });
 		try {
@@ -290,7 +306,7 @@ export class HarnezAgentRuntime {
 			context: this.context,
 			workspace: this.store.workspace(sessionId) ?? process.cwd(),
 		});
-		const entry = newAgentEntry(key, tools, task);
+		const entry = newAgentEntry(key, tools, task, this.sink);
 		/**
 		 * Publishes a tool mid-task. `entry.agent` is assigned before any tool can
 		 * run, so the deferred read is always resolved by the time this fires.
@@ -364,6 +380,27 @@ export class HarnezAgentRuntime {
 					options?.signal,
 					{ sessionId, provider: config.provider, model: config.model },
 					(durationMs) => (entry.timing.modelDurationMs += durationMs),
+					(phase, attempt, durationMs, error) => {
+						const requestId = this.requestId++;
+						this.sink?.({
+							type:
+								phase === "started"
+									? "model.request.started"
+									: phase === "failed"
+										? "model.request.failed"
+										: "model.request.completed",
+							timestamp: new Date().toISOString(),
+							sessionId,
+							taskId: task.id,
+							turnId: entry.turnId,
+							requestId,
+							attempt,
+							provider: config.provider,
+							model: config.model,
+							...(durationMs === undefined ? {} : { durationMs }),
+							...(error ? { error } : {}),
+						});
+					},
 				);
 			},
 			toolExecution: "parallel",
@@ -376,6 +413,7 @@ export class HarnezAgentRuntime {
 		model: Model<Api>,
 		task?: TaskRuntime,
 		emit?: ((event: ServerEvent) => void) | undefined,
+		turnId?: number,
 	): AgentMessage[] {
 		return managedMessages({
 			sessionId,
@@ -385,6 +423,7 @@ export class HarnezAgentRuntime {
 			context: this.context,
 			contextOptions: this.contextOptions.bind(this),
 			...(emit ? { emit } : {}),
+			...(turnId === undefined ? {} : { turnId }),
 		});
 	}
 	private contextOptions(model: Model<Api>): {
@@ -443,6 +482,12 @@ function streamWithRetry(
 	signal: AbortSignal | undefined,
 	context: { sessionId: string; provider: string; model: string },
 	onComplete: (durationMs: number) => void,
+	onAttempt?: (
+		phase: "started" | "completed" | "failed",
+		attempt: number,
+		durationMs: number | undefined,
+		error?: string,
+	) => void,
 ): AssistantMessageEventStream {
 	const out = createAssistantMessageEventStream();
 	void (async () => {
@@ -455,12 +500,20 @@ function streamWithRetry(
 				| Extract<AssistantMessageEvent, { type: "done" | "error" }>
 				| undefined;
 			const startedAt = performance.now();
+			onAttempt?.("started", attempt + 1, undefined);
 			try {
 				for await (const event of produce())
 					if (event.type === "done" || event.type === "error") terminal = event;
 					else out.push(event);
 			} finally {
-				onComplete(performance.now() - startedAt);
+				const durationMs = performance.now() - startedAt;
+				onComplete(durationMs);
+				onAttempt?.(
+					terminal?.type === "error" ? "failed" : "completed",
+					attempt + 1,
+					Math.round(durationMs),
+					terminal?.type === "error" ? terminal.error.errorMessage : undefined,
+				);
 			}
 			if (!terminal) {
 				log.warn(
@@ -521,6 +574,7 @@ function newAgentEntry(
 	key: string,
 	tools: CoreTools,
 	task: TaskRuntime,
+	sink?: RuntimeEventSink,
 ): AgentEntry {
 	return {
 		key,
@@ -541,5 +595,9 @@ function newAgentEntry(
 			toolWindowStartedAt: undefined,
 		},
 		emit: undefined,
+		sink,
+		turnId: 0,
+		callIds: new Map(),
+		callStarted: new Map(),
 	};
 }

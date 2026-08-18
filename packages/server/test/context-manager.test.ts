@@ -1447,6 +1447,51 @@ describe("ContextManager", () => {
 		store.db.close();
 	});
 
+	test("reports pressure streak and continuation through the lifecycle sink", () => {
+		const store = new SessionStore(storePath());
+		const events: Array<Record<string, unknown>> = [];
+		const sessionId = store.create();
+		const manager = new ContextManager(store, (event) => events.push(event));
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "keep" },
+			tokenCost: 600,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+		manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "large" },
+			compactPayload: { role: "toolResult", content: "ref" },
+			tokenCost: 500,
+			compactTokenCost: 50,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "read" },
+		});
+		const options = { taskId: "task-1", budget: 1_000, target: 800, overheadTokens: 0 } as const;
+		manager.assemble(sessionId, options);
+		manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "another large result" },
+			compactPayload: { role: "toolResult", content: "another ref" },
+			tokenCost: 500,
+			compactTokenCost: 50,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "read" },
+		});
+		manager.markAgentProgress("task-1");
+		manager.assemble(sessionId, options);
+		const assemblies = events.filter((event) => event["type"] === "context.assembly.completed");
+		expect(assemblies.map((event) => event["pressureStreak"])).toEqual([1, 2]);
+		expect(assemblies[1]?.["agentContinued"]).toBe(true);
+		store.db.close();
+	});
+
 	test("withholds the pressure note when the budget cannot seat it", () => {
 		const store = new SessionStore(storePath());
 		const sessionId = store.create();

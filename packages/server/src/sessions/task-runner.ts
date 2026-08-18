@@ -24,6 +24,7 @@ import type { McpRegistry, McpToolDescriptor } from "../mcp/registry";
 import { expandPrompt, scanPrompts } from "../prompts";
 import { activateSkill, type SkillSnapshotEntry, scanSkills } from "../skills";
 import { TaskRuntime, type TaskTerminalStatus } from "../task-runtime";
+import type { RuntimeEventSink } from "../telemetry/events";
 import { tokenCost } from "../token-cost";
 import { CoreTools } from "../tools";
 import type { QueuedTask, SchedulerDecision } from "./scheduler";
@@ -59,6 +60,7 @@ type RunnerOptions = {
 	workspace: (sessionId: string) => string;
 	modelConfig: (sessionId: string) => ModelConfig | undefined;
 	emit: (sessionId: string, event: ServerEvent) => void;
+	sink?: RuntimeEventSink;
 };
 
 type RunInput = {
@@ -70,6 +72,8 @@ type RunInput = {
 };
 
 export class SessionTaskRunner {
+	private readonly turnIds = new Map<string, number>();
+	private readonly startedTasks = new Set<string>();
 	constructor(private readonly options: RunnerOptions) {}
 
 	async run(input: RunInput): Promise<void> {
@@ -98,6 +102,24 @@ export class SessionTaskRunner {
 						: {}),
 				});
 		this.emitStart(id, running, pending, pendingType, text, images);
+		if (!this.startedTasks.has(running.task.id))
+			this.options.sink?.({
+				type: "task.started",
+				timestamp: new Date().toISOString(),
+				sessionId: id,
+				taskId: running.task.id,
+			});
+		this.startedTasks.add(running.task.id);
+		const turnId =
+			(this.turnIds.set(id, (this.turnIds.get(id) ?? 0) + 1),
+			this.turnIds.get(id)!);
+		this.options.sink?.({
+			type: "turn.started",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+			turnId,
+		});
 		let timing: AgentRunTiming;
 		try {
 			timing = await this.options.runtime.run({
@@ -112,17 +134,52 @@ export class SessionTaskRunner {
 				mcp: running.mcp,
 				signal: controller.signal,
 				emit: (event) => this.options.emit(id, event),
+				turnId,
 			});
 		} catch (error) {
-			await this.fail(id, session, running, pending, error);
+			this.options.sink?.({
+				type: "turn.completed",
+				timestamp: new Date().toISOString(),
+				sessionId: id,
+				taskId: running.task.id,
+				turnId,
+				status: "failed",
+				durationMs: Date.now() - startedAt,
+			});
+			await this.fail(id, session, running, pending, error, startedAt);
 			return;
 		}
 		delete session.running;
 		if (controller.signal.aborted) {
+			this.options.sink?.({
+				type: "turn.completed",
+				timestamp: new Date().toISOString(),
+				sessionId: id,
+				taskId: running.task.id,
+				turnId,
+				status: "cancelled",
+				durationMs: Date.now() - startedAt,
+			});
 			await this.abort(id, session, running, pending, startedAt, timing);
 			return;
 		}
 		this.succeed(id, running, pending, startedAt, timing);
+		this.options.sink?.({
+			type: "turn.completed",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+			turnId,
+			durationMs: Date.now() - startedAt,
+		});
+		this.options.sink?.({
+			type: "task.completed",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+			status: "completed",
+			durationMs: Date.now() - startedAt,
+		});
 		await this.advance(id, session, session.scheduler.settle(running.task));
 	}
 
@@ -230,8 +287,17 @@ export class SessionTaskRunner {
 		running: RunningTask,
 		pending: QueuedTask | PendingSteer | undefined,
 		error: unknown,
+		startedAt: number,
 	): Promise<void> {
 		log.error({ err: error, sessionId: id }, "run failed");
+		this.options.sink?.({
+			type: "task.completed",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+			status: "failed",
+			durationMs: Date.now() - startedAt,
+		});
 		const message = error instanceof Error ? error.message : String(error);
 		/**
 		 * The budget cliff is the one failure the user can act on, and it is the
@@ -301,6 +367,14 @@ export class SessionTaskRunner {
 			running.task,
 			running.task.result()?.status ?? "cancelled",
 		);
+		this.options.sink?.({
+			type: "task.completed",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+			status: running.task.result()?.status ?? "cancelled",
+			durationMs,
+		});
 		this.finishPending(id, pending);
 		await this.advance(id, session, session.scheduler.settle(running.task));
 	}
@@ -401,10 +475,27 @@ export class SessionTaskRunner {
 			...(predecessor ? { predecessor } : {}),
 			...(submissionWatermark === undefined ? {} : { submissionWatermark }),
 		});
+		for (const skill of skills)
+			this.options.sink?.({
+				type: "skill.discovered",
+				timestamp: new Date().toISOString(),
+				sessionId: id,
+				taskId: task.id,
+				skill: skill.capability.name,
+				skillHash: skill.ref.bodyHash,
+			});
+		this.options.sink?.({
+			type: "capability.snapshot.created",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: task.id,
+			capabilitySnapshotId: bindingGeneration,
+		});
 		this.loadTools(task, snapshot, context, accountant);
 		const { prompt, selected } = selectedSkills(expanded, skills);
 		const skipped = await this.activateSkills(
 			id,
+			task.id,
 			selected,
 			snapshot,
 			context,
@@ -461,6 +552,8 @@ export class SessionTaskRunner {
 				taskStartSequence: contextWatermark,
 				predecessorTerminalMessageIds:
 					predecessor?.result()?.terminalMessageIds ?? [],
+				sessionId: id,
+				...(this.options.sink ? { sink: this.options.sink } : {}),
 			},
 		);
 		const accountant = {
@@ -529,6 +622,7 @@ export class SessionTaskRunner {
 	 */
 	private async activateSkills(
 		id: string,
+		taskId: string,
 		selected: readonly SkillSnapshotEntry[],
 		snapshot: CapabilitySnapshot,
 		context: CapabilityContext,
@@ -536,8 +630,25 @@ export class SessionTaskRunner {
 	): Promise<string[]> {
 		const skipped: string[] = [];
 		for (const entry of selected) {
+			this.options.sink?.({
+				type: "skill.inspected",
+				timestamp: new Date().toISOString(),
+				sessionId: id,
+				taskId,
+				skill: entry.capability.name,
+				skillHash: entry.ref.bodyHash,
+			});
 			const ref = snapshot.reference(entry.capability.id, "operator");
 			const admission = await activateSkill(entry, ref, context, accountant);
+			if (admission.status !== "rejected")
+				this.options.sink?.({
+					type: "skill.activated",
+					timestamp: new Date().toISOString(),
+					sessionId: id,
+					taskId,
+					skill: entry.capability.name,
+					skillHash: entry.ref.bodyHash,
+				});
 			if (admission.status !== "rejected") continue;
 			const reason = describeRejection(
 				admission,
@@ -561,6 +672,7 @@ export class SessionTaskRunner {
 		task: TaskRuntime,
 		status: TaskTerminalStatus,
 	): void {
+		this.options.context.clearPressure(task.id);
 		this.options.runtime.forget(id);
 		this.options.store.appendTaskLedger(id, task.id, task.ledger());
 		this.options.store.recordTaskTerminal(id, task.id, status, task.startedAt);
