@@ -1,5 +1,6 @@
 import {
 	type CliRenderer,
+	createHostClipboard,
 	createCliRenderer,
 	type SelectOption,
 } from "@opentui/core";
@@ -27,6 +28,7 @@ export async function runTui(
 		exitOnCtrlC: true,
 		targetFps: 30,
 	});
+	const clipboard = createHostClipboard({ maxReadBytes: 8 * 1024 * 1024 });
 	let sessionId: string;
 	try {
 		sessionId =
@@ -37,6 +39,7 @@ export async function runTui(
 			(await client.createSession());
 	} catch (error) {
 		renderer.destroy();
+		await clipboard.dispose();
 		throw error;
 	}
 	let store = createTuiStore(sessionId);
@@ -73,6 +76,7 @@ export async function runTui(
 		async () => {
 			await restartServer();
 		},
+		clipboard,
 	);
 	/** Reconnect a specific session; old streams can never write into a new one. */
 	async function streamWithReconnect(
@@ -132,6 +136,7 @@ export async function runTui(
 	await new Promise<void>((resolve) => renderer.once("destroy", resolve));
 	stopped = true;
 	app.destroy();
+	await clipboard.dispose();
 	controller.abort();
 }
 

@@ -5,8 +5,10 @@ import {
 	SyntaxStyle,
 	TextareaRenderable,
 	TextRenderable,
+	type HostClipboardService,
 } from "@opentui/core";
 
+import type { ImageAttachment } from "../../../shared/src/protocol";
 import {
 	expandsAt,
 	type SlashCommandKind,
@@ -28,6 +30,16 @@ const RUNNING_PHRASES = [
 	"box, box — the tests are cooked",
 ] as const;
 const RUNNING_FRAME_MS = 120;
+function isImageMime(
+	value: string | undefined,
+): value is ImageAttachment["mimeType"] {
+	return (
+		value === "image/png" ||
+		value === "image/jpeg" ||
+		value === "image/gif" ||
+		value === "image/webp"
+	);
+}
 export type CommandHint = {
 	name: string;
 	description: string;
@@ -77,17 +89,23 @@ export class ComposerView {
 	private selectedSuggestion = 0;
 	private suggestionOffset = 0;
 	private suggestionStart = 0;
+	private images: ImageAttachment[] = [];
 
 	constructor(
 		private readonly renderer: CliRenderer,
 		commands: readonly CommandHint[],
 		private readonly actions: {
-			submit: (text: string, followUp: boolean) => void;
+			submit: (
+				text: string,
+				images: ImageAttachment[],
+				followUp: boolean,
+			) => Promise<void>;
 			abort: () => void;
 			toggleThinking: () => void;
 			cycleThinkingLevel: () => void;
 			cycleModel: () => void;
 		},
+		private readonly clipboard?: HostClipboardService,
 	) {
 		this.commands = commands;
 		this.root = new BoxRenderable(renderer, {
@@ -188,11 +206,16 @@ export class ComposerView {
 		this.root.add(this.runningIndicator);
 		this.root.add(this.inputRow);
 		renderer.keyInput.prependListener("keypress", this.handleKey);
+		renderer.keyInput.prependListener("paste", this.handlePaste);
 		this.input.focus();
 	}
 
 	get value() {
 		return this.input.plainText;
+	}
+
+	get attachments() {
+		return structuredClone(this.images);
 	}
 
 	setActive(active: boolean) {
@@ -284,6 +307,7 @@ export class ComposerView {
 	destroy() {
 		if (this.runningAnimation) clearInterval(this.runningAnimation);
 		this.renderer.keyInput.off("keypress", this.handleKey);
+		this.renderer.keyInput.off("paste", this.handlePaste);
 		this.highlightStyle.destroy();
 	}
 
@@ -299,6 +323,11 @@ export class ComposerView {
 
 	private handleKey = (key: KeyEvent) => {
 		if (key.defaultPrevented) return;
+		if ((key.ctrl || key.meta) && key.name === "v") {
+			key.preventDefault();
+			void this.readClipboard();
+			return;
+		}
 		if (this.root.visible && !this.input.focused) this.input.focus();
 		if (key.ctrl && key.name === "t") {
 			this.actions.toggleThinking();
@@ -356,11 +385,71 @@ export class ComposerView {
 		}
 	};
 
-	private submit(followUp: boolean) {
-		const text = this.input.plainText;
-		if (!text.trim()) return;
+	private handlePaste = (event: {
+		bytes: Uint8Array;
+		metadata?: { kind?: string; mimeType?: string };
+		preventDefault: () => void;
+	}) => {
+		const mimeType = event.metadata?.mimeType;
+		if (event.metadata?.kind !== "binary" || !isImageMime(mimeType)) return;
+		event.preventDefault();
+		this.attachImage(mimeType, event.bytes);
+	};
+
+	private async readClipboard() {
+		if (!this.clipboard) return;
+		try {
+			const result = await this.clipboard.read({
+				preferredTypes: [
+					"image/png",
+					"image/jpeg",
+					"image/webp",
+					"image/gif",
+					"text/plain",
+				],
+			});
+			if (result.status !== "read") return;
+			if (isImageMime(result.representation.mimeType))
+				this.attachImage(
+					result.representation.mimeType,
+					result.representation.bytes,
+				);
+			else if (result.representation.mimeType === "text/plain")
+				this.input.insertText(
+					new TextDecoder().decode(result.representation.bytes),
+				);
+		} catch {
+			// Clipboard availability is platform-dependent.
+		}
+	}
+
+	private attachImage(
+		mimeType: ImageAttachment["mimeType"],
+		bytes: Uint8Array,
+	) {
+		if (this.images.length >= 4) return;
+		this.images.push({
+			id: crypto.randomUUID(),
+			mimeType,
+			data: Buffer.from(bytes).toString("base64"),
+		});
+		this.input.insertText(`[Image #${this.images.length}]`);
+		this.syncInput();
+	}
+
+	private async submit(followUp: boolean) {
+		const text = this.input.plainText.replace(/\[Image #\d+\]/g, "").trim();
+		if (!text.trim() && !this.images.length) return;
+		const snapshot = { text, images: this.attachments };
 		this.setValue("");
-		this.actions.submit(text, followUp);
+		this.images = [];
+		try {
+			await this.actions.submit(text, snapshot.images, followUp);
+		} catch (error) {
+			this.images = snapshot.images;
+			this.setValue(snapshot.text);
+			throw error;
+		}
 	}
 
 	private setValue(text: string) {

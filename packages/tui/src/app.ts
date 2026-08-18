@@ -4,6 +4,7 @@ import {
 	type CliRenderer,
 	type SelectOption,
 } from "@opentui/core";
+import type { HostClipboardService } from "@opentui/core";
 import type { StoreApi } from "zustand/vanilla";
 
 import type {
@@ -15,6 +16,7 @@ import type {
 	McpServerOption,
 	ModelOption,
 	ProviderOption,
+	ImageAttachment,
 } from "../../shared/src/protocol";
 import { type CommandHint, ComposerView } from "./components/composer";
 import { FooterView } from "./components/footer";
@@ -55,6 +57,7 @@ export class TuiApp {
 		private readonly send: (command: ClientCommand) => Promise<void>,
 		private readonly clearSession: () => Promise<void> = async () => {},
 		private readonly reloadServer: () => Promise<void> = async () => {},
+		private readonly clipboard?: HostClipboardService,
 	) {
 		this.store = store;
 		this.root = new BoxRenderable(renderer, {
@@ -169,13 +172,18 @@ export class TuiApp {
 				},
 			},
 		];
-		this.composer = new ComposerView(renderer, this.commands, {
-			submit: (text, followUp) => void this.submit(text, followUp),
-			abort: () => this.escape(),
-			toggleThinking: () => this.toggleThinking(),
-			cycleThinkingLevel: () => this.cycleThinkingLevel(),
-			cycleModel: () => this.cycleModel(),
-		});
+		this.composer = new ComposerView(
+			renderer,
+			this.commands,
+			{
+				submit: (text, images, followUp) => this.submit(text, images, followUp),
+				abort: () => this.escape(),
+				toggleThinking: () => this.toggleThinking(),
+				cycleThinkingLevel: () => this.cycleThinkingLevel(),
+				cycleModel: () => this.cycleModel(),
+			},
+			this.clipboard,
+		);
 		this.wizard = new WizardView(renderer);
 		this.footer = new FooterView(renderer);
 		this.transcript.root.add(this.header.root);
@@ -209,29 +217,42 @@ export class TuiApp {
 		this.wizard.destroy();
 	}
 
-	private async submit(text: string, followUp: boolean) {
+	private async submit(
+		text: string,
+		images: ImageAttachment[],
+		followUp: boolean,
+	) {
 		if (!followUp)
 			try {
 				if (await this.runCommand(text)) return;
 			} catch (error) {
-				return this.reportError(error);
+				this.reportError(error);
+				throw error;
 			}
 		let command: ClientCommand = commandForInput(text);
 		let id: string | undefined;
 		if (followUp) {
 			id = crypto.randomUUID();
-			command = { type: "follow-up", id, text };
+			command = {
+				type: "follow-up",
+				id,
+				text,
+				...(images.length ? { images } : {}),
+			};
 			this.store.getState().addFollowUp(id, text);
 		} else if (command.type === "steer") {
 			id = crypto.randomUUID();
-			command = { ...command, id };
+			command = { ...command, id, ...(images.length ? { images } : {}) };
 			this.store.getState().addSteering(id, text);
+		} else if (images.length && command.type === "prompt") {
+			command = { ...command, images };
 		}
 		try {
 			await this.send(command);
 		} catch (error) {
 			if (id) this.store.getState().removeCommand(id);
 			this.reportError(error);
+			throw error;
 		}
 	}
 
