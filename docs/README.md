@@ -31,18 +31,13 @@ If you prefer not to use Tailwind CSS:
 4. Remove `@tailwindcss/vite` and `tailwindcss` from `package.json`
 
 
-## Deploy with Nitro
-
-This project uses Nitro as a generic server adapter, so it can run on any Node-compatible host.
+## Deploy to Cloudflare Pages
 
 ```bash
-npm run build
-node dist/server/index.mjs
+bun run deploy
 ```
 
-The build output is a self-contained Node server. To deploy, push the `dist/` directory to your host (Render, Fly.io, your own VPS, etc.) and run the server command above.
-
-For host-specific presets (Vercel, Netlify, Cloudflare, AWS Lambda, etc.) and tuning, see https://v3.nitro.build/deploy.
+The build keeps server-side rendering and deploys it as a Pages Function with static assets served by Pages.
 
 
 
