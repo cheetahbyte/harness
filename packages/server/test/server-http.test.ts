@@ -89,6 +89,32 @@ describe("HTTP event stream", () => {
 		}
 	});
 
+	test("rejects invalid images before detaching and recording a user event", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harnez-http-test-"));
+		paths.push(dir);
+		const server = serveHarnez({ port: 0, workspace: dir, databasePath: join(dir, "state.sqlite") });
+		try {
+			const base = server.url.toString().replace(/\/$/, "");
+			const { sessionId } = (await (await fetch(`${base}/sessions`, { method: "POST" })).json()) as { sessionId: string };
+			const response = await fetch(`${base}/sessions/${sessionId}/commands`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					type: "prompt",
+					text: "should not run",
+					images: [{ id: "00000000-0000-4000-8000-000000000001", mimeType: "image/png", data: "not-base64" }],
+				}),
+			});
+			expect(response.status).toBe(400);
+			expect((await (await fetch(`${base}/sessions/${sessionId}`)).json()).events).toEqual([]);
+			const context = await (await fetch(`${base}/sessions/${sessionId}/context`)).json();
+			expect(context.items).toEqual([]);
+			expect(context.counts).toEqual({ active: 0, archived: 0, pinned: 0, retained: 0 });
+		} finally {
+			server.stop(true);
+		}
+	});
+
 	test("lists only messaged sessions, newest first", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "harnez-http-test-"));
 		paths.push(dir);

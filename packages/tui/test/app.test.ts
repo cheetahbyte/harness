@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { homedir } from "node:os";
-import { RGBA } from "@opentui/core";
+import { RGBA, type HostClipboardService } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { VERSION } from "../../shared/src/version";
 import { TuiApp } from "../src/app";
@@ -22,6 +22,98 @@ function footerLine(frame: string) {
 }
 
 describe("OpenTUI app", () => {
+	test("accepts binary and injected Ctrl/Meta-V images without platform clipboard", async () => {
+		const store = createTuiStore("session-1");
+		const sent: unknown[] = [];
+		const reads: string[][] = [];
+		const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+		const clipboard = {
+			read: async (options: { preferredTypes: readonly string[] }) => {
+				reads.push([...options.preferredTypes]);
+				return {
+					status: "read" as const,
+					representation: { mimeType: "image/png", bytes: imageBytes },
+				};
+			},
+			dispose: async () => {},
+		};
+		const view = await createTestRenderer({ width: 72, height: 20, kittyKeyboard: true });
+		const app = new TuiApp(
+			view.renderer,
+			store,
+			async (command) => void sent.push(command),
+			undefined,
+			undefined,
+			clipboard as unknown as HostClipboardService,
+		);
+		try {
+			view.renderer.keyInput.processPaste(imageBytes, { kind: "binary", mimeType: "image/png" });
+			view.mockInput.pressKey("v", { ctrl: true });
+			view.mockInput.pressKey("v", { meta: true });
+			await Bun.sleep(1);
+			expect(reads).toHaveLength(2);
+			expect(view.captureCharFrame()).toContain("[Image #1]");
+			expect(view.captureCharFrame()).toContain("[Image #2]");
+			expect(view.captureCharFrame()).toContain("[Image #3]");
+			view.mockInput.pressEnter();
+			await Bun.sleep(1);
+			expect(sent).toHaveLength(1);
+			expect((sent[0] as { text: string; images: unknown[] }).text).toBe("");
+			expect((sent[0] as { images: unknown[] }).images).toHaveLength(3);
+			expect((app as unknown as { composer: { attachments: unknown[] } }).composer.attachments).toEqual([]);
+			view.renderer.keyInput.processPaste(imageBytes, { kind: "binary", mimeType: "image/png" });
+			expect(view.captureCharFrame()).toContain("[Image #1]");
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+	test("keeps text clipboard paste on the existing edit buffer", async () => {
+		const store = createTuiStore("session-1");
+		let reads = 0;
+		const clipboard = {
+			read: async () => ({
+				status: "read" as const,
+				representation: {
+					mimeType: "text/plain",
+					bytes: new TextEncoder().encode(reads++ ? " second" : "first"),
+				},
+			}),
+			dispose: async () => {},
+		};
+		const view = await createTestRenderer({ width: 72, height: 20, kittyKeyboard: true });
+		const app = new TuiApp(view.renderer, store, async () => {}, undefined, undefined, clipboard as unknown as HostClipboardService);
+		try {
+			await view.mockInput.typeText("start ");
+			view.mockInput.pressKey("v", { ctrl: true });
+			view.mockInput.pressKey("v", { meta: true });
+			await Bun.sleep(1);
+			expect((app as unknown as { composer: { value: string } }).composer.value).toBe("start first second");
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
+	test("restores the exact draft and attachments after a failed send", async () => {
+		const store = createTuiStore("session-1");
+		const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+		const view = await createTestRenderer({ width: 72, height: 20, kittyKeyboard: true });
+		const app = new TuiApp(view.renderer, store, async () => { throw new Error("send failed"); });
+		try {
+			await view.mockInput.typeText("keep this [literal]");
+			view.renderer.keyInput.processPaste(imageBytes, { kind: "binary", mimeType: "image/png" });
+			const composer = (app as unknown as { composer: { submit: (followUp: boolean) => Promise<void>; value: string; attachments: unknown[] } }).composer;
+			const draft = composer.value;
+			const attachments = composer.attachments;
+			await expect(composer.submit(false)).rejects.toThrow("send failed");
+			expect(composer.value).toBe(draft);
+			expect(composer.attachments).toEqual(attachments);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
 	test("renders replayed transcript and updates the active streamed tail", async () => {
 		const store = createTuiStore("session-1", `${homedir()}/project`);
 		store

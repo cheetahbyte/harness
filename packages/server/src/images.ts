@@ -49,13 +49,20 @@ const UUID =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function isCanonicalBase64(value: string): boolean {
-	return (
-		value.length % 4 === 0 &&
-		/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-			value,
-		) &&
-		Buffer.from(value, "base64").toString("base64") === value
-	);
+	if (value.length % 4 !== 0) return false;
+	const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+	for (let index = 0; index < value.length - padding; index++) {
+		const code = value.charCodeAt(index);
+		if (
+			!(code >= 65 && code <= 90) &&
+			!(code >= 97 && code <= 122) &&
+			!(code >= 48 && code <= 57) &&
+			code !== 43 &&
+			code !== 47
+		)
+			return false;
+	}
+	return Buffer.from(value, "base64").toString("base64") === value;
 }
 
 function matchesMime(

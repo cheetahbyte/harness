@@ -300,6 +300,18 @@ describe("TaskScheduler", () => {
 		});
 	});
 
+	test("preserves queued images when a blocked task is resumed", () => {
+		const queue = new TaskScheduler();
+		const active = runtime(snapshot(), { id: "first" });
+		const images = [{ id: "image-1", mimeType: "image/png" as const, data: "iVBORw0KGgo=" }];
+		queue.activate(active);
+		queue.enqueue({ id: "blocked", text: "with image", images }, 1, { requirePredecessorSuccess: true });
+		active.finish({ status: "cancelled", terminalMessageIds: [] });
+		queue.settle(active);
+		queue.resume("blocked");
+		expect(queue.next()).toMatchObject({ state: "ready", queued: { userInput: { text: "with image", images } } });
+	});
+
 	test("prioritizes the latest supersede replacement", () => {
 		const queue = new TaskScheduler();
 		const active = runtime(snapshot(), { id: "first" });
