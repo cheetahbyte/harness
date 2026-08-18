@@ -9,6 +9,7 @@ import type { ServerEvent } from "../../../shared/src/protocol";
 import type { ContextManager } from "../context/manager";
 import { ContextBudgetError, type ContextInspection } from "../context/types";
 import type { SessionStore } from "../sessions/store";
+import { resolveSystemPrompt } from "../system-prompt";
 import type { TaskRuntime } from "../task-runtime";
 import { tokenCost } from "../token-cost";
 import type { CoreTools } from "../tools";
@@ -377,15 +378,22 @@ export function ensureSystem({
 	sessionId,
 	store,
 	context,
-	systemPrompt,
+	workspace,
 }: {
 	sessionId: string;
 	store: SessionStore;
 	context: ContextManager;
-	systemPrompt: string;
-}): void {
-	if (store.contextItems(sessionId).some((item) => item.kind === "system"))
-		return;
+	workspace: string;
+}): string {
+	const existing = store
+		.contextItems(sessionId)
+		.find((item) => item.kind === "system");
+	if (existing) {
+		if (typeof existing.payload !== "string")
+			throw new Error(`session ${sessionId} has an invalid system prompt`);
+		return existing.payload;
+	}
+	const systemPrompt = resolveSystemPrompt(workspace);
 	context.record({
 		sessionId,
 		kind: "system",
@@ -394,6 +402,7 @@ export function ensureSystem({
 		lifecycle: "pinned",
 		reason: "Harnez system prompt",
 	});
+	return systemPrompt;
 }
 
 export function queueMessage(

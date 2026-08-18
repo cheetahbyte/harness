@@ -142,6 +142,33 @@ user-level prompt templates in `~/.harnez/prompts` and `~/.agents/prompts`. The
 pre-rename `.harness` directories are still scanned, ranking just below their
 `.harnez` counterparts.
 
+## System prompt files
+
+The built-in operator prompt can be replaced or extended with Markdown files:
+
+```text
+$XDG_CONFIG_HOME/harnez/SYSTEM.md             # replace the built-in prompt
+$XDG_CONFIG_HOME/harnez/APPEND_SYSTEM.md      # append global rules
+<repo>/.harnez/APPEND_SYSTEM.md                # append project rules
+```
+
+When `$XDG_CONFIG_HOME` is unset, `~/.config` is used. Existing files under
+`harness` are accepted as a legacy fallback for each corresponding `harnez`
+path. If both names exist, the `harnez` file wins. The files are resolved in
+the order shown: `SYSTEM.md` (or the built-in prompt), global append, then
+project append. A project cannot replace the operator prompt because
+project-local `SYSTEM.md` is not supported.
+
+The resolved prompt is fixed when a new session first runs an agent task.
+Editing these files affects new sessions only; existing sessions retain their
+prompt, including after a server restart. `SYSTEM.md` replaces the built-in
+capability and compaction guidance, so use `APPEND_SYSTEM.md` when you want to
+keep those instructions. Leading and trailing whitespace is removed from each
+body, and non-empty bodies are separated by two newlines. Empty append files
+are ignored; an empty `SYSTEM.md` is a valid replacement. Invalid UTF-8,
+directories, and other read failures stop task startup and identify the file
+path in the error.
+
 ## Environment variables
 
 | Variable | Effect |
