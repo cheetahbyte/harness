@@ -46,6 +46,33 @@ test("resumes the event stream after the last applied cursor", async () => {
 	}
 });
 
+test("transports attachments in every image-bearing command as JSON", async () => {
+	const requests: unknown[] = [];
+	const server = Bun.serve({
+		port: 0,
+		fetch: async (request) => {
+			requests.push(await request.json());
+			return new Response(null, { status: 202 });
+		},
+	});
+	const image = { id: "00000000-0000-4000-8000-000000000001", mimeType: "image/png" as const, data: "iVBORw0KGgo=" };
+	const commands = [
+		{ type: "prompt", text: "prompt" },
+		{ type: "steer", id: "steer", text: "steer" },
+		{ type: "follow-up", id: "follow", text: "follow" },
+		{ type: "enqueue", id: "enqueue", text: "enqueue" },
+		{ type: "supersede", id: "supersede", text: "supersede" },
+		{ type: "replace-queued", taskId: "task", id: "replace", text: "replace" },
+	] as const;
+	try {
+		const client = new HarnezClient(server.url.toString().replace(/\/$/, ""));
+		for (const command of commands) await client.send("session", { ...command, images: [image] });
+		expect(requests).toEqual(commands.map((command) => ({ ...command, images: [image] })));
+	} finally {
+		server.stop(true);
+	}
+});
+
 test("surfaces a rejected server command", async () => {
 	const server = Bun.serve({
 		port: 0,

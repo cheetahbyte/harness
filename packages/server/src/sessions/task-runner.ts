@@ -1,4 +1,9 @@
-import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
+import type {
+	ImageAttachment,
+	ModelConfig,
+	ServerEvent,
+} from "../../../shared/src/protocol";
+import { displayUserInput } from "../../../shared/src/protocol";
 import { slashCommandPattern } from "../../../shared/src/slash-command";
 import type { AgentRunTiming, HarnezAgentRuntime } from "../agent/runtime";
 import { contextCapabilities } from "../agent/tools";
@@ -29,7 +34,9 @@ export type PendingSteer = {
 	id: string;
 	type: "steer";
 	text: string;
+	images?: ImageAttachment[];
 };
+export type InitialInput = { text: string; images?: ImageAttachment[] };
 
 export type RunningTask = {
 	controller: AbortController;
@@ -57,7 +64,7 @@ type RunnerOptions = {
 type RunInput = {
 	id: string;
 	session: Session;
-	command: string | QueuedTask | PendingSteer;
+	command: string | InitialInput | QueuedTask | PendingSteer;
 	predecessor?: TaskRuntime;
 	resume?: RunningTask;
 };
@@ -70,8 +77,12 @@ export class SessionTaskRunner {
 		if (session.running) return;
 		const controller = new AbortController();
 		const startedAt = Date.now();
-		const pending = typeof command === "string" ? undefined : command;
+		const pending =
+			typeof command === "string" || isInitialInput(command)
+				? undefined
+				: command;
 		const text = commandText(command);
+		const images = commandImages(command);
 		const pendingType = pendingCommandType(pending);
 		const running = resume
 			? this.resumeTask(session, resume, controller, text)
@@ -79,18 +90,20 @@ export class SessionTaskRunner {
 					id,
 					session,
 					text,
+					images,
 					controller,
 					...(predecessor ? { predecessor } : {}),
 					...(pending && "submissionWatermark" in pending
 						? { submissionWatermark: pending.submissionWatermark }
 						: {}),
 				});
-		this.emitStart(id, running, pending, pendingType, text);
+		this.emitStart(id, running, pending, pendingType, text, images);
 		let timing: AgentRunTiming;
 		try {
 			timing = await this.options.runtime.run({
 				sessionId: id,
 				text: running.prompt,
+				...(images.length ? { images } : {}),
 				config: this.options.modelConfig(id),
 				tools: running.tools,
 				task: running.task,
@@ -153,6 +166,7 @@ export class SessionTaskRunner {
 	private async startTask(
 		input: Omit<RunInput, "command" | "resume"> & {
 			text: string;
+			images: ImageAttachment[];
 			controller: AbortController;
 			submissionWatermark?: number;
 		},
@@ -178,10 +192,11 @@ export class SessionTaskRunner {
 		pending: QueuedTask | PendingSteer | undefined,
 		pendingType: QueuedTask["kind"] | PendingSteer["type"] | undefined,
 		text: string,
+		images: ImageAttachment[],
 	): void {
 		this.options.emit(id, {
 			type: "user",
-			text,
+			text: displayText(text, images),
 			...(pending ? { id: pending.id } : {}),
 		});
 		if (pending)
@@ -315,16 +330,24 @@ export class SessionTaskRunner {
 	private async createTask({
 		id,
 		text,
+		images,
 		controller,
 		predecessor,
 		submissionWatermark,
 	}: {
 		id: string;
 		text: string;
+		images: ImageAttachment[];
 		controller: AbortController;
 		predecessor?: TaskRuntime;
 		submissionWatermark?: number;
 	}): Promise<RunningTask> {
+		if (images.length) {
+			if (
+				!this.options.runtime.supportsImages(id, this.options.modelConfig(id))
+			)
+				throw new Error("configured model does not support images");
+		}
 		const bindingGeneration = crypto.randomUUID();
 		const contextWatermark = this.options.store.contextSequence(id);
 		const workspace = this.options.workspace(id);
@@ -563,9 +586,37 @@ export class SessionTaskRunner {
 	}
 }
 
-function commandText(command: string | QueuedTask | PendingSteer): string {
+function commandText(
+	command: string | InitialInput | QueuedTask | PendingSteer,
+): string {
 	if (typeof command === "string") return command;
-	return "userInput" in command ? command.userInput.text : command.text;
+	if (!("id" in command) && !("userInput" in command))
+		return (command as InitialInput).text;
+	return "userInput" in command
+		? (command as QueuedTask).userInput.text
+		: (command as PendingSteer).text;
+}
+
+function commandImages(
+	command: string | InitialInput | QueuedTask | PendingSteer,
+): ImageAttachment[] {
+	if (typeof command === "string") return [];
+	if (!("id" in command) && !("userInput" in command))
+		return (command as InitialInput).images ?? [];
+	return (
+		("userInput" in command
+			? (command as QueuedTask).userInput.images
+			: (command as PendingSteer).images) ?? []
+	);
+}
+
+function isInitialInput(command: object): command is InitialInput {
+	return "text" in command && !("id" in command) && !("userInput" in command);
+}
+
+function displayText(text: string, images: readonly ImageAttachment[]): string {
+	if (!images.length) return text;
+	return displayUserInput(text, images);
 }
 
 export function pendingCommandType(

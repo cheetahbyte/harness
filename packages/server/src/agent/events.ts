@@ -5,7 +5,10 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
-import type { ServerEvent } from "../../../shared/src/protocol";
+import type {
+	ImageAttachment,
+	ServerEvent,
+} from "../../../shared/src/protocol";
 import type { ContextManager } from "../context/manager";
 import { ContextBudgetError, type ContextInspection } from "../context/types";
 import type { SessionStore } from "../sessions/store";
@@ -408,12 +411,20 @@ export function ensureSystem({
 export function queueMessage(
 	text: string,
 	callbacks: QueueCallbacks,
+	images: readonly ImageAttachment[] = [],
 ): QueuedMessage {
 	return {
 		...callbacks,
 		message: {
 			role: "user",
-			content: [{ type: "text", text }],
+			content: [
+				{ type: "text", text },
+				...images.map((image) => ({
+					type: "image" as const,
+					data: image.data,
+					mimeType: image.mimeType,
+				})),
+			],
 			timestamp: Date.now(),
 		},
 	};

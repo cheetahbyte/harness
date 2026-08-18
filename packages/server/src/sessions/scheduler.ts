@@ -1,3 +1,4 @@
+import type { ImageAttachment } from "../../../shared/src/protocol";
 import type {
 	ConversationRevision,
 	MessageId,
@@ -5,7 +6,11 @@ import type {
 	TaskRuntime,
 } from "../task-runtime";
 
-export type Message = { id: MessageId; text: string };
+export type Message = {
+	id: MessageId;
+	text: string;
+	images?: ImageAttachment[];
+};
 export type QueuedTask = {
 	id: string;
 	kind: "follow-up" | "supersede";

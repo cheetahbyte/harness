@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createTuiStore } from "../src/store";
+import { displayUserInput } from "../../shared/src/protocol";
 
 describe("TUI protocol store", () => {
 	function createStoreWithStatus(showStatus: boolean) {
@@ -57,6 +58,24 @@ describe("TUI protocol store", () => {
 			{ id: undefined, text: "replayed", pending: undefined },
 			{ id: "user-1", text: "optimistic", pending: false },
 		]);
+	});
+
+	test("keeps optimistic and replayed image rows as placeholders only", () => {
+		const store = createTuiStore("session");
+		const images = [
+			{ id: "one", mimeType: "image/png" as const, data: "c2VjcmV0" },
+			{ id: "two", mimeType: "image/png" as const, data: "c2VjcmV0Mg==" },
+		];
+		const text = displayUserInput("draft [Image #99]", images);
+		store.getState().addSteering("user-1", text);
+		store.getState().apply({ type: "user", id: "user-1", text });
+		store.getState().apply({ type: "user", text: displayUserInput("", images) });
+		const rows = store.getState().entries.filter((entry) => entry.kind === "user");
+		expect(rows.map((entry) => entry.text)).toEqual([
+			"draft\n\n[Image #1]\n[Image #2]",
+			"[Image #1]\n[Image #2]",
+		]);
+		expect(rows.every((entry) => !entry.text.includes("c2VjcmV0"))).toBe(true);
 	});
 
 	test("hides runtime rows by default and shows the completion duration", () => {

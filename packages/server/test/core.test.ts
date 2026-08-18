@@ -134,6 +134,34 @@ describe("first milestone", () => {
 		});
 	});
 
+	test("rejects images on non-vision models without user or context records", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harnez-image-model-test-"));
+		paths.push(dir);
+		const server = new HarnezServer(new SessionStore(join(dir, "state.sqlite")), dir, fakeModels({ input: ["text"] }), settings(dir));
+		const id = server.createSession();
+		await server.command(id, { type: "configure", provider: "fake", model: "model-1" });
+		await expect(server.command(id, { type: "prompt", text: "image", images: [{ id: "00000000-0000-4000-8000-000000000001", mimeType: "image/png", data: "iVBORw0KGgo=" }] })).rejects.toThrow("does not support images");
+		expect(server.store.events(id).some((event) => event.type === "user")).toBe(false);
+		expect(server.store.contextItems(id)).toEqual([]);
+	});
+
+	test("records vision images after text in provider order", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harnez-image-model-test-"));
+		paths.push(dir);
+		const server = new HarnezServer(new SessionStore(join(dir, "state.sqlite")), dir, fakeModels({ input: ["text", "image"], contextWindow: 100_000, maxTokens: 1_000 }), settings(dir));
+		const images = [
+			{ id: "00000000-0000-4000-8000-000000000001", mimeType: "image/png" as const, data: "iVBORw0KGgo=" },
+			{ id: "00000000-0000-4000-8000-000000000002", mimeType: "image/png" as const, data: "iVBORw0KGgo=" },
+		];
+		let received: { text?: string; images?: typeof images } | undefined;
+		(server as unknown as { runtime: { run: (input: { text: string; images?: typeof images }) => Promise<{ modelDurationMs: number; toolDurationMs: number }> } }).runtime.run = async (input) => { received = input; return { modelDurationMs: 0, toolDurationMs: 0 }; };
+		const id = server.createSession();
+		await server.command(id, { type: "configure", provider: "fake", model: "model-1" });
+		await server.command(id, { type: "prompt", text: "image", images });
+		expect(received?.text).toBe("image");
+		expect(received?.images).toEqual(images);
+	});
+
 	test("keeps each session's workspace", () => {
 		const first = mkdtempSync(join(tmpdir(), "harnez-workspace-test-"));
 		const second = mkdtempSync(join(tmpdir(), "harnez-workspace-test-"));
