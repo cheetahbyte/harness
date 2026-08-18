@@ -59,15 +59,22 @@ function startEnabledOpenTelemetry(
 ): OpenTelemetryRuntime {
 	const traceExporter =
 		options.traceExporter ??
-		(process.env["OTEL_TRACES_EXPORTER"] === "otlp"
+		(process.env["OTEL_TRACES_EXPORTER"] === undefined ||
+		process.env["OTEL_TRACES_EXPORTER"] === "otlp"
 			? new OTLPTraceExporter()
 			: undefined);
 	const metricExporter =
 		options.metricExporter ??
-		(process.env["OTEL_METRICS_EXPORTER"] === "otlp"
+		(process.env["OTEL_METRICS_EXPORTER"] === undefined ||
+		process.env["OTEL_METRICS_EXPORTER"] === "otlp"
 			? new OTLPMetricExporter()
 			: undefined);
-	if (!traceExporter && !metricExporter)
+	if (
+		!traceExporter &&
+		!metricExporter &&
+		process.env["OTEL_TRACES_EXPORTER"] === "none" &&
+		process.env["OTEL_METRICS_EXPORTER"] === "none"
+	)
 		return { sink: () => {}, shutdown: async () => {} };
 	const sdk = new NodeSDK({
 		...(traceExporter ? { traceExporter: traceExporter as never } : {}),
