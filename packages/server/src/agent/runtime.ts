@@ -34,6 +34,7 @@ import {
 	recordAgentMessage,
 	translateAgentEvent,
 } from "./events";
+export { SYSTEM_PROMPT } from "../system-prompt";
 import { messageKey } from "./message";
 import { agentTools, TOOL_OVERHEAD_TOKENS } from "./tools";
 
@@ -56,8 +57,6 @@ export type AgentRunTiming = {
 	toolDurationMs: number;
 };
 
-export const SYSTEM_PROMPT =
-	"You are Harnez, a coding agent. Your tool list is partial: more tools and skills, including any MCP servers the user connected, wait in a catalog. Before saying you lack a capability, call capabilities_search. Never conclude that a tool is unavailable from your tool list alone, and prefer a catalog tool over improvising with bash. tools_load makes one callable from the next turn. Use the provided tools to inspect and change the current workspace. Batch independent tool calls, including related reads, writes, and edits, in the same turn. Tool output carrying an observation:// reference was archived, not lost: read it back with recall_observation instead of running the tool again. Use episodes and pin_context once context is reported to be under compaction pressure, or when the work ahead will span many tool calls; skip episodes and pin_context for short tasks. Runtime context belongs only to the current task.";
 const DEFAULT_CONTEXT_BUDGET = 80_000;
 /** Floor for models that cannot be resolved, and the old fixed ceiling. */
 const FALLBACK_CAPABILITY_BUDGET = 8_000;
@@ -254,11 +253,11 @@ export class HarnezAgentRuntime {
 		mcpTools: readonly McpToolDescriptor[];
 		mcp: Pick<McpRegistry, "call">;
 	}): AgentEntry {
-		ensureSystem({
+		const systemPrompt = ensureSystem({
 			sessionId,
 			store: this.store,
 			context: this.context,
-			systemPrompt: SYSTEM_PROMPT,
+			workspace: this.store.workspace(sessionId) ?? process.cwd(),
 		});
 		const entry = newAgentEntry(key, tools, task);
 		/**
@@ -287,7 +286,7 @@ export class HarnezAgentRuntime {
 					model,
 					config.thinkingLevel ?? "medium",
 				),
-				systemPrompt: SYSTEM_PROMPT,
+				systemPrompt,
 				tools: agentTools({
 					sessionId,
 					model,
