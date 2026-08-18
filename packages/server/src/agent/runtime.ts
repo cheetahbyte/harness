@@ -346,6 +346,7 @@ export class HarnezAgentRuntime {
 					context: this.context,
 					contextOptions: this.contextOptions.bind(this),
 					previewLimit: this.previewLimit.bind(this),
+					...(entry.emit ? { emit: entry.emit } : {}),
 				}),
 				messages: this.messages(sessionId, model, task),
 			},

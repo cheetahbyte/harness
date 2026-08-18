@@ -121,6 +121,30 @@ conclusion and observation addresses stay. Harnez never considers an active
 episode for eviction, and only compacts eligible pinned content in the final
 fallback.
 
+## Explicit condensation
+
+The `condense_context` tool preserves completed work at a natural milestone
+before automatic pressure. Its bounded JSON memory records completed work,
+strategies and outcomes, environment changes, constraints, open questions, and
+`observation://` or workspace-relative references. Calls are rejected while an
+episode is active, for invalid references, or when the resulting memory exceeds
+2,000 estimated tokens.
+
+The next request has three segments: stable semantics (system and user
+instructions, pinned decisions, task capability context, and active episodes),
+one live long-term memory, and the four newest completed exchange groups plus
+active items. Explicit condensation archives only eligible old assistant/tool
+groups and completed episode content; user messages, system rules, pinned
+notes, observations, active/current-task items, predecessor terminal messages,
+and the newest four groups are protected. Exact observations remain recallable.
+A replacement is written atomically and repeated calls replace the single live
+memory. No learned compressor or second model call is involved.
+
+Automatic eviction emits an automatic compaction event; successful explicit
+condensation emits an explicit event and the TUI displays its milestone. A
+no-op or failed call leaves storage unchanged. Pinned-history rolling summary
+remains the final emergency budget fallback.
+
 For each stored conversation item, the context manager records its state,
 projection, token cost, and the reason it was evicted. This information is
 available from `GET /sessions/:id/context`.

@@ -7,7 +7,8 @@ export type ContextKind =
 	| "tool-result"
 	| "observation"
 	| "pinned-note"
-	| "subagent-handoff";
+	| "subagent-handoff"
+	| "long-term-memory";
 export type ContextSource = {
 	toolCallId?: string;
 	toolName?: string;

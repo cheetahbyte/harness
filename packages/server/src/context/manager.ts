@@ -2,6 +2,18 @@ import type { SessionStore } from "../sessions/store";
 import type { RuntimeEventSink } from "../telemetry/events";
 import { tokenCost as computeTokenCost } from "../token-cost";
 import {
+	MEMORY_REASON,
+	MEMORY_MAX_TOKENS,
+	type CondensationInput,
+	memoryPayload,
+	memoryTokenCost,
+	mergeCondensationMemory,
+	parseCondensationMemory,
+	projectedSavings,
+	selectCondensationItems,
+	validateCondensationInput,
+} from "./condensation";
+import {
 	episodeStates,
 	replayEpisodes,
 	structuralEvictionCandidates,
@@ -52,6 +64,7 @@ const kinds = new Set<ContextKind>([
 	"observation",
 	"pinned-note",
 	"subagent-handoff",
+	"long-term-memory",
 ]);
 const lifecycles = new Set<ContextLifecycle>([
 	"pinned",
@@ -64,6 +77,27 @@ export const PRESSURE_NOTE_REASON = "working-context pressure";
 export const PRESSURE_NOTE =
 	"Context is under compaction pressure: older tool output is being archived to observation:// references, which recall_observation reads back. Use episode to bound work that continues past this point, and pin_context for anything later steps must not lose.";
 export const PRESSURE_NOTE_TOKENS = computeTokenCost(PRESSURE_NOTE);
+
+export type CondensationOptions = {
+	overheadTokens?: number;
+	budget?: number;
+	target?: number;
+	currentTaskStartSequence?: number;
+	predecessorTerminalIds?: readonly string[];
+	taskId?: string;
+	turnId?: number;
+};
+
+export type CondensationResult = {
+	noOp: boolean;
+	assemblyId?: number;
+	milestone: string;
+	archivedItems: number;
+	archivedEpisodes: number;
+	tokensBefore: number;
+	tokensAfter: number;
+	memoryTokens: number;
+};
 
 /** Marker reason identifying the single live rolling summary item. */
 export const ROLLING_SUMMARY_REASON = "rolling summary";
@@ -414,6 +448,131 @@ export class ContextManager {
 		});
 	}
 
+	condense(
+		sessionId: string,
+		input: CondensationInput,
+		options: CondensationOptions = {},
+	): CondensationResult {
+		const next = validateCondensationInput(input);
+		if (this.activeEpisode(sessionId))
+			throw new Error("Cannot condense while an episode is active");
+		const overheadTokens = options.overheadTokens ?? 0;
+		return this.store.db.transaction(() => {
+			const scopeId = options.taskId ?? sessionId;
+			const assemblyId =
+				(this.assemblyIds.set(
+					scopeId,
+					(this.assemblyIds.get(scopeId) ?? 0) + 1,
+				),
+				this.assemblyIds.get(scopeId)!);
+			const items = this.store.contextItems(sessionId);
+			const priorItem = items
+				.toReversed()
+				.find(
+					(item) =>
+						item.reason === MEMORY_REASON && item.lifecycle !== "archived",
+				);
+			const prior = priorItem
+				? parseCondensationMemory(priorItem.payload)
+				: undefined;
+			const merged = mergeCondensationMemory(prior, next);
+			const memoryTokens = memoryTokenCost(merged);
+			if (memoryTokens > MEMORY_MAX_TOKENS)
+				throw new Error("Condensation memory exceeds 2,000 tokens");
+			const eligible = selectCondensationItems(items, options);
+			const replaced = priorItem ? [...eligible, priorItem] : eligible;
+			const tokensBefore = estimatedCost(
+				items,
+				overheadTokens,
+				this.episodes(sessionId),
+			);
+			const savings = projectedSavings(replaced, memoryTokens);
+			if (!eligible.length || savings <= 0)
+				return {
+					noOp: true,
+					assemblyId,
+					milestone: next.milestone,
+					archivedItems: 0,
+					archivedEpisodes: 0,
+					tokensBefore,
+					tokensAfter: tokensBefore,
+					memoryTokens,
+				};
+			for (const item of replaced)
+				this.store.setContextLifecycle(
+					item.id,
+					"archived",
+					"omitted",
+					MEMORY_REASON,
+				);
+			this.store.appendContextItem({
+				id: crypto.randomUUID(),
+				sessionId,
+				kind: "long-term-memory",
+				payload: memoryPayload(merged),
+				tokenCost: memoryTokens,
+				lifecycle: "pinned",
+				projection: "full",
+				reason: MEMORY_REASON,
+				createdAt: new Date().toISOString(),
+			});
+			const archivedEpisodes = new Set(
+				eligible.flatMap((item) => (item.episodeId ? [item.episodeId] : [])),
+			).size;
+			const afterItems = this.store.contextItems(sessionId);
+			const tokensAfter = estimatedCost(
+				afterItems,
+				overheadTokens,
+				this.episodes(sessionId),
+			);
+			const timestamp = new Date().toISOString();
+			this.sink?.({
+				type: "context.assembly.completed",
+				timestamp,
+				sessionId,
+				...(options.taskId ? { taskId: options.taskId } : {}),
+				...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+				trigger: "explicit",
+				scope: options.taskId ? "task" : "session",
+				tokensBefore,
+				tokensAfter,
+				budget: options.budget ?? tokensAfter,
+				target: options.target ?? tokensAfter,
+				underPressure: false,
+				evictedItems: replaced.length,
+				archivedEpisodes,
+				liveTokens: tokensAfter,
+				historyTokens: afterItems.reduce(
+					(sum, item) => sum + item.tokenCost,
+					0,
+				),
+			});
+			this.sink?.({
+				type: "context.compaction.completed",
+				timestamp,
+				sessionId,
+				...(options.taskId ? { taskId: options.taskId } : {}),
+				...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+				trigger: "explicit",
+				milestone: next.milestone,
+				evictedItems: eligible.length,
+				archivedEpisodes,
+				tokensBefore,
+				tokensAfter,
+			});
+			return {
+				noOp: false,
+				assemblyId,
+				milestone: next.milestone,
+				archivedItems: eligible.length,
+				archivedEpisodes,
+				tokensBefore,
+				tokensAfter,
+				memoryTokens,
+			};
+		})();
+	}
+
 	recall(
 		sessionId: string,
 		reference: string | ObservationRecallInput,
@@ -618,10 +777,7 @@ export class ContextManager {
 				evictedItems: evictedIds.length,
 			});
 		return {
-			payloads: [
-				...projectedPayloads(state.items),
-				...episodeConclusionPayloads(state.items, state.episodes),
-			],
+			payloads: [...projectedPayloads(state.items, state.episodes)],
 			estimatedTokens: state.estimatedTokens,
 			evictedIds,
 			tokensBefore,
@@ -804,14 +960,22 @@ export class ContextManager {
 			compaction.evictedIds,
 		);
 		const items = this.store.contextItems(sessionId).filter(inWindow);
-		const estimatedTokens = items.reduce(
-			(total, item) => total + projectionCost(item),
+		const taskEpisodes = this.episodes(sessionId).filter((episode) =>
+			items.some(
+				(item) =>
+					item.episodeId === episode.id &&
+					item.sequence > options.taskStartSequence,
+			),
+		);
+		const estimatedTokens = estimatedCost(
+			items,
 			options.overheadTokens,
+			taskEpisodes,
 		);
 		if (estimatedTokens > options.budget)
 			throw new ContextBudgetError(estimatedTokens, options.budget);
 		return {
-			payloads: projectedPayloads(items),
+			payloads: projectedPayloads(items, taskEpisodes),
 			estimatedTokens,
 			evictedIds: compaction.evictedIds,
 			/**
@@ -1003,12 +1167,41 @@ export class ContextManager {
 
 function projectedPayloads(
 	items: ContextItem[],
+	episodes: ContextEpisode[] = [],
 ): NonNullable<ReturnType<typeof projectedPayload>>[] {
-	return items.flatMap((item) => {
-		if (item.kind === "system" || item.kind === "observation") return [];
-		const payload = projectedPayload(item);
-		return payload == null ? [] : [payload];
-	});
+	const ordered = items.toSorted(
+		(a, b) => assemblyRank(a) - assemblyRank(b) || a.sequence - b.sequence,
+	);
+	return [
+		...ordered
+			.filter((item) => assemblyRank(item) === 0)
+			.flatMap(projectedItemPayload),
+		...episodeConclusionPayloads(items, episodes),
+		...ordered
+			.filter((item) => assemblyRank(item) === 1)
+			.flatMap(projectedItemPayload),
+		...ordered
+			.filter((item) => assemblyRank(item) === 2)
+			.flatMap(projectedItemPayload),
+	];
+}
+
+function projectedItemPayload(
+	item: ContextItem,
+): NonNullable<ReturnType<typeof projectedPayload>>[] {
+	if (item.kind === "system" || item.kind === "observation") return [];
+	const value = projectedPayload(item);
+	return value == null ? [] : [value];
+}
+
+function assemblyRank(item: ContextItem): number {
+	return item.kind === "system" ||
+		item.kind === "user" ||
+		item.kind === "pinned-note"
+		? 0
+		: item.kind === "long-term-memory"
+			? 1
+			: 2;
 }
 
 function userText(payload: unknown): string {

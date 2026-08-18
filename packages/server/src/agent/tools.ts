@@ -15,6 +15,7 @@ import type {
 	InspectedCapability,
 	ToolCapabilityInput,
 } from "../capabilities/types";
+import { validateCondensationInput } from "../context/condensation";
 import type { ContextManager } from "../context/manager";
 import {
 	MAX_OBSERVATION_RECALL_LIMIT,
@@ -35,6 +36,8 @@ const PIN_DESCRIPTION =
 	"Keep a short instruction for long-running work that risks context compaction. Skip it for short tasks.";
 const EPISODE_DESCRIPTION =
 	"Start or end one semantic work episode for long-running work that risks context compaction. Skip it for short tasks. Actions depend on completed exploration IDs. Exploration end requires a conclusion; action end must omit it.";
+const CONDENSE_DESCRIPTION =
+	"Replace completed historical work with a bounded structured memory. Use after a completed subtask, strategy change, or repeated failure recovery; skip short tasks and active episodes.";
 
 /**
  * The context tools every turn carries, described once so the token estimate,
@@ -57,6 +60,12 @@ const CONTEXT_TOOLS = [
 		name: "episode",
 		description: EPISODE_DESCRIPTION,
 		parameters: episodeSchema(),
+		effect: "mutating",
+	},
+	{
+		name: "condense_context",
+		description: CONDENSE_DESCRIPTION,
+		parameters: condensationSchema(),
 		effect: "mutating",
 	},
 ] as const satisfies readonly {
@@ -127,6 +136,7 @@ type AgentToolsOptions = {
 		overheadTokens: number;
 	};
 	previewLimit: (model: Model<Api>) => number;
+	emit?: (event: import("../../../shared/src/protocol").ServerEvent) => void;
 };
 
 export function agentTools(options: AgentToolsOptions): AgentTool[] {
@@ -235,11 +245,14 @@ function contextTools({
 	model,
 	context,
 	contextOptions,
+	emit,
+	task,
 }: AgentToolsOptions): AgentTool[] {
 	return [
 		recallTool(sessionId, context),
 		pinTool(sessionId, model, context, contextOptions),
 		episodeTool(sessionId, context),
+		condenseTool(sessionId, model, context, contextOptions, task, emit),
 	];
 }
 
@@ -503,6 +516,61 @@ function episodeTool(sessionId: string, context: ContextManager): AgentTool {
 		},
 	};
 }
+function condenseTool(
+	sessionId: string,
+	model: Model<Api>,
+	context: ContextManager,
+	contextOptions: AgentToolsOptions["contextOptions"],
+	task: TaskRuntime,
+	emit: AgentToolsOptions["emit"],
+): AgentTool {
+	return {
+		name: "condense_context",
+		label: "condense context",
+		description: CONDENSE_DESCRIPTION,
+		parameters: condensationSchema(),
+		execute: async (_id, input) => {
+			const result = context.condense(
+				sessionId,
+				validateCondensationInput(input),
+				{
+					...contextOptions(model),
+					taskId: task.id,
+					...(task.taskStartSequence === undefined
+						? {}
+						: { currentTaskStartSequence: task.taskStartSequence }),
+					predecessorTerminalIds: task.predecessorTerminalMessageIds,
+				},
+			);
+			if (!result.noOp)
+				emit?.({
+					type: "context-compaction",
+					sessionId,
+					taskId: task.id,
+					...(result.assemblyId === undefined
+						? {}
+						: { assemblyId: result.assemblyId }),
+					trigger: "explicit",
+					milestone: result.milestone,
+					evictedCount: result.archivedItems,
+					tokensBefore: result.tokensBefore,
+					tokensAfter: result.tokensAfter,
+					episodesArchived: result.archivedEpisodes,
+				});
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: result.noOp
+							? "No context was condensed."
+							: `Condensed context at ${result.milestone}: ${result.tokensBefore} → ${result.tokensAfter} tokens`,
+					},
+				],
+				details: result,
+			};
+		},
+	};
+}
 function recallSchema() {
 	return Type.Object({
 		reference: Type.String({ minLength: 1 }),
@@ -561,6 +629,23 @@ function episodeSchema() {
 						"Required when ending exploration; omit when ending action.",
 				}),
 			),
+		},
+		{ additionalProperties: false },
+	);
+}
+function condensationSchema() {
+	const entry = Type.String({ minLength: 1, maxLength: 1_000 });
+	return Type.Object(
+		{
+			milestone: Type.String({ minLength: 1, maxLength: 200 }),
+			completedWork: Type.Array(entry, { maxItems: 20 }),
+			strategies: Type.Array(Type.Object({ approach: entry, outcome: entry }), {
+				maxItems: 20,
+			}),
+			environmentChanges: Type.Array(entry, { maxItems: 20 }),
+			constraints: Type.Array(entry, { maxItems: 20 }),
+			openQuestions: Type.Array(entry, { maxItems: 20 }),
+			references: Type.Array(entry, { maxItems: 20 }),
 		},
 		{ additionalProperties: false },
 	);
