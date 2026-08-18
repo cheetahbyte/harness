@@ -16,7 +16,11 @@ import {
 } from "@earendil-works/pi-ai";
 
 import { abortableSleep } from "../../../shared/src/abortable-sleep";
-import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
+import type {
+	ImageAttachment,
+	ModelConfig,
+	ServerEvent,
+} from "../../../shared/src/protocol";
 import type { ContextManager } from "../context/manager";
 import { log } from "../logger";
 import type { McpRegistry, McpToolDescriptor } from "../mcp/registry";
@@ -40,6 +44,7 @@ import { agentTools, TOOL_OVERHEAD_TOKENS } from "./tools";
 export type AgentRunInput = {
 	sessionId: string;
 	text: string;
+	images?: ImageAttachment[];
 	config: ModelConfig | undefined;
 	tools: CoreTools;
 	task: TaskRuntime;
@@ -85,9 +90,23 @@ export class HarnezAgentRuntime {
 		this.contextBudget = options.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
 	}
 
+	supportsImages(sessionId: string, config: ModelConfig | undefined): boolean {
+		if (!config) return false;
+		try {
+			return providerModels(
+				config,
+				this.credentials,
+				this.modelsFor(sessionId),
+			).model.input.includes("image");
+		} catch {
+			return false;
+		}
+	}
+
 	async run({
 		sessionId,
 		text,
+		images = [],
 		config,
 		tools,
 		task,
@@ -139,7 +158,14 @@ export class HarnezAgentRuntime {
 		entry.emit = emit;
 		const message: AgentMessage = {
 			role: "user",
-			content: [{ type: "text", text }],
+			content: [
+				{ type: "text", text },
+				...images.map((image) => ({
+					type: "image" as const,
+					data: image.data,
+					mimeType: image.mimeType,
+				})),
+			],
 			timestamp: Date.now(),
 		};
 		entry.promptGroupId = crypto.randomUUID();
@@ -199,7 +225,12 @@ export class HarnezAgentRuntime {
 		}
 	}
 
-	steer(sessionId: string, text: string, callbacks: QueueCallbacks): boolean {
+	steer(
+		sessionId: string,
+		text: string,
+		callbacks: QueueCallbacks,
+		images: readonly ImageAttachment[] = [],
+	): boolean {
 		const entry = this.agents.get(sessionId);
 		if (
 			!entry?.agent.state.isStreaming ||
@@ -208,7 +239,7 @@ export class HarnezAgentRuntime {
 			return false;
 		if (entry.steering) entry.steering.onReplaced?.();
 		entry.agent.clearSteeringQueue();
-		const queued = queueMessage(text, callbacks);
+		const queued = queueMessage(text, callbacks, images);
 		entry.steering = queued;
 		entry.queued.set(queued.message, queued);
 		entry.agent.steer(queued.message as never);

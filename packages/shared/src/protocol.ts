@@ -43,6 +43,14 @@ export type ModelConfig = {
 	thinkingLevel?: ModelThinkingLevel;
 };
 
+export type ImageAttachment = {
+	id: string;
+	mimeType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+	data: string;
+};
+
+export type UserInput = { text: string; images?: ImageAttachment[] };
+
 /** One entry of the `Ctrl+P` fast cycle: a model plus its own reasoning level. */
 export type FastCycleEntry = ModelConfig;
 
@@ -67,19 +75,19 @@ export type AuthNotifyEvent =
 	| { type: "progress"; message: string };
 
 export type ClientCommand =
-	| { type: "prompt"; text: string }
-	| { type: "steer"; text: string; id?: string }
-	| { type: "follow-up"; text: string; id?: string }
-	| {
+	| ({ type: "prompt" } & UserInput)
+	| ({ type: "steer"; id?: string } & UserInput)
+	| ({ type: "follow-up"; id?: string } & UserInput)
+	| ({
 			type: "enqueue";
-			text: string;
-			id?: string;
-			requirePredecessorSuccess?: boolean;
-	  }
-	| { type: "supersede"; text: string; id?: string; taskId?: string }
+	  } & UserInput & {
+				id?: string;
+				requirePredecessorSuccess?: boolean;
+			})
+	| ({ type: "supersede"; id?: string; taskId?: string } & UserInput)
 	| { type: "resume-queued"; taskId: string }
 	| { type: "cancel-queued"; taskId: string }
-	| { type: "replace-queued"; taskId: string; text: string; id?: string }
+	| ({ type: "replace-queued"; taskId: string; id?: string } & UserInput)
 	| { type: "confirm"; taskId: string; callId: string }
 	| { type: "acknowledge-unknown-effects"; taskId: string }
 	| ({ type: "configure" } & ModelConfig)

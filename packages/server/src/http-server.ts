@@ -5,6 +5,7 @@ import type {
 } from "../../shared/src/protocol";
 import { VERSION } from "../../shared/src/version";
 import type { SubagentResult } from "./context/types";
+import { validateImages } from "./images";
 import { log } from "./logger";
 import { HarnezServer } from "./server";
 import { SessionStore } from "./sessions/store";
@@ -137,12 +138,21 @@ async function acceptCommand(
 	requestId: string,
 ): Promise<Response> {
 	harnez.workspace(id); // Validate before detaching the command.
-	void harnez
-		.command(id, (await request.json()) as ClientCommand)
-		.catch((error) => {
-			log.error({ err: error, requestId, sessionId: id }, "command failed");
-			harnez.reportError(id, error);
-		});
+	let command: ClientCommand;
+	try {
+		const body: unknown = await request.json();
+		if (!body || typeof body !== "object" || Array.isArray(body))
+			throw new Error("command must be an object");
+		const candidate = body as ClientCommand;
+		if ("images" in candidate) validateImages(candidate.images);
+		command = candidate;
+	} catch (error) {
+		return errorResponse(error, 400);
+	}
+	void harnez.command(id, command).catch((error) => {
+		log.error({ err: error, requestId, sessionId: id }, "command failed");
+		harnez.reportError(id, error);
+	});
 	return new Response(null, { status: 202 });
 }
 

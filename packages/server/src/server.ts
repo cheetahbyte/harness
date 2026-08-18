@@ -18,10 +18,12 @@ import type {
 	ProviderOption,
 	ServerEvent,
 	SkillOption,
+	ImageAttachment,
 } from "../../shared/src/protocol";
 import { HarnezAgentRuntime } from "./agent/runtime";
 import { ContextManager } from "./context/manager";
 import type { SubagentResult } from "./context/types";
+import { validateImages } from "./images";
 import { log } from "./logger";
 import { McpConnectionPool } from "./mcp/pool";
 import { McpRegistry } from "./mcp/registry";
@@ -42,6 +44,7 @@ import { Session } from "./sessions/session";
 import { SessionStore } from "./sessions/store";
 import {
 	type PendingSteer,
+	type InitialInput,
 	pendingCommandType,
 	type RunningTask,
 	SessionTaskRunner,
@@ -183,6 +186,11 @@ export class HarnezServer {
 
 	async command(id: string, command: ClientCommand): Promise<void> {
 		const session = this.session(id);
+		const validatedImages = validateImages(
+			isUserSubmission(command) && "images" in command
+				? command.images
+				: undefined,
+		);
 		log.debug({ sessionId: id, command: command.type }, "command received");
 		if (isUserSubmission(command)) this.store.markUserMessage(id);
 		if (isImmediateCommand(command.type)) {
@@ -217,7 +225,7 @@ export class HarnezServer {
 			return;
 		}
 		if (command.type !== "prompt") throw new Error("unsupported command");
-		await this.submitPrompt(id, session, command.text);
+		await this.submitPrompt(id, session, command.text, validatedImages);
 	}
 
 	private async handleImmediateCommand(
@@ -341,7 +349,13 @@ export class HarnezServer {
 		if (command.type !== "replace-queued") return;
 		const { cancelled, queued } = session.scheduler.replaceQueued(
 			command.taskId,
-			{ id: command.id ?? crypto.randomUUID(), text: command.text },
+			{
+				id: command.id ?? crypto.randomUUID(),
+				text: command.text,
+				...(inputImages(command).length
+					? { images: inputImages(command) }
+					: {}),
+			},
 			this.store.contextSequence(id),
 		);
 		this.emitCommand(id, cancelled, "cancelled");
@@ -493,7 +507,13 @@ export class HarnezServer {
 		if (command.type !== "follow-up" && command.type !== "enqueue")
 			return false;
 		const pending = session.scheduler.enqueue(
-			{ id: command.id ?? crypto.randomUUID(), text: command.text },
+			{
+				id: command.id ?? crypto.randomUUID(),
+				text: command.text,
+				...(inputImages(command).length
+					? { images: inputImages(command) }
+					: {}),
+			},
 			this.store.contextSequence(id),
 			{
 				requirePredecessorSuccess:
@@ -517,7 +537,13 @@ export class HarnezServer {
 				id: commandId,
 				kind: "supersede",
 				state: "ready",
-				userInput: { id: commandId, text: command.text },
+				userInput: {
+					id: commandId,
+					text: command.text,
+					...(inputImages(command).length
+						? { images: inputImages(command) }
+						: {}),
+				},
 				submissionWatermark: this.store.contextSequence(id),
 				requirePredecessorSuccess: false,
 			});
@@ -536,7 +562,13 @@ export class HarnezServer {
 		}
 		const { queued, replaced } = session.scheduler.requestSupersede(
 			session.running.task.id,
-			{ id: command.id ?? crypto.randomUUID(), text: command.text },
+			{
+				id: command.id ?? crypto.randomUUID(),
+				text: command.text,
+				...(inputImages(command).length
+					? { images: inputImages(command) }
+					: {}),
+			},
 			this.store.contextSequence(id),
 		);
 		if (replaced) this.emitCommand(id, replaced, "replaced");
@@ -559,6 +591,7 @@ export class HarnezServer {
 			id: command.id ?? crypto.randomUUID(),
 			type: "steer",
 			text: command.text,
+			...(inputImages(command).length ? { images: inputImages(command) } : {}),
 		};
 		if (!session.running) {
 			this.maybeTitleSession(id, command.text);
@@ -566,18 +599,23 @@ export class HarnezServer {
 			return;
 		}
 		if (
-			this.runtime.steer(id, pending.text, {
-				onStarted: () => {
-					this.publish(id, {
-						type: "user",
-						id: pending.id,
-						text: pending.text,
-					});
-					this.emitCommand(id, pending, "started");
+			this.runtime.steer(
+				id,
+				pending.text,
+				{
+					onStarted: () => {
+						this.publish(id, {
+							type: "user",
+							id: pending.id,
+							text: pending.text,
+						});
+						this.emitCommand(id, pending, "started");
+					},
+					onFinished: () => {},
+					onReplaced: () => this.emitCommand(id, pending, "replaced"),
 				},
-				onFinished: () => {},
-				onReplaced: () => this.emitCommand(id, pending, "replaced"),
-			})
+				pending.images,
+			)
 		)
 			return;
 		if (session.pendingSteer)
@@ -591,14 +629,22 @@ export class HarnezServer {
 		id: string,
 		session: Session,
 		text: string,
+		attachments: ImageAttachment[] = [],
 	): Promise<void> {
 		this.maybeTitleSession(id, text);
 		if (!session.running) {
-			await this.run(id, text);
+			await this.run(id, {
+				text,
+				...(attachments.length ? { images: attachments } : {}),
+			} as InitialInput);
 			return;
 		}
 		const pending = session.scheduler.enqueue(
-			{ id: crypto.randomUUID(), text },
+			{
+				id: crypto.randomUUID(),
+				text,
+				...(attachments.length ? { images: attachments } : {}),
+			},
 			this.store.contextSequence(id),
 		);
 		this.emitCommand(id, pending, "queued");
@@ -744,7 +790,7 @@ export class HarnezServer {
 
 	private run(
 		id: string,
-		command: string | QueuedTask | PendingSteer,
+		command: string | InitialInput | QueuedTask | PendingSteer,
 		predecessor?: TaskRuntime,
 		resume?: RunningTask,
 	): Promise<void> {
@@ -878,8 +924,13 @@ function isUserSubmission(command: ClientCommand): boolean {
 			command.type === "supersede" ||
 			command.type === "replace-queued") &&
 		typeof command.text === "string" &&
-		command.text.trim().length > 0
+		(command.text.trim().length > 0 ||
+			(Array.isArray(command.images) && command.images.length > 0))
 	);
+}
+
+function inputImages(command: { images?: unknown }): ImageAttachment[] {
+	return validateImages(command.images);
 }
 
 function isActiveControl(type: ClientCommand["type"]): boolean {
