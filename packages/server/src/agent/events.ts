@@ -10,6 +10,7 @@ import type { ContextManager } from "../context/manager";
 import { ContextBudgetError, type ContextInspection } from "../context/types";
 import type { SessionStore } from "../sessions/store";
 import type { TaskRuntime } from "../task-runtime";
+import type { RuntimeEventSink } from "../telemetry/events";
 import { tokenCost } from "../token-cost";
 import type { CoreTools } from "../tools";
 import { detailsRecord, messageKey } from "./message";
@@ -40,6 +41,7 @@ export type AgentEntry = {
 	};
 	/** Emitter for the in-flight run; context assembly reports compaction through it. */
 	emit: ((event: ServerEvent) => void) | undefined;
+	sink: RuntimeEventSink | undefined;
 };
 
 export function translateAgentEvent({
@@ -50,6 +52,7 @@ export function translateAgentEvent({
 	context,
 	shrink,
 	inspect,
+	sink,
 }: {
 	sessionId: string;
 	entry: AgentEntry;
@@ -58,6 +61,7 @@ export function translateAgentEvent({
 	context: ContextManager;
 	shrink: () => void;
 	inspect: () => ContextInspection;
+	sink?: RuntimeEventSink;
 }): void {
 	switch (event.type) {
 		case "message_start":
@@ -81,6 +85,15 @@ export function translateAgentEvent({
 			handleAgentEnd(sessionId, entry, context, shrink, emit);
 			return;
 		case "tool_execution_start":
+			sink?.({
+				type: "tool.call.started",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				taskId: entry.task.id,
+				turnId: 0,
+				callId: entry.timing.activeToolCalls.size + 1,
+				tool: event.toolName,
+			});
 			if (!entry.timing.activeToolCalls.size)
 				entry.timing.toolWindowStartedAt = performance.now();
 			entry.timing.activeToolCalls.add(event.toolCallId);
@@ -92,6 +105,15 @@ export function translateAgentEvent({
 			});
 			return;
 		case "tool_execution_end":
+			sink?.({
+				type: event.isError ? "tool.call.failed" : "tool.call.completed",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				taskId: entry.task.id,
+				turnId: 0,
+				callId: entry.timing.activeToolCalls.size + 1,
+				tool: event.toolName,
+			});
 			entry.timing.activeToolCalls.delete(event.toolCallId);
 			if (
 				!entry.timing.activeToolCalls.size &&

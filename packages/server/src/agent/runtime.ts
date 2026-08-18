@@ -24,6 +24,7 @@ import { HarnezProviderError, providerModels } from "../provider";
 import type { SessionStore } from "../sessions/store";
 import type { SkillSnapshotEntry } from "../skills";
 import type { TaskRuntime } from "../task-runtime";
+import type { RuntimeEventSink } from "../telemetry/events";
 import type { CoreTools } from "../tools";
 import {
 	type AgentEntry,
@@ -77,13 +78,17 @@ export class HarnezAgentRuntime {
 		store: SessionStore;
 		context: ContextManager;
 		contextBudget?: number;
+		sink?: RuntimeEventSink;
 	}) {
 		this.credentials = options.credentials;
 		this.modelsFor = options.modelsFor;
 		this.store = options.store;
 		this.context = options.context;
 		this.contextBudget = options.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
+		this.sink = options.sink;
 	}
+	private readonly sink: RuntimeEventSink | undefined;
+	private requestId = 0;
 
 	async run({
 		sessionId,
@@ -131,6 +136,7 @@ export class HarnezAgentRuntime {
 					context: this.context,
 					shrink: () => this.shrink(sessionId, created),
 					inspect: () => this.inspect(sessionId),
+					...(this.sink ? { sink: this.sink } : {}),
 				}),
 			);
 			this.agents.set(sessionId, created);
@@ -157,11 +163,40 @@ export class HarnezAgentRuntime {
 			throw error;
 		}
 		entry.preRecorded.add(messageKey(message));
+		this.context.markAgentProgress(sessionId);
+		const requestId = ++this.requestId;
+		this.sink?.({
+			type: "model.request.started",
+			timestamp: new Date().toISOString(),
+			sessionId,
+			taskId: task.id,
+			turnId: requestId,
+			requestId,
+			provider: config.provider,
+			model: config.model,
+		});
 		const abort = () => entry?.agent.abort();
 		signal.addEventListener("abort", abort, { once: true });
 		try {
 			await entry.agent.prompt(message);
+			this.sink?.({
+				type: "model.request.completed",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				taskId: task.id,
+				turnId: requestId,
+				requestId,
+			});
 		} catch (error) {
+			this.sink?.({
+				type: "model.request.failed",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				taskId: task.id,
+				turnId: requestId,
+				requestId,
+				error: error instanceof Error ? error.message : String(error),
+			});
 			log.error({ err: error, sessionId }, "agent prompt failed");
 			if (!signal.aborted) throw normalizeProviderError(error);
 		} finally {
@@ -260,7 +295,7 @@ export class HarnezAgentRuntime {
 			context: this.context,
 			systemPrompt: SYSTEM_PROMPT,
 		});
-		const entry = newAgentEntry(key, tools, task);
+		const entry = newAgentEntry(key, tools, task, this.sink);
 		/**
 		 * Publishes a tool mid-task. `entry.agent` is assigned before any tool can
 		 * run, so the deferred read is always resolved by the time this fires.
@@ -491,6 +526,7 @@ function newAgentEntry(
 	key: string,
 	tools: CoreTools,
 	task: TaskRuntime,
+	sink?: RuntimeEventSink,
 ): AgentEntry {
 	return {
 		key,
@@ -511,5 +547,6 @@ function newAgentEntry(
 			toolWindowStartedAt: undefined,
 		},
 		emit: undefined,
+		sink,
 	};
 }

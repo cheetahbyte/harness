@@ -19,6 +19,7 @@ import type { McpRegistry, McpToolDescriptor } from "../mcp/registry";
 import { expandPrompt, scanPrompts } from "../prompts";
 import { activateSkill, type SkillSnapshotEntry, scanSkills } from "../skills";
 import { TaskRuntime, type TaskTerminalStatus } from "../task-runtime";
+import type { RuntimeEventSink } from "../telemetry/events";
 import { tokenCost } from "../token-cost";
 import { CoreTools } from "../tools";
 import type { QueuedTask, SchedulerDecision } from "./scheduler";
@@ -52,6 +53,7 @@ type RunnerOptions = {
 	workspace: (sessionId: string) => string;
 	modelConfig: (sessionId: string) => ModelConfig | undefined;
 	emit: (sessionId: string, event: ServerEvent) => void;
+	sink?: RuntimeEventSink;
 };
 
 type RunInput = {
@@ -86,6 +88,20 @@ export class SessionTaskRunner {
 						: {}),
 				});
 		this.emitStart(id, running, pending, pendingType, text);
+		this.options.sink?.({
+			type: "task.started",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+		});
+		const turnId = Date.now();
+		this.options.sink?.({
+			type: "turn.started",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+			turnId,
+		});
 		let timing: AgentRunTiming;
 		try {
 			timing = await this.options.runtime.run({
@@ -110,6 +126,22 @@ export class SessionTaskRunner {
 			return;
 		}
 		this.succeed(id, running, pending, startedAt, timing);
+		this.options.sink?.({
+			type: "turn.completed",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+			turnId,
+			durationMs: Date.now() - startedAt,
+		});
+		this.options.sink?.({
+			type: "task.completed",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+			status: "completed",
+			durationMs: Date.now() - startedAt,
+		});
 		await this.advance(id, session, session.scheduler.settle(running.task));
 	}
 
@@ -217,6 +249,14 @@ export class SessionTaskRunner {
 		error: unknown,
 	): Promise<void> {
 		log.error({ err: error, sessionId: id }, "run failed");
+		this.options.sink?.({
+			type: "task.completed",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+			status: "failed",
+			durationMs: 0,
+		});
 		const message = error instanceof Error ? error.message : String(error);
 		/**
 		 * The budget cliff is the one failure the user can act on, and it is the

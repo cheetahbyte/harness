@@ -8,12 +8,14 @@ import type { SubagentResult } from "./context/types";
 import { log } from "./logger";
 import { HarnezServer } from "./server";
 import { SessionStore } from "./sessions/store";
+import type { RuntimeEventSink } from "./telemetry/events";
 
 type ServeHarnezOptions = {
 	port?: number;
 	workspace?: string;
 	databasePath?: string;
 	contextBudget?: number;
+	telemetry?: { sink: RuntimeEventSink; shutdown: () => Promise<void> };
 };
 
 export function serveHarnez(
@@ -25,8 +27,13 @@ export function serveHarnez(
 		undefined,
 		undefined,
 		options.contextBudget === undefined
-			? {}
-			: { contextBudget: options.contextBudget },
+			? options.telemetry
+				? { telemetry: options.telemetry.sink }
+				: {}
+			: {
+					contextBudget: options.contextBudget,
+					...(options.telemetry ? { telemetry: options.telemetry.sink } : {}),
+				},
 	);
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
@@ -43,7 +50,10 @@ export function serveHarnez(
 			const hardExit = setTimeout(() => process.exit(0), 3_000);
 			hardExit.unref?.();
 			void harnez.close().then(
-				() => process.exit(0),
+				async () => {
+					await options.telemetry?.shutdown();
+					process.exit(0);
+				},
 				(error) => {
 					log.error({ err: error }, "graceful shutdown failed");
 					process.exit(1);

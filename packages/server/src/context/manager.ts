@@ -1,4 +1,5 @@
 import type { SessionStore } from "../sessions/store";
+import type { RuntimeEventSink } from "../telemetry/events";
 import { tokenCost as computeTokenCost } from "../token-cost";
 import {
 	episodeStates,
@@ -94,7 +95,17 @@ export class ContextManager {
 		ContextEpisode | undefined
 	>();
 
-	constructor(private readonly store: SessionStore) {}
+	private readonly pressureStreak = new Map<string, number>();
+	private readonly pressured = new Set<string>();
+	constructor(
+		private readonly store: SessionStore,
+		private readonly sink?: RuntimeEventSink,
+	) {}
+
+	markAgentProgress(sessionId: string): void {
+		if (this.pressured.has(sessionId))
+			this.pressured.add(`${sessionId}:continued`);
+	}
 
 	record(input: RecordInput, options?: PinOptions): ContextItem {
 		if (!options) return this.persist(input);
@@ -531,6 +542,40 @@ export class ContextManager {
 		 */
 		if (underPressure)
 			this.notePressure(sessionId, state.estimatedTokens, options.budget);
+		const pressureStreak = underPressure
+			? (this.pressureStreak.get(sessionId) ?? 0) + 1
+			: 0;
+		if (underPressure) this.pressureStreak.set(sessionId, pressureStreak);
+		else this.pressureStreak.delete(sessionId);
+		if (underPressure) this.pressured.add(sessionId);
+		this.sink?.({
+			type: "context.assembly.completed",
+			timestamp: new Date().toISOString(),
+			sessionId,
+			taskId: sessionId,
+			turnId: 0,
+			assemblyId: Date.now(),
+			tokensBefore,
+			tokensAfter: state.estimatedTokens,
+			budget: options.budget,
+			target: options.target,
+			underPressure,
+			pressureStreak,
+			agentContinued: this.pressured.has(`${sessionId}:continued`),
+			evictedItems: evictedIds.length,
+			archivedEpisodes: archivedEpisodeIds.length,
+		});
+		if (evictedIds.length)
+			this.sink?.({
+				type: "context.compaction.completed",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				taskId: sessionId,
+				turnId: 0,
+				assemblyId: Date.now(),
+				trigger: "automatic",
+				evictedItems: evictedIds.length,
+			});
 		return {
 			payloads: [
 				...projectedPayloads(state.items),
