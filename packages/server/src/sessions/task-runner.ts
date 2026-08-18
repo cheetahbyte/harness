@@ -352,6 +352,14 @@ export class SessionTaskRunner {
 			running.task,
 			running.task.result()?.status ?? "cancelled",
 		);
+		this.options.sink?.({
+			type: "task.completed",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+			status: running.task.result()?.status ?? "cancelled",
+			durationMs,
+		});
 		this.finishPending(id, pending);
 		await this.advance(id, session, session.scheduler.settle(running.task));
 	}

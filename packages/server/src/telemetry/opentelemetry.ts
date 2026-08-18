@@ -38,24 +38,43 @@ export type OpenTelemetryRuntime = {
 	shutdown: () => Promise<void>;
 };
 
+export type OpenTelemetryOptions = {
+	enabled?: boolean;
+	/** Exporter overrides are intended for in-memory verification. */
+	traceExporter?: unknown;
+	metricExporter?: unknown;
+};
+
 /** Starts the SDK only when opted in; exporter selection remains OTEL_* controlled. */
-export function startOpenTelemetry(): OpenTelemetryRuntime {
-	if (process.env["HARNEZ_OTEL"] !== "1")
-		return { sink: () => {}, shutdown: async () => {} };
+export function startOpenTelemetry(
+	options: OpenTelemetryOptions = {},
+): OpenTelemetryRuntime {
+	if (options.enabled ?? process.env["HARNEZ_OTEL"] === "1")
+		return startEnabledOpenTelemetry(options);
+	return { sink: () => {}, shutdown: async () => {} };
+}
+
+function startEnabledOpenTelemetry(
+	options: OpenTelemetryOptions,
+): OpenTelemetryRuntime {
 	const traceExporter =
-		process.env["OTEL_TRACES_EXPORTER"] === "otlp"
+		options.traceExporter ??
+		(process.env["OTEL_TRACES_EXPORTER"] === "otlp"
 			? new OTLPTraceExporter()
-			: undefined;
+			: undefined);
 	const metricExporter =
-		process.env["OTEL_METRICS_EXPORTER"] === "otlp"
+		options.metricExporter ??
+		(process.env["OTEL_METRICS_EXPORTER"] === "otlp"
 			? new OTLPMetricExporter()
-			: undefined;
+			: undefined);
+	if (!traceExporter && !metricExporter)
+		return { sink: () => {}, shutdown: async () => {} };
 	const sdk = new NodeSDK({
-		...(traceExporter ? { traceExporter } : {}),
+		...(traceExporter ? { traceExporter: traceExporter as never } : {}),
 		...(metricExporter
 			? {
 					metricReader: new PeriodicExportingMetricReader({
-						exporter: metricExporter,
+						exporter: metricExporter as never,
 					}),
 				}
 			: {}),
@@ -202,6 +221,24 @@ export function startOpenTelemetry(): OpenTelemetryRuntime {
 				provider: String(event.provider ?? "unknown"),
 				model: String(event.model ?? "unknown"),
 				kind: "output",
+			});
+		if (
+			event.type === "model.request.completed" &&
+			typeof event["cacheReadTokens"] === "number"
+		)
+			modelTokens.add(event["cacheReadTokens"] as number, {
+				provider: String(event.provider ?? "unknown"),
+				model: String(event.model ?? "unknown"),
+				kind: "cache_read",
+			});
+		if (
+			event.type === "model.request.completed" &&
+			typeof event["cacheWriteTokens"] === "number"
+		)
+			modelTokens.add(event["cacheWriteTokens"] as number, {
+				provider: String(event.provider ?? "unknown"),
+				model: String(event.model ?? "unknown"),
+				kind: "cache_write",
 			});
 		if (
 			event.type === "tool.call.completed" ||

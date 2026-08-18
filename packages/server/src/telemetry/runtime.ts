@@ -96,8 +96,8 @@ export function sanitizeEvent(
 			continue;
 		const value = result[key];
 		if (
-			sensitive.test(key) ||
-			secret.test(key) ||
+			((sensitive.test(key) || secret.test(key)) &&
+				typeof value !== "number") ||
 			value instanceof Uint8Array ||
 			(typeof value === "string" &&
 				(secret.test(value) || /^data:image\//i.test(value)))
