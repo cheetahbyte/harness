@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
 
+import { structuredHash } from "../capabilities/hash";
+
 type Migration = {
 	version: number;
 	run(db: Database): void;
@@ -76,6 +78,86 @@ const migrations: readonly Migration[] = [
 			db.run(
 				"UPDATE sessions SET has_user_message = 1 WHERE EXISTS (SELECT 1 FROM context_items WHERE context_items.session_id = sessions.id AND context_items.kind = 'user') OR EXISTS (SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id)",
 			);
+		},
+	},
+	{
+		version: 7,
+		run(db) {
+			for (const [column, definition] of [
+				["parent_id", "TEXT"],
+				["origin_lane", "TEXT NOT NULL DEFAULT 'main'"],
+				["node_role", "TEXT NOT NULL DEFAULT 'message'"],
+				["content_hash", "TEXT"],
+				["source_digest", "TEXT"],
+				["policy_version", "INTEGER"],
+			] as const)
+				if (!hasColumn(db, "context_items", column))
+					db.run(
+						`ALTER TABLE context_items ADD COLUMN ${column} ${definition}`,
+					);
+
+			db.run(
+				"CREATE TABLE IF NOT EXISTS context_lanes (session_id TEXT NOT NULL, name TEXT NOT NULL, head_item_id TEXT, forked_from_item_id TEXT, owner_task_id TEXT, state TEXT NOT NULL CHECK (state IN ('idle', 'active', 'completed', 'failed', 'cancelled', 'abandoned')), revision INTEGER NOT NULL CHECK (revision >= 0), created_at TEXT NOT NULL, closed_at TEXT, PRIMARY KEY (session_id, name))",
+			);
+			db.run(
+				"CREATE INDEX IF NOT EXISTS context_items_session_origin_sequence ON context_items(session_id, origin_lane, sequence)",
+			);
+			db.run(
+				"CREATE INDEX IF NOT EXISTS context_items_parent_id ON context_items(parent_id)",
+			);
+			db.run(
+				"CREATE UNIQUE INDEX IF NOT EXISTS context_checkpoint_source ON context_items(session_id, origin_lane, source_digest, policy_version) WHERE node_role = 'checkpoint' AND source_digest IS NOT NULL AND policy_version IS NOT NULL",
+			);
+			db.run(
+				"CREATE TRIGGER IF NOT EXISTS context_checkpoint_metadata_required BEFORE INSERT ON context_items WHEN NEW.node_role = 'checkpoint' AND (NEW.source_digest IS NULL OR NEW.policy_version IS NULL) BEGIN SELECT RAISE(ABORT, 'checkpoint metadata required'); END",
+			);
+
+			const sessions = db
+				.query("SELECT id FROM sessions ORDER BY id")
+				.all() as { id: string }[];
+			for (const { id: sessionId } of sessions) {
+				db.query(
+					"INSERT OR IGNORE INTO context_lanes (session_id, name, state, revision, created_at) VALUES (?, 'main', 'idle', 0, ?)",
+				).run(sessionId, new Date().toISOString());
+
+				const rows = db
+					.query(
+						"SELECT sequence, id, kind, payload, content_hash FROM context_items WHERE session_id = ? ORDER BY sequence",
+					)
+					.all(sessionId) as {
+					sequence: number;
+					id: string;
+					kind: string;
+					payload: string;
+					content_hash: string | null;
+				}[];
+				let parentId: string | null = null;
+				for (const row of rows) {
+					const contentHash =
+						row.content_hash ??
+						structuredHash({
+							kind: row.kind,
+							nodeRole: "message",
+							payload: JSON.parse(row.payload),
+						});
+					db.query(
+						"UPDATE context_items SET parent_id = ?, origin_lane = 'main', node_role = 'message', content_hash = ? WHERE id = ?",
+					).run(parentId, contentHash, row.id);
+					if (
+						!db
+							.query("SELECT 1 FROM context_lifecycle WHERE item_id = ?")
+							.get(row.id)
+					) {
+						db.query(
+							"INSERT INTO context_lifecycle (item_id, lifecycle, projection, reason, updated_at) VALUES (?, 'archived', 'omitted', 'migration-repair', ?)",
+						).run(row.id, new Date().toISOString());
+					}
+					parentId = row.id;
+				}
+				db.query(
+					"UPDATE context_lanes SET head_item_id = ?, revision = ?, state = 'idle', owner_task_id = NULL WHERE session_id = ? AND name = 'main'",
+				).run(parentId, rows.length, sessionId);
+			}
 		},
 	},
 ];
