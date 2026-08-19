@@ -3,9 +3,9 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"dev": "vite dev --port 3000",
+		"dev": "vite dev --host 127.0.0.1 --port 3000",
 		"generate-routes": "tsr generate",
-		"build": "vite build && rm -f dist/client/wrangler.json && cp -R dist/server/assets/. dist/client/assets/ && cp dist/server/server.js dist/client/server.js && cp pages-worker.js dist/client/_worker.js",
+		"build": "vite build && rm -f dist/client/wrangler.json && cp -R dist/server/assets/. dist/client/assets/ && cp dist/server/index.js dist/client/server.js && cp pages-worker.js dist/client/_worker.js",
 		"preview": "vite preview",
 		"deploy": "bun run build && rm -rf .wrangler/deploy && wrangler pages deploy dist/client --project-name harnez-docs"
 	},

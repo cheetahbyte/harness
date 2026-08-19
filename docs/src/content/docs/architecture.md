@@ -9,32 +9,6 @@ Harnez uses a local client/server architecture. Running `harnez` connects to
 an existing server or starts one. From the outside, it should still feel like
 one application.
 
-```text
-┌──────────────────────┐
-│      TUI Client      │
-└──────────┬───────────┘
-           │
-       local IPC
-           │
-┌──────────▼───────────┐
-│    Harnez Server     │
-│                      │
-│  Session Manager     │
-│  Agent Runtime       │
-│  Subagent Manager    │
-│  Context Manager     │
-│  Tool Registry       │
-│  Skill Registry      │
-│  MCP Manager         │
-│  Artifact Store      │
-│  Persistence         │
-└──────────┬───────────┘
-           │
-┌──────────▼───────────┐
-│ Model Runtime Layer  │
-└──────────────────────┘
-```
-
 ## Runtime
 
 The server is a long-lived process implemented in TypeScript on Bun. The TUI
@@ -55,12 +29,12 @@ flowchart LR
     M --> O[OpenTelemetry metadata]
 ```
 
-At 80% of the usable input budget, admission targets 60%. It attempts one
-bounded LLM condensation when enough source context and reserve remain, then
-uses the deterministic checkpoint fallback if the attempt is disabled or
-fails. `HARNEZ_LLM_COMPACTION=0` selects the fallback directly. A provider
-context-length response creates a recovery checkpoint retaining the current
-turn and retries once.
+At 80% of the usable input budget, admission targets 60%. When LLM compaction
+is enabled, Harnez starts one bounded condensation operation and can retry
+invalid output once. An unavailable or failed operation uses the deterministic
+checkpoint fallback. With `HARNEZ_LLM_COMPACTION=0`, fallback waits until the
+working set exceeds its budget. A provider context-length response creates a
+recovery checkpoint retaining the current turn and retries once.
 
 ## Agent loop
 
@@ -102,10 +76,11 @@ fallback. Tool output is externalized at creation. The model sees a bounded
 preview and a reference it can use to recall the exact result later.
 
 When the context budget reaches 80%, Harnez targets 60% of the usable input
-budget. It attempts one bounded LLM condensation, then archives completed tool
-exchanges and work in a deterministic order. If the LLM is disabled or fails,
-the deterministic checkpoint fallback runs. Capability content is charged
-against the same final input budget.
+budget. If LLM compaction is enabled, it attempts a bounded condensation before
+archiving completed tool exchanges and work in a deterministic order. Failed
+condensation uses the deterministic checkpoint fallback; disabled LLM
+compaction defers fallback until the budget is exceeded. Capability content is
+charged against the same final input budget.
 Nothing is deleted; the full event history persists independently of what's
 currently in the model's context. Main and child lanes share immutable prefix
 nodes but have independent heads and revisions. Checkpoints record their

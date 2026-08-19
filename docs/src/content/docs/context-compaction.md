@@ -121,11 +121,17 @@ Before each model request, Harnez recalculates the conversation working set and
 includes the fixed cost of the permanent tool definitions. The default
 conversation budget is whichever is smaller: 80,000 tokens or the model's
 usable input window. At 80% pressure, Harnez aims for 60% of the usable budget.
-It first attempts one bounded LLM condensation when the source prefix and a
-4,096-token reserve fit. The LLM has no tools and must return validated memory
-JSON. A disabled, unavailable, failed, or oversized attempt uses the
-deterministic checkpoint fallback. Set `HARNEZ_LLM_COMPACTION=0` to disable
-the LLM attempt while keeping the fallback.
+When LLM compaction is enabled, Harnez attempts a bounded condensation when the
+source prefix and a 4,096-token reserve fit. The LLM has no tools and must
+return validated memory JSON. Invalid output can be retried once. An
+unavailable, failed, or oversized attempt uses the deterministic checkpoint
+fallback. Set `HARNEZ_LLM_COMPACTION=0` to disable the LLM attempt; the fallback
+then runs only when the working set exceeds its budget.
+
+The fallback keeps bounded active episode goals, recent anchors, completed
+episode conclusions, and observation references. If the lane changes while an
+LLM condensation is running, Harnez discards the stale result and replans with
+the deterministic fallback.
 
 For session history, it removes context in three passes:
 
@@ -162,8 +168,9 @@ groups and completed episode content; user messages, system rules, pinned
 notes, observations, active/current-task items, predecessor terminal messages,
 and the newest four groups are protected. Exact observations remain recallable.
 A replacement is written atomically and repeated calls replace the single live
-memory. Automatic condensation uses one bounded LLM call; explicit
-`condense_context` remains deterministic and does not make a second model call.
+memory. Automatic condensation uses one bounded operation and may retry invalid
+output once. Explicit `condense_context` remains deterministic and does not make
+a model call.
 
 Automatic LLM and deterministic fallback attempts emit compaction lifecycle
 events; successful explicit condensation emits an explicit event and the TUI
@@ -200,6 +207,10 @@ The parent receives a structured result instead of the subagent's full trace.
 The handoff contains its status, findings, decisions, changed files,
 verification, unresolved issues, and artifact references. The parent keeps the
 result it needs without adding every intermediate step to its own context.
+
+Before admitting a task, Harnez repairs stale main-lane ownership and abandons
+or fails inconsistent child-lane tasks. Abandoning a child lane closes its open
+episode. Recovery emits `context.recovery.completed` with repair counts.
 
 ## Related work
 

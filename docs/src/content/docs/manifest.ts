@@ -27,7 +27,7 @@ export interface DocPage {
 	indexable?: boolean;
 }
 
-export const docSections = ["Guide", "Architecture", "Advanced"] as const;
+export const docSections = ["Guide", "Advanced", "Architecture"] as const;
 
 export const docPages: DocPage[] = [
 	{

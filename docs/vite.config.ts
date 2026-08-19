@@ -9,7 +9,10 @@ import solidPlugin from "vite-plugin-solid";
 export default defineConfig({
 	resolve: { tsconfigPaths: true },
 	plugins: [
-		cloudflare({ viteEnvironment: { name: "ssr" } }),
+		cloudflare({
+			config: { main: "@tanstack/solid-start/server-entry" },
+			viteEnvironment: { name: "ssr" },
+		}),
 		devtools(),
 		tailwindcss(),
 		tanstackStart(),

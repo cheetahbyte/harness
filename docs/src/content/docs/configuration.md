@@ -176,7 +176,7 @@ path in the error.
 | `HARNEZ_PORT` | Server listen port. Default `7432`. |
 | `HARNEZ_URL` | Server URL the TUI connects to. Default `http://localhost:7432`. |
 | `HARNEZ_CONTEXT_BUDGET` | Overrides the context token budget used for compaction. |
-| `HARNEZ_LLM_COMPACTION` | Set to `0` to skip LLM condensation and use the deterministic fallback. |
+| `HARNEZ_LLM_COMPACTION` | Set to `0` to skip LLM condensation. Deterministic fallback remains available after the context budget is exceeded. |
 | `HARNEZ_LOG_LEVEL` | Pino log level. Default `info`. |
 | `HARNEZ_OTEL` | Set to `1` to enable OpenTelemetry traces and metrics. |
 | `HARNEZ_OTEL_CAPTURE_CONTENT` | Comma-separated opt-in payload categories, or `all`. Default empty. |
@@ -191,7 +191,8 @@ resource attributes, exporters, and sampling. Content capture is disabled by
 default; see [Observability](/docs/advanced/observability) before enabling it.
 
 Context admission triggers at 80% of the usable budget and targets 60%. The
-runtime makes one bounded LLM condensation attempt when it can reserve enough
-space for the request. A failed or disabled attempt uses deterministic
-checkpoint compaction. Provider context-length errors create a recovery
-checkpoint and retry once with the current turn preserved.
+runtime makes one bounded LLM condensation operation when it can reserve enough
+space for the request and can retry invalid output once. A failed operation
+uses deterministic checkpoint compaction. With `HARNEZ_LLM_COMPACTION=0`, the
+fallback waits until the budget is exceeded. Provider context-length errors
+create a recovery checkpoint and retry once with the current turn preserved.

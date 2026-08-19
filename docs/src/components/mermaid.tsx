@@ -7,12 +7,12 @@ async function render(chart: string): Promise<string> {
 }
 
 export async function renderMermaidBlocks(root: ParentNode): Promise<void> {
-	for (const block of root.querySelectorAll<HTMLElement>(
-		'pre[data-lang="mermaid"]',
-	)) {
+	const blocks = [...root.querySelectorAll<HTMLElement>('pre[data-lang="mermaid"]')]
+		.map((block) => ({ block, chart: block.textContent ?? "" }));
+	for (const { block, chart } of blocks) {
 		const container = document.createElement("div");
 		container.className = "mermaid-diagram";
-		container.innerHTML = await render(block.textContent ?? "");
+		container.innerHTML = await render(chart);
 		block.replaceWith(container);
 	}
 }

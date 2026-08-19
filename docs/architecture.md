@@ -95,32 +95,20 @@ These formats feed Harnez's own internal registries and runtime abstractions.
 
 Harnez uses a local client/server architecture.
 
-```text
-┌──────────────────────┐
-│      TUI Client      │
-└──────────┬───────────┘
-           │
-       local IPC
-           │
-┌──────────▼───────────┐
-│    Harnez Server    │
-│                      │
-│  Session Manager     │
-│  Agent Runtime       │
-│  Subagent Manager    │
-│  Context Manager     │
-│  Tool Registry       │
-│  Skill Registry      │
-│  MCP Manager         │
-│  Artifact Store      │
-│  Persistence         │
-└──────────┬───────────┘
-           │
-┌──────────▼───────────┐
-│ Model Runtime Layer  │
-│ pi-agent-core /      │
-│ pi-ai adapters       │
-└──────────────────────┘
+```mermaid
+flowchart TD
+    T[TUI client] -->|Local IPC| S
+
+    subgraph S[Harnez server]
+        SM[Session manager] --> TS[Task scheduler]
+        TS --> AR[Agent runtime]
+        AR --> CM[Context manager]
+        AR --> CC[Capability catalog]
+        AR --> MR[MCP registry]
+        CM --> DB[(SQLite store)]
+    end
+
+    AR --> ML[Model runtime<br/>pi-agent-core and pi-ai adapters]
 ```
 
 Operationally, Harnez should still feel like one application.
@@ -144,9 +132,10 @@ flowchart TD
 ```
 
 Admission triggers at 80% of the usable input budget and targets 60%. LLM
-condensation is bounded and tool-free; `HARNEZ_LLM_COMPACTION=0` selects the
-deterministic fallback. Exact source history remains persisted, and a provider
-context-length error retains the current turn before one retry.
+condensation is bounded and tool-free. With `HARNEZ_LLM_COMPACTION=0`, the
+deterministic fallback waits until the budget is exceeded. Exact source history
+remains persisted, and a provider context-length error retains the current turn
+before one retry.
 
 ---
 
@@ -458,9 +447,12 @@ from raw chat text.
 ## 12. Compaction
 
 Context accounting runs continuously, while physical prompt rewrites are
-batched. The high-water budget defaults to the smaller of 80,000 tokens and the
-model input window after reserving maximum output. Crossing it triggers one
-deterministic cleanup down to an 80% target, reducing prompt-cache churn.
+batched. The budget defaults to the smaller of 80,000 tokens and the usable
+model input window. With LLM compaction enabled, reaching 80% pressure starts a
+bounded condensation that targets 60%. Invalid output can be retried once. If
+the LLM is unavailable or fails, deterministic checkpoint compaction runs. When
+LLM compaction is disabled, the checkpoint fallback runs only after the budget
+is exceeded.
 
 Cleanup first retires completed tool exchanges in a fixed reconstructability
 order. If that is insufficient, it archives the oldest completed action
@@ -479,11 +471,9 @@ fake producer against this same boundary.
 `GET /sessions/:id/context` exposes projected token cost, lifecycle counts,
 episode state, and item-level reasons without returning archived payloads.
 
-LLM-generated historical summaries remain future work; the current rolling
-summary is deterministic and locally truncated. Arbitrary item-level dependency
-graphs, nested episodes, learned policies, and artifact garbage collection also
-remain future work. They should extend this lifecycle model rather than replace
-the immutable event history.
+Arbitrary item-level dependency graphs, nested episodes, learned policies, and
+artifact garbage collection remain future work. They should extend this
+lifecycle model rather than replace the immutable event history.
 
 ---
 
