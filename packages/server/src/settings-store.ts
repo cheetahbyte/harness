@@ -21,6 +21,7 @@ export type ProviderSettings = Record<string, OpenAICompatibleProviderSettings>;
 
 type Settings = {
 	model?: ModelConfig;
+	compactionModel?: string;
 	fastCycle?: FastCycleEntry[];
 	disableThinkingBlocks?: boolean;
 	disabledMcpServers?: string[];
@@ -65,6 +66,10 @@ export class SettingsStore {
 
 	modelConfig(): ModelConfig | undefined {
 		return this.project.model ?? this.global.model;
+	}
+
+	compactionModel(): string | undefined {
+		return this.project.compactionModel ?? this.global.compactionModel;
 	}
 
 	setModelConfig(model: ModelConfig): void {

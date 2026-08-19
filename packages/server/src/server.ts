@@ -125,6 +125,7 @@ export class HarnezServer {
 			...(options.llmCompaction === undefined
 				? {}
 				: { llmCompaction: options.llmCompaction }),
+			compactionModelConfigFor: (id) => this.settingsFor(id).compactionModel(),
 			...(options.telemetry ? { sink: options.telemetry } : {}),
 		});
 		this.taskRunner = new SessionTaskRunner({

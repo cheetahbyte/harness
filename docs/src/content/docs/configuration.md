@@ -49,6 +49,7 @@ token set or an API key. Harnez writes the file with `0o600` permissions, and
     "model": "qwen3-coder:30b",
     "thinkingLevel": "medium"
   },
+  "compactionModel": "ollama/gpt-oss:20b",
   "fastCycle": [
     { "provider": "openai-codex", "model": "gpt-5.1-codex", "thinkingLevel": "medium" },
     { "provider": "anthropic", "model": "claude-opus-4-5", "thinkingLevel": "high" }
@@ -81,6 +82,10 @@ placeholder key, so compatible local servers must tolerate an
 `model` is whatever `/model` last set. `thinkingLevel` is the last level
 selected with `Shift+Tab`; supported levels depend on the model. `baseUrl`
 only applies to the `openai-compatible` provider.
+
+`compactionModel` optionally selects a separate model for LLM context
+compaction in `<provider>/<model>` form. It falls back to `model` when omitted.
+Project settings override global settings.
 
 `fastCycle` is the list `Ctrl+P` steps through, in the order `/fast-cycle`
 listed the models. Each entry carries its own `thinkingLevel`, so `Shift+Tab`

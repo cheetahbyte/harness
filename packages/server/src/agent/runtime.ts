@@ -83,6 +83,9 @@ export class HarnezAgentRuntime {
 	private readonly context: ContextManager;
 	private readonly contextBudget: number;
 	private readonly llmCompaction: boolean;
+	private readonly compactionModelConfigFor:
+		| ((sessionId: string) => string | undefined)
+		| undefined;
 
 	constructor(options: {
 		credentials: CredentialStore;
@@ -91,6 +94,7 @@ export class HarnezAgentRuntime {
 		context: ContextManager;
 		contextBudget?: number;
 		llmCompaction?: boolean;
+		compactionModelConfigFor?: (sessionId: string) => string | undefined;
 		sink?: RuntimeEventSink;
 	}) {
 		this.credentials = options.credentials;
@@ -100,6 +104,7 @@ export class HarnezAgentRuntime {
 		this.contextBudget = options.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
 		this.llmCompaction =
 			options.llmCompaction ?? process.env["HARNEZ_LLM_COMPACTION"] !== "0";
+		this.compactionModelConfigFor = options.compactionModelConfigFor;
 		this.sink = options.sink;
 	}
 	private readonly sink: RuntimeEventSink | undefined;
@@ -145,11 +150,24 @@ export class HarnezAgentRuntime {
 				this.credentials,
 				this.modelsFor(sessionId),
 			);
+			const compactionReference = this.compactionModelConfigFor?.(sessionId);
+			const compactionConfig = compactionReference
+				? modelConfigFromReference(compactionReference)
+				: undefined;
+			const compaction = compactionConfig
+				? providerModels(
+						compactionConfig,
+						this.credentials,
+						this.modelsFor(sessionId),
+					)
+				: { models, model };
 			const created = this.createAgent({
 				sessionId,
 				key,
 				model,
 				models,
+				compactionModel: compaction.model,
+				compactionModels: compaction.models,
 				tools,
 				config,
 				task,
@@ -306,6 +324,8 @@ export class HarnezAgentRuntime {
 		key,
 		model,
 		models,
+		compactionModel,
+		compactionModels,
 		tools,
 		config,
 		task,
@@ -317,6 +337,8 @@ export class HarnezAgentRuntime {
 		key: string;
 		model: Model<Api>;
 		models: ReturnType<typeof providerModels>["models"];
+		compactionModel: Model<Api>;
+		compactionModels: ReturnType<typeof providerModels>["models"];
 		tools: CoreTools;
 		config: ModelConfig;
 		task: TaskRuntime;
@@ -333,7 +355,12 @@ export class HarnezAgentRuntime {
 		const entry = newAgentEntry(key, tools, task, this.sink);
 		const compactor: ContextCompactor | undefined = !this.llmCompaction
 			? undefined
-			: (request) => compactWithLlm({ ...request, model, models });
+			: (request) =>
+					compactWithLlm({
+						...request,
+						model: compactionModel,
+						models: compactionModels,
+					});
 		/**
 		 * Publishes a tool mid-task. `entry.agent` is assigned before any tool can
 		 * run, so the deferred read is always resolved by the time this fires.
@@ -577,6 +604,19 @@ export class HarnezAgentRuntime {
 			entry.contextError = asError(error);
 		}
 	}
+}
+
+function modelConfigFromReference(reference: string): ModelConfig {
+	const separator = reference.indexOf("/");
+	if (separator <= 0 || separator === reference.length - 1)
+		throw new HarnezProviderError(
+			`invalid compactionModel "${reference}"; expected <provider>/<model>`,
+			"configuration",
+		);
+	return {
+		provider: reference.slice(0, separator),
+		model: reference.slice(separator + 1),
+	};
 }
 
 function normalizeProviderError(error: unknown): HarnezProviderError {
