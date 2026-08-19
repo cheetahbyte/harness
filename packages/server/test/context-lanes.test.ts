@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { NewContextItem } from "../src/context/types";
+import { ContextManager } from "../src/context/manager";
 import { SessionStore } from "../src/sessions/store";
 
 const paths: string[] = [];
@@ -67,6 +68,22 @@ describe("persistent context lanes", () => {
 		expect(next.parentId).toBe(first.id);
 		expect(next.originLane).toBe("exploration");
 		expect(sessions.contextPath(sessionId, "exploration").map(({ id }) => id)).toEqual(["first", "child"]);
+		expect(
+			sessions.createLane({
+				sessionId,
+				name: "second-child",
+				ownerTaskId: "task-second",
+				fromItemId: first.id,
+			}).forkedFromItemId,
+		).toBe(first.id);
+		expect(() =>
+			sessions.createLane({
+				sessionId,
+				name: "nested-child",
+				ownerTaskId: "task-nested",
+				fromItemId: next.id,
+			}),
+		).toThrow("fork from main");
 	});
 
 	test("rejects invalid parents and checkpoint metadata without advancing a head", () => {
@@ -100,5 +117,111 @@ describe("persistent context lanes", () => {
 		expect(sessions.lane(sessionId)?.revision).toBe(1);
 		sessions.db.query("UPDATE context_items SET parent_id = id WHERE id = ?").run(checkpoint.id);
 		expect(() => sessions.contextPath(sessionId)).toThrow("cycle");
+	});
+
+	test("recovers owners, episodes, and task conflicts idempotently", () => {
+		const sessions = store();
+		const sessionId = sessions.create();
+		const manager = new ContextManager(sessions);
+		sessions.startContextTask(sessionId, "main-task", "2026-08-19T00:00:00.000Z");
+		sessions.db
+			.query(
+				"UPDATE tasks SET state = 'terminal', status = 'completed' WHERE id = 'main-task'",
+			)
+			.run();
+		expect(sessions.recoverLanes()).toEqual({
+			repaired: 1,
+			abandoned: 0,
+			failed: 0,
+		});
+		sessions.db
+			.query(
+				"UPDATE context_lanes SET state = 'active', owner_task_id = 'missing-main' WHERE session_id = ? AND name = 'main'",
+			)
+			.run(sessionId);
+		expect(sessions.recoverLanes()).toEqual({
+			repaired: 1,
+			abandoned: 0,
+			failed: 0,
+		});
+
+		const episode = manager.startEpisode(sessionId, {
+			name: "orphaned exploration",
+			kind: "exploration",
+		});
+		const first = sessions.appendContextAtHead(input(sessionId, "first"), "main", 0);
+		if ("status" in first) throw new Error("append failed");
+		sessions.db
+			.query("UPDATE context_items SET episode_id = ? WHERE id = ?")
+			.run(episode.id, first.id);
+		sessions.createLane({ sessionId, name: "child", ownerTaskId: "missing", fromItemId: first.id });
+		expect(sessions.recoverLanes()).toEqual({ repaired: 0, abandoned: 1, failed: 0 });
+		expect(sessions.recoverLanes()).toEqual({ repaired: 0, abandoned: 0, failed: 0 });
+		expect(sessions.lane(sessionId, "child")?.state).toBe("abandoned");
+		expect(manager.episodes(sessionId).find(({ id }) => id === episode.id)?.state).toBe("abandoned");
+
+		sessions.db
+			.query(
+				"INSERT INTO tasks (id, session_id, state, started_at) VALUES ('conflict', ?, 'running', ?)",
+			)
+			.run(sessionId, "2026-08-19T00:00:00.000Z");
+		sessions.createLane({ sessionId, name: "finished-child", ownerTaskId: "conflict", fromItemId: first.id });
+		sessions.db
+			.query("UPDATE context_lanes SET state = 'completed' WHERE session_id = ? AND name = 'finished-child'")
+			.run(sessionId);
+		expect(sessions.recoverLanes()).toEqual({ repaired: 0, abandoned: 0, failed: 1 });
+		expect(sessions.task(sessionId, "conflict")?.status).toBe("failed");
+	});
+
+	test("finishes main atomically and remains task-authoritative on retries", () => {
+		const sessions = store();
+		const sessionId = sessions.create();
+		const manager = new ContextManager(sessions);
+		sessions.startContextTask(sessionId, "task-a", "2026-08-19T00:00:00.000Z");
+		const episode = manager.startEpisode(sessionId, { name: "active work", kind: "exploration" });
+		const request = {
+			sessionId,
+			taskId: "task-a",
+			status: "failed" as const,
+			startedAt: "2026-08-19T00:00:00.000Z",
+			ledger: [{ type: "cancellation_requested" as const, at: "2026-08-19T00:00:01.000Z" }],
+		};
+		manager.finishTask(request);
+		manager.finishTask({ ...request, status: "completed" });
+		expect(sessions.lane(sessionId)?.state).toBe("idle");
+		expect(sessions.task(sessionId, "task-a")?.status).toBe("failed");
+		expect(sessions.taskLedger(sessionId, "task-a")).toHaveLength(1);
+		expect(manager.episodes(sessionId).find(({ id }) => id === episode.id)?.state).toBe("failed");
+		expect(sessions.episodeEvents(sessionId).filter(({ episodeId }) => episodeId === episode.id)).toHaveLength(2);
+	});
+
+	test("closes a child with one bounded handoff and never copies its trace", () => {
+		const sessions = store();
+		const sessionId = sessions.create();
+		const manager = new ContextManager(sessions);
+		const first = sessions.appendContextAtHead(input(sessionId, "first"), "main", 0);
+		if ("status" in first) throw new Error("append failed");
+		sessions.createLane({ sessionId, name: "child", ownerTaskId: "child-task", fromItemId: first.id });
+		sessions.db
+			.query("INSERT INTO tasks (id, session_id, state, started_at) VALUES ('child-task', ?, 'running', ?)")
+			.run(sessionId, "2026-08-19T00:00:00.000Z");
+		const trace = sessions.appendContextAtHead(input(sessionId, "private-child-trace"), "child", 0);
+		if ("status" in trace) throw new Error("append failed");
+		const handoff = {
+			status: "completed" as const,
+			findings: ["bounded result"],
+			decisions: [],
+			changedFiles: [],
+			verification: ["checked"],
+			unresolvedIssues: [],
+			artifactRefs: [],
+		};
+		manager.finishTask({ sessionId, taskId: "child-task", status: "completed", laneId: "child", handoff });
+		manager.finishTask({ sessionId, taskId: "child-task", status: "completed", laneId: "child", handoff });
+		expect(sessions.lane(sessionId, "child")?.state).toBe("completed");
+		const main = sessions.contextPath(sessionId, "main");
+		expect(main.map(({ id }) => id)).toEqual(["first", "handoff-child-task"]);
+		expect(main.at(-1)?.payload).toEqual(handoff);
+		expect(main.some(({ id }) => id === "private-child-trace")).toBe(false);
 	});
 });

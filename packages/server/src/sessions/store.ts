@@ -170,6 +170,228 @@ export class SessionStore {
 			.run(taskId, sessionId, status, startedAt, new Date().toISOString());
 	}
 
+	task(
+		sessionId: string,
+		taskId: string,
+	): { state: string; status?: string } | undefined {
+		const row = this.db
+			.query("SELECT state, status FROM tasks WHERE session_id = ? AND id = ?")
+			.get(sessionId, taskId) as {
+			state: string;
+			status: string | null;
+		} | null;
+		return row
+			? {
+					state: row.state,
+					...(row.status === null ? {} : { status: row.status }),
+				}
+			: undefined;
+	}
+
+	startContextTask(sessionId: string, taskId: string, startedAt: string): void {
+		this.db.transaction(() => {
+			const existing = this.task(sessionId, taskId);
+			if (existing?.state === "terminal")
+				throw new Error("Cannot restart a terminal task");
+			if (!this.claimMainLane(sessionId, taskId))
+				throw new Error("Main context lane is owned by another task");
+			this.db
+				.query(
+					"INSERT OR IGNORE INTO tasks (id, session_id, state, started_at) VALUES (?, ?, 'running', ?)",
+				)
+				.run(taskId, sessionId, startedAt);
+		})();
+	}
+
+	startChildContextTask(input: {
+		sessionId: string;
+		name: string;
+		taskId: string;
+		fromItemId: string;
+		startedAt: string;
+	}): ContextLane {
+		return this.db.transaction(() => {
+			const lane = this.createLane({
+				sessionId: input.sessionId,
+				name: input.name,
+				ownerTaskId: input.taskId,
+				fromItemId: input.fromItemId,
+			});
+			this.db
+				.query(
+					"INSERT INTO tasks (id, session_id, state, started_at) VALUES (?, ?, 'running', ?)",
+				)
+				.run(input.taskId, input.sessionId, input.startedAt);
+			return lane;
+		})();
+	}
+
+	finishContextTask(input: {
+		sessionId: string;
+		taskId: string;
+		status: TaskTerminalStatus;
+		startedAt: string;
+		laneName?: string;
+		ledger?: readonly ExecutionLedgerEntry[];
+		terminalEpisode?: NewEpisodeEvent;
+		handoff?: NewContextItem;
+	}): void {
+		this.db.transaction(() => {
+			const existing = this.task(input.sessionId, input.taskId);
+			if (existing?.state === "terminal") return;
+			const laneName = input.laneName ?? "main";
+			const lane = this.lane(input.sessionId, laneName);
+			if (!lane) throw new Error(`Unknown context lane ${laneName}`);
+			if (lane.ownerTaskId && lane.ownerTaskId !== input.taskId)
+				throw new Error("Context lane is owned by another task");
+			for (const entry of input.ledger ?? [])
+				this.db
+					.query(
+						"INSERT INTO task_ledger (session_id, task_id, payload) VALUES (?, ?, ?)",
+					)
+					.run(input.sessionId, input.taskId, JSON.stringify(entry));
+			if (input.terminalEpisode) this.appendEpisodeEvent(input.terminalEpisode);
+			if (lane.ownerTaskId === input.taskId) {
+				if (laneName === "main")
+					this.db
+						.query(
+							"UPDATE context_lanes SET owner_task_id = NULL, state = 'idle' WHERE session_id = ? AND name = ?",
+						)
+						.run(input.sessionId, laneName);
+				else
+					this.db
+						.query(
+							"UPDATE context_lanes SET owner_task_id = NULL, state = ?, closed_at = ? WHERE session_id = ? AND name = ?",
+						)
+						.run(
+							input.status === "completed"
+								? "completed"
+								: input.status === "cancelled"
+									? "cancelled"
+									: "failed",
+							new Date().toISOString(),
+							input.sessionId,
+							laneName,
+						);
+			}
+			this.db
+				.query(
+					"INSERT INTO tasks (id, session_id, state, status, started_at, finished_at) VALUES (?, ?, 'terminal', ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = 'terminal', status = excluded.status, finished_at = excluded.finished_at WHERE tasks.state <> 'terminal'",
+				)
+				.run(
+					input.taskId,
+					input.sessionId,
+					input.status,
+					input.startedAt,
+					new Date().toISOString(),
+				);
+			if (input.handoff) {
+				const main = this.lane(input.sessionId, "main");
+				if (!main) throw new Error("main lane missing");
+				const result = this.appendContextAtHead(
+					{ ...input.handoff, originLane: "main" },
+					"main",
+					main.revision,
+				);
+				if ("status" in result)
+					throw new Error("main lane changed while handing off");
+			}
+		})();
+	}
+
+	recoverLanes(): { repaired: number; abandoned: number; failed: number } {
+		return this.db.transaction(() => {
+			let repaired = 0,
+				abandoned = 0,
+				failed = 0;
+			const rows = this.db
+				.query(
+					"SELECT session_id, name, owner_task_id, state FROM context_lanes WHERE name <> 'main' OR state = 'active'",
+				)
+				.all() as {
+				session_id: string;
+				name: string;
+				owner_task_id: string | null;
+				state: ContextLaneState;
+			}[];
+			for (const row of rows) {
+				const task = row.owner_task_id
+					? this.task(row.session_id, row.owner_task_id)
+					: undefined;
+				if (
+					row.name === "main" &&
+					(!row.owner_task_id || !task || task.state === "terminal")
+				) {
+					this.db
+						.query(
+							"UPDATE context_lanes SET owner_task_id = NULL, state = 'idle' WHERE session_id = ? AND name = ?",
+						)
+						.run(row.session_id, row.name);
+					repaired++;
+				} else if (
+					row.name !== "main" &&
+					row.state === "active" &&
+					(!task || task.state === "terminal")
+				) {
+					this.db
+						.query(
+							"UPDATE context_lanes SET owner_task_id = NULL, state = 'abandoned', closed_at = ? WHERE session_id = ? AND name = ?",
+						)
+						.run(new Date().toISOString(), row.session_id, row.name);
+					this.abandonLaneEpisode(row.session_id, row.name);
+					abandoned++;
+				} else if (
+					row.name !== "main" &&
+					row.state !== "active" &&
+					task?.state === "running"
+				) {
+					this.db
+						.query(
+							"UPDATE tasks SET state = 'terminal', status = 'failed', finished_at = ? WHERE id = ? AND session_id = ? AND state = 'running'",
+						)
+						.run(new Date().toISOString(), row.owner_task_id, row.session_id);
+					failed++;
+				}
+			}
+			return { repaired, abandoned, failed };
+		})();
+	}
+
+	private abandonLaneEpisode(sessionId: string, laneName: string): void {
+		const episodeId = this.contextPath(sessionId, laneName)
+			.toReversed()
+			.find((item) => item.episodeId)?.episodeId;
+		const starts = this.episodeEvents(sessionId).filter(
+			(event) => event.action === "start",
+		);
+		const start = episodeId
+			? starts.findLast((event) => event.episodeId === episodeId)
+			: starts.findLast((event) =>
+					this.episodeEvents(sessionId).every(
+						(other) =>
+							other.episodeId !== event.episodeId || other.action === "start",
+					),
+				);
+		if (!start) return;
+		if (
+			this.episodeEvents(sessionId).some(
+				(event) =>
+					event.episodeId === start.episodeId && event.action !== "start",
+			)
+		)
+			return;
+		this.appendEpisodeEvent({
+			id: crypto.randomUUID(),
+			sessionId,
+			episodeId: start.episodeId,
+			action: "abandoned",
+			name: start.name,
+			kind: start.kind,
+			dependencies: start.dependencies,
+			createdAt: new Date().toISOString(),
+		});
+	}
+
 	events(sessionId: string): ServerEvent[] {
 		return this.eventsFrom(sessionId).map((row) => row.event);
 	}
@@ -237,24 +459,31 @@ export class SessionStore {
 		ownerTaskId: string;
 		fromItemId: string;
 	}): ContextLane {
-		const parent = this.contextItem(input.fromItemId);
-		if (!parent || parent.sessionId !== input.sessionId)
-			throw new Error(
-				"Lane fork item belongs to another session or is unknown",
-			);
-		const createdAt = new Date().toISOString();
-		this.db
-			.query(
-				"INSERT INTO context_lanes (session_id, name, head_item_id, forked_from_item_id, owner_task_id, state, revision, created_at) VALUES (?, ?, ?, ?, ?, 'active', 0, ?)",
+		this.db.transaction(() => {
+			const parent = this.contextItem(input.fromItemId);
+			if (!parent || parent.sessionId !== input.sessionId)
+				throw new Error(
+					"Lane fork item belongs to another session or is unknown",
+				);
+			if (
+				!this.contextPath(input.sessionId, "main").some(
+					(item) => item.id === input.fromItemId,
+				)
 			)
-			.run(
-				input.sessionId,
-				input.name,
-				input.fromItemId,
-				input.fromItemId,
-				input.ownerTaskId,
-				createdAt,
-			);
+				throw new Error("Child lanes must fork from main");
+			this.db
+				.query(
+					"INSERT INTO context_lanes (session_id, name, head_item_id, forked_from_item_id, owner_task_id, state, revision, created_at) VALUES (?, ?, ?, ?, ?, 'active', 0, ?)",
+				)
+				.run(
+					input.sessionId,
+					input.name,
+					input.fromItemId,
+					input.fromItemId,
+					input.ownerTaskId,
+					new Date().toISOString(),
+				);
+		})();
 		const lane = this.lane(input.sessionId, input.name);
 		if (!lane) throw new Error(`Lane ${input.name} was not created`);
 		return lane;

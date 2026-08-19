@@ -109,7 +109,7 @@ export type NewEpisodeEvent = {
 	id: string;
 	sessionId: string;
 	episodeId: string;
-	action: "start" | "end";
+	action: "start" | "end" | "failed" | "cancelled" | "abandoned";
 	name: string;
 	kind: "exploration" | "action";
 	dependencies: string[];
@@ -124,7 +124,23 @@ export type ContextEpisode = {
 	kind: "exploration" | "action";
 	dependencies: string[];
 	conclusion?: string;
-	state: "active" | "completed" | "archived";
+	state:
+		| "active"
+		| "completed"
+		| "failed"
+		| "cancelled"
+		| "abandoned"
+		| "archived";
+};
+export type FinishContextTaskRequest = {
+	sessionId: string;
+	taskId: string;
+	status: "completed" | "failed" | "cancelled" | "superseded";
+	startedAt?: string;
+	laneId?: string;
+	episodeId?: string;
+	ledger?: readonly import("../task-ledger").ExecutionLedgerEntry[];
+	handoff?: SubagentResult;
 };
 export type ObservationRecallInput = {
 	observationId: string;
