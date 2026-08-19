@@ -92,6 +92,7 @@ export class HarnezServer {
 			telemetry?: RuntimeEventSink;
 		} = {},
 	) {
+		this.store.recoverLanes();
 		this.telemetrySink = options.telemetry;
 		if (
 			options.contextBudget !== undefined &&
@@ -178,7 +179,37 @@ export class HarnezServer {
 
 	acceptSubagentResult(id: string, result: SubagentResult, subagentId: string) {
 		this.session(id);
-		return this.context.recordSubagentResult(id, result, { subagentId });
+		const existing = this.store
+			.contextItems(id)
+			.find(
+				(item) =>
+					item.kind === "subagent-handoff" &&
+					item.source?.subagentId === subagentId,
+			);
+		if (existing) return existing;
+		let lane = this.store.lane(id, subagentId);
+		if (!lane) {
+			const main = this.store.lane(id, "main");
+			if (!main?.headItemId)
+				return this.context.recordSubagentResult(id, result, { subagentId });
+			lane = this.context.forkLane({
+				sessionId: id,
+				name: subagentId,
+				ownerTaskId: subagentId,
+				fromItemId: main.headItemId,
+			});
+		}
+		const taskId = lane.ownerTaskId ?? subagentId;
+		this.context.finishTask({
+			sessionId: id,
+			taskId,
+			laneId: lane.name,
+			status: result.status === "completed" ? "completed" : "failed",
+			handoff: result,
+		});
+		const handoff = this.store.contextItem(`handoff-${taskId}`);
+		if (!handoff) throw new Error("subagent handoff was not persisted");
+		return handoff;
 	}
 
 	/** Replays persisted events after `from`, then streams live ones. */

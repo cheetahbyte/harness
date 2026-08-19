@@ -53,16 +53,17 @@ export function replayEpisodes(
 					dependency === snapshot.episode.dependencies[index],
 			);
 		const validConclusion =
-			snapshot.episode.kind === "exploration"
+			event.action !== "end" ||
+			(snapshot.episode.kind === "exploration"
 				? !!event.conclusion?.trim()
-				: event.conclusion === undefined;
+				: event.conclusion === undefined);
 		if (!matchingBoundary || !validConclusion) {
 			snapshot.malformed = true;
 			continue;
 		}
 		snapshot.episode = {
 			...snapshot.episode,
-			state: "completed",
+			state: event.action === "end" ? "completed" : event.action,
 			...(event.conclusion === undefined
 				? {}
 				: { conclusion: event.conclusion }),

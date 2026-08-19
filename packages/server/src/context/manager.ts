@@ -41,6 +41,7 @@ import {
 } from "./recall";
 import {
 	ContextBudgetError,
+	type FinishContextTaskRequest,
 	type ContextCheckpointPayload,
 	type CheckpointRepresentation,
 	type PreparedTurn,
@@ -181,6 +182,93 @@ export class ContextManager {
 		private readonly sink?: RuntimeEventSink,
 	) {
 		this.telemetryKey = store.telemetryInstallKey();
+	}
+
+	forkLane(request: {
+		sessionId: string;
+		name: string;
+		ownerTaskId: string;
+		fromItemId: string;
+	}): import("./types").ContextLane {
+		return this.store.startChildContextTask({
+			sessionId: request.sessionId,
+			name: request.name,
+			taskId: request.ownerTaskId,
+			fromItemId: request.fromItemId,
+			startedAt: new Date().toISOString(),
+		});
+	}
+
+	finishTask(request: FinishContextTaskRequest): void {
+		const laneName = request.laneId ?? "main";
+		const episode = request.episodeId
+			? this.episodes(request.sessionId).find(
+					(item) => item.id === request.episodeId && item.state === "active",
+				)
+			: this.episodes(request.sessionId).find(
+					(item) => item.state === "active",
+				);
+		const terminalEpisode = episode
+			? {
+					id: crypto.randomUUID(),
+					sessionId: request.sessionId,
+					episodeId: episode.id,
+					action:
+						request.status === "failed"
+							? ("failed" as const)
+							: request.status === "cancelled" ||
+								  request.status === "superseded"
+								? ("cancelled" as const)
+								: episode.kind === "action"
+									? ("end" as const)
+									: ("abandoned" as const),
+					name: episode.name,
+					kind: episode.kind,
+					dependencies: episode.dependencies,
+					createdAt: new Date().toISOString(),
+				}
+			: undefined;
+		const handoffPayload = request.handoff
+			? {
+					role: "user" as const,
+					content: `Subagent handoff:\n${JSON.stringify(request.handoff)}`,
+					timestamp: Date.now(),
+				}
+			: undefined;
+		const handoff =
+			request.handoff && handoffPayload
+				? {
+						id: `handoff-${request.taskId}`,
+						sessionId: request.sessionId,
+						kind: "subagent-handoff" as const,
+						payload: request.handoff,
+						compactPayload: handoffPayload,
+						tokenCost: computeTokenCost(request.handoff),
+						compactTokenCost: computeTokenCost(handoffPayload),
+						lifecycle: "retained" as const,
+						projection: "compact" as const,
+						reason: "structured subagent handoff",
+						source: { subagentId: laneName },
+						createdAt: new Date().toISOString(),
+					}
+				: undefined;
+		this.store.finishContextTask({
+			sessionId: request.sessionId,
+			taskId: request.taskId,
+			status: request.status,
+			startedAt: request.startedAt ?? new Date().toISOString(),
+			laneName,
+			...(request.ledger ? { ledger: request.ledger } : {}),
+			...(terminalEpisode ? { terminalEpisode } : {}),
+			...(handoff ? { handoff } : {}),
+		});
+		this.activeEpisodes.delete(request.sessionId);
+	}
+
+	recover(): { repaired: number; abandoned: number; failed: number } {
+		const result = this.store.recoverLanes();
+		this.activeEpisodes.clear();
+		return result;
 	}
 
 	markAgentProgress(scopeId: string): void {
