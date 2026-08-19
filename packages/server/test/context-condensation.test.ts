@@ -8,6 +8,7 @@ import {
 	selectCondensationItems,
 	validateCondensationInput,
 } from "../src/context/condensation";
+import type { ContextItem } from "../src/context/types";
 import { SessionStore } from "../src/sessions/store";
 
 const paths: string[] = [];
@@ -55,6 +56,7 @@ test("deduplication keeps newest values, caps, and remains deterministic", () =>
 test("protects newest groups while selecting old retained exchanges", () => {
 	const items = Array.from({ length: 6 }, (_, index) => ({
 		id: String(index), sessionId: "s", sequence: index, kind: "tool-result" as const,
+		originLane: "main", nodeRole: "message" as const, contentHash: String(index),
 		payload: "x", tokenCost: 100, groupId: `g${index}`, lifecycle: "retained" as const,
 		projection: "full" as const, reason: "done", createdAt: "now", updatedAt: "now",
 	}));
@@ -62,9 +64,10 @@ test("protects newest groups while selecting old retained exchanges", () => {
 });
 
 test("protects stable content, active/current work, predecessor groups, and completed episode boundaries", () => {
-	const base = (id: string, sequence: number, extra: Partial<Parameters<typeof selectCondensationItems>[0][number]> = {}) => ({
+	const base = (id: string, sequence: number, extra: Partial<ContextItem> = {}): ContextItem => ({
 		id, sessionId: "s", sequence, kind: "tool-result" as const, payload: "x", tokenCost: 100,
 		lifecycle: "retained" as const, projection: "full" as const, reason: "done", createdAt: "now", updatedAt: "now", ...extra,
+		originLane: extra.originLane ?? "main", nodeRole: extra.nodeRole ?? "message", contentHash: extra.contentHash ?? id,
 	});
 	const items = [
 		base("system", 1, { kind: "system", lifecycle: "pinned" }),

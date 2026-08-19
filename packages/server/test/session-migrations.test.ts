@@ -192,7 +192,8 @@ db.run("COMMIT");`,
 		legacy.run("CREATE TABLE task_ledger (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, task_id TEXT NOT NULL, payload TEXT NOT NULL)");
 		legacy.run("CREATE INDEX context_items_session_sequence ON context_items(session_id, sequence)");
 		legacy.query("INSERT INTO sessions (id, created_at, workspace) VALUES (?, ?, ?)").run("migrated", "2026-08-19T00:00:00.000Z", "/workspace");
-		for (const [id, kind, payload] of [["active", "assistant", "one"], ["archived", "tool-result", "two"], ["observation", "observation", "three"]])
+		const contextRows: Array<[string, string, string]> = [["active", "assistant", "one"], ["archived", "tool-result", "two"], ["observation", "observation", "three"]];
+		for (const [id, kind, payload] of contextRows)
 			legacy.query("INSERT INTO context_items (id, session_id, kind, payload, token_cost, created_at) VALUES (?, 'migrated', ?, ?, 1, '2026-08-19T00:00:00.000Z')").run(id, kind, JSON.stringify({ content: payload }));
 		legacy.query("INSERT INTO context_lifecycle (item_id, lifecycle, projection, reason, updated_at) VALUES (?, 'active', 'full', 'legacy', '2026-08-19T00:00:00.000Z')").run("active");
 		legacy.run("PRAGMA user_version = 6");

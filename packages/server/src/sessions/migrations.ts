@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+
 import { structuredHash } from "../capabilities/hash";
 
 type Migration = {
@@ -91,11 +92,13 @@ const migrations: readonly Migration[] = [
 				["policy_version", "INTEGER"],
 			] as const)
 				if (!hasColumn(db, "context_items", column))
-					db.run(`ALTER TABLE context_items ADD COLUMN ${column} ${definition}`);
+					db.run(
+						`ALTER TABLE context_items ADD COLUMN ${column} ${definition}`,
+					);
 
-				db.run(
-					"CREATE TABLE IF NOT EXISTS context_lanes (session_id TEXT NOT NULL, name TEXT NOT NULL, head_item_id TEXT, forked_from_item_id TEXT, owner_task_id TEXT, state TEXT NOT NULL CHECK (state IN ('idle', 'active', 'completed', 'failed', 'cancelled', 'abandoned')), revision INTEGER NOT NULL CHECK (revision >= 0), created_at TEXT NOT NULL, closed_at TEXT, PRIMARY KEY (session_id, name))",
-				);
+			db.run(
+				"CREATE TABLE IF NOT EXISTS context_lanes (session_id TEXT NOT NULL, name TEXT NOT NULL, head_item_id TEXT, forked_from_item_id TEXT, owner_task_id TEXT, state TEXT NOT NULL CHECK (state IN ('idle', 'active', 'completed', 'failed', 'cancelled', 'abandoned')), revision INTEGER NOT NULL CHECK (revision >= 0), created_at TEXT NOT NULL, closed_at TEXT, PRIMARY KEY (session_id, name))",
+			);
 			db.run(
 				"CREATE INDEX IF NOT EXISTS context_items_session_origin_sequence ON context_items(session_id, origin_lane, sequence)",
 			);
@@ -122,12 +125,12 @@ const migrations: readonly Migration[] = [
 						"SELECT sequence, id, kind, payload, content_hash FROM context_items WHERE session_id = ? ORDER BY sequence",
 					)
 					.all(sessionId) as {
-						sequence: number;
-						id: string;
-						kind: string;
-						payload: string;
-						content_hash: string | null;
-					}[];
+					sequence: number;
+					id: string;
+					kind: string;
+					payload: string;
+					content_hash: string | null;
+				}[];
 				let parentId: string | null = null;
 				for (const row of rows) {
 					const contentHash =
@@ -141,7 +144,9 @@ const migrations: readonly Migration[] = [
 						"UPDATE context_items SET parent_id = ?, origin_lane = 'main', node_role = 'message', content_hash = ? WHERE id = ?",
 					).run(parentId, contentHash, row.id);
 					if (
-						!db.query("SELECT 1 FROM context_lifecycle WHERE item_id = ?").get(row.id)
+						!db
+							.query("SELECT 1 FROM context_lifecycle WHERE item_id = ?")
+							.get(row.id)
 					) {
 						db.query(
 							"INSERT INTO context_lifecycle (item_id, lifecycle, projection, reason, updated_at) VALUES (?, 'archived', 'omitted', 'migration-repair', ?)",

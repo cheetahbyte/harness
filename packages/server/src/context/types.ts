@@ -49,7 +49,10 @@ export type ContextItem = {
 	createdAt: string;
 	updatedAt: string;
 };
-export type NewContextItem = Omit<ContextItem, "sequence" | "updatedAt" | "originLane" | "nodeRole" | "contentHash"> & {
+export type NewContextItem = Omit<
+	ContextItem,
+	"sequence" | "updatedAt" | "originLane" | "nodeRole" | "contentHash"
+> & {
 	originLane?: string;
 	nodeRole?: ContextNodeRole;
 	contentHash?: string;

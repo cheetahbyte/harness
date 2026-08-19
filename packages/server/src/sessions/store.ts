@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
+import { structuredHash } from "../capabilities/hash";
 import type {
 	ContextLane,
 	ContextLaneState,
@@ -13,7 +14,6 @@ import type {
 	NewContextItem,
 	NewEpisodeEvent,
 } from "../context/types";
-import { structuredHash } from "../capabilities/hash";
 import type { ExecutionLedgerEntry } from "../task-ledger";
 import type { TaskTerminalStatus } from "../task-runtime";
 import { migrate } from "./migrations";
@@ -193,9 +193,11 @@ export class SessionStore {
 
 	appendContextItem(input: NewContextItem): ContextItem {
 		const lane = this.lane(input.sessionId, input.originLane ?? "main");
-		if (!lane) throw new Error(`Unknown context lane ${input.originLane ?? "main"}`);
+		if (!lane)
+			throw new Error(`Unknown context lane ${input.originLane ?? "main"}`);
 		const result = this.appendContextAtHead(input, lane.name, lane.revision);
-		if ("status" in result) throw new Error("Context lane changed while appending");
+		if ("status" in result)
+			throw new Error("Context lane changed while appending");
 		const item = result;
 		if (!item) throw new Error(`Context item ${input.id} was not persisted`);
 		return item;
@@ -209,7 +211,11 @@ export class SessionStore {
 	}
 
 	lanes(sessionId: string): ContextLane[] {
-		return (this.db.query(`${laneQuery} WHERE session_id = ? ORDER BY name`).all(sessionId) as ContextLaneRow[]).map(laneFromRow);
+		return (
+			this.db
+				.query(`${laneQuery} WHERE session_id = ? ORDER BY name`)
+				.all(sessionId) as ContextLaneRow[]
+		).map(laneFromRow);
 	}
 
 	claimMainLane(sessionId: string, taskId: string): boolean {
@@ -233,7 +239,9 @@ export class SessionStore {
 	}): ContextLane {
 		const parent = this.contextItem(input.fromItemId);
 		if (!parent || parent.sessionId !== input.sessionId)
-			throw new Error("Lane fork item belongs to another session or is unknown");
+			throw new Error(
+				"Lane fork item belongs to another session or is unknown",
+			);
 		const createdAt = new Date().toISOString();
 		this.db
 			.query(
@@ -260,20 +268,25 @@ export class SessionStore {
 		const role = input.nodeRole ?? "message";
 		const contentHash =
 			input.contentHash ??
-			structuredHash({ kind: input.kind, nodeRole: role, payload: input.payload });
+			structuredHash({
+				kind: input.kind,
+				nodeRole: role,
+				payload: input.payload,
+			});
 		const createdAt = input.createdAt ?? new Date().toISOString();
 		const parentId = input.parentId;
 		try {
 			const append = this.db.transaction(() => {
 				const lane = this.lane(input.sessionId, laneName);
-				if (!lane)
-					throw new StaleLaneError();
+				if (!lane) throw new StaleLaneError();
 				if (input.originLane !== undefined && input.originLane !== laneName)
 					throw new Error("Context origin lane is immutable");
 				const existing = this.contextItem(input.id);
 				if (existing) {
 					if (existing.contentHash !== contentHash)
-						throw new Error(`Context item ${input.id} conflicts with existing content`);
+						throw new Error(
+							`Context item ${input.id} conflicts with existing content`,
+						);
 					if (existing.originLane !== laneName)
 						throw new Error("Context item belongs to another lane");
 					if (
@@ -284,7 +297,8 @@ export class SessionStore {
 					throw new IdempotentContextItem(existing);
 				}
 				if (lane.revision !== expectedRevision) throw new StaleLaneError();
-				if (parentId !== undefined) this.assertParent(input.sessionId, parentId);
+				if (parentId !== undefined)
+					this.assertParent(input.sessionId, parentId);
 				if (parentId !== undefined && parentId !== lane.headItemId)
 					throw new Error("Context parent does not match lane head");
 				this.db
@@ -299,7 +313,9 @@ export class SessionStore {
 						role,
 						input.kind,
 						JSON.stringify(input.payload),
-						input.compactPayload === undefined ? null : JSON.stringify(input.compactPayload),
+						input.compactPayload === undefined
+							? null
+							: JSON.stringify(input.compactPayload),
 						input.tokenCost,
 						input.compactTokenCost ?? null,
 						input.source === undefined ? null : JSON.stringify(input.source),
@@ -314,7 +330,13 @@ export class SessionStore {
 					.query(
 						"INSERT INTO context_lifecycle (item_id, lifecycle, projection, reason, updated_at) VALUES (?, ?, ?, ?, ?)",
 					)
-					.run(input.id, input.lifecycle, input.projection, input.reason, createdAt);
+					.run(
+						input.id,
+						input.lifecycle,
+						input.projection,
+						input.reason,
+						createdAt,
+					);
 				const updated = this.db
 					.query(
 						"UPDATE context_lanes SET head_item_id = ?, revision = revision + 1 WHERE session_id = ? AND name = ? AND revision = ?",
@@ -348,19 +370,24 @@ export class SessionStore {
 			path.push(item);
 			itemId = item.parentId;
 		}
-		return path.reverse();
+		return path.toReversed();
 	}
 
 	private assertParent(sessionId: string, parentId: string): void {
 		const parent = this.contextItem(parentId);
 		if (!parent || parent.sessionId !== sessionId)
-			throw new Error("Context parent belongs to another session or is unknown");
+			throw new Error(
+				"Context parent belongs to another session or is unknown",
+			);
 		const seen = new Set<string>();
 		let current: ContextItem | undefined = parent;
 		while (current) {
-			if (seen.has(current.id)) throw new Error("Context tree contains a cycle");
+			if (seen.has(current.id))
+				throw new Error("Context tree contains a cycle");
 			seen.add(current.id);
-			current = current.parentId ? this.contextItem(current.parentId) : undefined;
+			current = current.parentId
+				? this.contextItem(current.parentId)
+				: undefined;
 		}
 	}
 
@@ -491,9 +518,15 @@ function contextItemFromRow(row: ContextItemRow): ContextItem {
 		nodeRole: row.node_role,
 		contentHash:
 			row.content_hash ??
-			structuredHash({ kind: row.kind, nodeRole: row.node_role, payload: JSON.parse(row.payload) }),
+			structuredHash({
+				kind: row.kind,
+				nodeRole: row.node_role,
+				payload: JSON.parse(row.payload),
+			}),
 		...(row.source_digest === null ? {} : { sourceDigest: row.source_digest }),
-		...(row.policy_version === null ? {} : { policyVersion: row.policy_version }),
+		...(row.policy_version === null
+			? {}
+			: { policyVersion: row.policy_version }),
 		kind: row.kind,
 		payload: JSON.parse(row.payload),
 		...(row.compact_payload === null
@@ -531,7 +564,9 @@ function laneFromRow(row: ContextLaneRow): ContextLane {
 		sessionId: row.session_id,
 		name: row.name,
 		...(row.head_item_id === null ? {} : { headItemId: row.head_item_id }),
-		...(row.forked_from_item_id === null ? {} : { forkedFromItemId: row.forked_from_item_id }),
+		...(row.forked_from_item_id === null
+			? {}
+			: { forkedFromItemId: row.forked_from_item_id }),
 		...(row.owner_task_id === null ? {} : { ownerTaskId: row.owner_task_id }),
 		state: row.state,
 		revision: row.revision,
