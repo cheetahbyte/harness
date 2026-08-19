@@ -262,6 +262,10 @@ export function sanitizeEvent(
 ): RuntimeEvent {
 	const result: RuntimeEvent = { ...event };
 	for (const key of Object.keys(result)) {
+		if (key === "milestone") {
+			delete result[key];
+			continue;
+		}
 		if (
 			key === "timestamp" ||
 			key === "type" ||

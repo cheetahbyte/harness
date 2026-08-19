@@ -170,6 +170,16 @@ describe("telemetry configuration", () => {
 		expect(event["response"]).toContain("originalChars=200");
 	});
 
+	test("does not export condensation milestone text by default", () => {
+		const event = sanitizeEvent({
+			type: "context.compaction.completed",
+			timestamp: "now",
+			sessionId: "s",
+			milestone: "private project summary",
+		});
+		expect(event["milestone"]).toBeUndefined();
+	});
+
 	test("redacts sensitive fields for every lifecycle event kind", () => {
 		const types = ["session.started", "task.started", "turn.started", "model.request.started", "model.request.completed", "model.request.failed", "tool.call.started", "tool.call.completed", "tool.call.failed", "skill.discovered", "skill.inspected", "skill.activated", "capability.snapshot.created", "context.assembly.completed", "context.assembly.failed", "context.prepare", "context.compaction.started", "context.compaction.completed", "context.compaction.failed", "context.recovery.completed", "approval.requested", "approval.resolved", "subagent.started", "subagent.completed", "subagent.failed"] as const;
 		for (const type of types) {

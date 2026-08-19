@@ -78,6 +78,40 @@ test("preparation commits LLM memory and pending input in one lane update", asyn
 	expect(pending?.parentId).toBe(checkpoint?.id);
 });
 
+test("prefix telemetry aliases include the resolved system prompt", async () => {
+	const { sessionId, store } = setup();
+	const firstEvents: Record<string, unknown>[] = [];
+	const first = new ContextManager(store, (event) => firstEvents.push(event));
+	await first.prepareTurn({
+		sessionId,
+		taskId: "prompt-alias",
+		laneId: "main",
+		fixedMessages: [],
+		capabilityMessages: [],
+		tools: [],
+		systemPrompt: "system one",
+		budget: 12_000,
+		signal: new AbortController().signal,
+	});
+	const secondEvents: Record<string, unknown>[] = [];
+	const second = new ContextManager(store, (event) => secondEvents.push(event));
+	await second.prepareTurn({
+		sessionId,
+		taskId: "prompt-alias",
+		laneId: "main",
+		fixedMessages: [],
+		capabilityMessages: [],
+		tools: [],
+		systemPrompt: "system two",
+		budget: 12_000,
+		signal: new AbortController().signal,
+	});
+	const alias = (events: Record<string, unknown>[]) =>
+		events.find((event) => event["type"] === "context.prepare")?.["prefixAlias"];
+	expect(alias(firstEvents)).toBeString();
+	expect(alias(firstEvents)).not.toBe(alias(secondEvents));
+});
+
 test("abort after summarization commits neither checkpoint nor pending input", async () => {
 	const { store, sessionId, manager } = setup();
 	const controller = new AbortController();

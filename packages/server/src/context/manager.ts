@@ -120,6 +120,7 @@ export type PrepareTurnRequest = {
 	provider?: string;
 	model?: string;
 	serializerVersion?: string;
+	systemPrompt?: string;
 };
 
 export type CondensationResult = {
@@ -520,7 +521,7 @@ export class ContextManager {
 				provider: request.provider ?? "unknown",
 				model: request.model ?? "unknown",
 				serializerVersion: request.serializerVersion ?? "context-v1",
-				system: fixed[0],
+				system: request.systemPrompt ?? fixed[0],
 				fixed,
 				capabilities: request.capabilityMessages,
 				tools: request.prefixTools ?? request.tools,
@@ -534,11 +535,13 @@ export class ContextManager {
 			sessionId: request.sessionId,
 			taskId: request.taskId,
 			lane: request.laneId,
+			origin: request.laneId,
 			trigger: "turn",
 			beforeTokens: estimatedTokens,
 			headroomTokens: request.budget - estimatedTokens,
 			budget: request.budget,
 			prefixAlias,
+			stalePlan: false,
 			...(request.provider ? { provider: request.provider } : {}),
 			...(request.model ? { model: request.model } : {}),
 		});
@@ -569,9 +572,11 @@ export class ContextManager {
 				sessionId: request.sessionId,
 				taskId: request.taskId,
 				lane: request.laneId,
+				origin: request.laneId,
 				trigger: shouldCompact ? "automatic" : "budget",
 				beforeTokens: estimatedTokens,
 				prefixAlias,
+				stalePlan: false,
 				...(request.provider ? { provider: request.provider } : {}),
 				...(request.model ? { model: request.model } : {}),
 			});
@@ -701,6 +706,7 @@ export class ContextManager {
 			sessionId: request.sessionId,
 			taskId: request.taskId,
 			lane: request.laneId,
+			origin: request.laneId,
 			trigger:
 				representation.kind === "condensation" ? "automatic-llm" : "fallback",
 			beforeTokens:
@@ -708,9 +714,11 @@ export class ContextManager {
 				pendingCost +
 				this.pathProjectedCost(path, request.sessionId),
 			afterTokens: estimatedTokens,
+			headroomTokens: request.budget - estimatedTokens,
 			durationMs: performance.now() - startedAt,
 			retries: 0,
 			prefixAlias,
+			stalePlan: false,
 			...(request.provider ? { provider: request.provider } : {}),
 			...(request.model ? { model: request.model } : {}),
 		});
@@ -749,9 +757,15 @@ export class ContextManager {
 			timestamp: new Date().toISOString(),
 			sessionId,
 			lane: laneName,
+			origin: laneName,
 			trigger: "provider-context-length",
 			checkpointId: checkpoint.id,
+			laneRevision: this.store.lane(sessionId, laneName)?.revision ?? 0,
+			repairedItems: path.length,
 			retainedItems: retainedTail.length,
+			repairedEpisodes: this.episodes(sessionId).length,
+			retries: 1,
+			stalePlan: false,
 		});
 	}
 
@@ -1075,7 +1089,6 @@ export class ContextManager {
 			...(options.taskId ? { taskId: options.taskId } : {}),
 			...(options.turnId === undefined ? {} : { turnId: options.turnId }),
 			trigger: "explicit",
-			milestone: next.milestone,
 			evictedItems: eligible.length,
 			archivedEpisodes: 0,
 			tokensBefore,

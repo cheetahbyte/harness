@@ -213,6 +213,7 @@ export class HarnezAgentRuntime {
 					},
 				],
 				entry.agent.state.tools,
+				entry.agent.state.systemPrompt,
 			);
 		} catch (error) {
 			this.context.completeGroup(sessionId, entry.promptGroupId);
@@ -356,6 +357,7 @@ export class HarnezAgentRuntime {
 					entry.turnId,
 					undefined,
 					entry.agent.state.tools,
+					entry.agent.state.systemPrompt,
 				);
 			} catch (error) {
 				entry.contextError = asError(error);
@@ -370,7 +372,7 @@ export class HarnezAgentRuntime {
 					model,
 					config.thinkingLevel ?? "medium",
 				),
-				systemPrompt,
+				...(systemPrompt === undefined ? {} : { systemPrompt }),
 				tools: agentTools({
 					sessionId,
 					model,
@@ -478,6 +480,7 @@ export class HarnezAgentRuntime {
 		turnId?: number,
 		pendingInput?: Parameters<typeof managedMessagesAsync>[0]["pendingInput"],
 		tools: unknown[] = [],
+		systemPrompt?: string,
 	): Promise<AgentMessage[]> {
 		if (pendingInput?.length) {
 			await managedMessagesAsync({
@@ -489,6 +492,7 @@ export class HarnezAgentRuntime {
 				signal,
 				pendingInput,
 				tools,
+				...(systemPrompt === undefined ? {} : { systemPrompt }),
 				...(compactor ? { compactor } : {}),
 			});
 			return this.messages(sessionId, model, task, emit, turnId);
@@ -511,6 +515,7 @@ export class HarnezAgentRuntime {
 			signal,
 			...(compactor ? { compactor } : {}),
 			tools,
+			...(systemPrompt === undefined ? {} : { systemPrompt }),
 		});
 		return this.messages(sessionId, model, task, emit, turnId);
 	}
