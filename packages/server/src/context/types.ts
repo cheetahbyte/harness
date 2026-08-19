@@ -9,7 +9,7 @@ export type ContextKind =
 	| "pinned-note"
 	| "subagent-handoff"
 	| "long-term-memory";
-export type ContextNodeRole = "message" | "checkpoint";
+type ContextNodeRole = "message" | "checkpoint";
 export type ContextLaneState =
 	| "idle"
 	| "active"
@@ -71,14 +71,6 @@ export type ContextCheckpointPayload = {
 	representation: CheckpointRepresentation;
 	/** The exact provider-visible tail retained after the covered prefix. */
 	retainedTail: unknown[];
-};
-export type CompactionPlan = {
-	summarizedPrefix: ContextItem[];
-	retainedTail: ContextItem[];
-	coveredThroughId?: string;
-	omittedDigest: string;
-	baseCheckpointId?: string;
-	baseRevision: number;
 };
 export type PreparedTurn = {
 	messages: unknown[];

@@ -133,6 +133,7 @@ describe("persistent context lanes", () => {
 			repaired: 1,
 			abandoned: 0,
 			failed: 0,
+			episodes: 0,
 		});
 		sessions.db
 			.query(
@@ -143,6 +144,7 @@ describe("persistent context lanes", () => {
 			repaired: 1,
 			abandoned: 0,
 			failed: 0,
+			episodes: 0,
 		});
 
 		const episode = manager.startEpisode(sessionId, {
@@ -155,8 +157,8 @@ describe("persistent context lanes", () => {
 			.query("UPDATE context_items SET episode_id = ? WHERE id = ?")
 			.run(episode.id, first.id);
 		sessions.createLane({ sessionId, name: "child", ownerTaskId: "missing", fromItemId: first.id });
-		expect(sessions.recoverLanes()).toEqual({ repaired: 0, abandoned: 1, failed: 0 });
-		expect(sessions.recoverLanes()).toEqual({ repaired: 0, abandoned: 0, failed: 0 });
+		expect(sessions.recoverLanes()).toEqual({ repaired: 0, abandoned: 1, failed: 0, episodes: 1 });
+		expect(sessions.recoverLanes()).toEqual({ repaired: 0, abandoned: 0, failed: 0, episodes: 0 });
 		expect(sessions.lane(sessionId, "child")?.state).toBe("abandoned");
 		expect(manager.episodes(sessionId).find(({ id }) => id === episode.id)?.state).toBe("abandoned");
 
@@ -169,8 +171,39 @@ describe("persistent context lanes", () => {
 		sessions.db
 			.query("UPDATE context_lanes SET state = 'completed' WHERE session_id = ? AND name = 'finished-child'")
 			.run(sessionId);
-		expect(sessions.recoverLanes()).toEqual({ repaired: 0, abandoned: 0, failed: 1 });
+		expect(sessions.recoverLanes()).toEqual({ repaired: 0, abandoned: 0, failed: 1, episodes: 0 });
 		expect(sessions.task(sessionId, "conflict")?.status).toBe("failed");
+		expect(sessions.taskLedger(sessionId, "conflict")).toContainEqual(
+		expect.objectContaining({ type: "task_recovery", reason: "owned_lane_terminal" }),
+	);
+		expect(sessions.recoverLanes(sessionId)).toEqual({ repaired: 0, abandoned: 0, failed: 0, episodes: 0 });
+		expect(sessions.taskLedger(sessionId, "conflict")).toHaveLength(1);
+	});
+
+	test("reports per-session lane and episode recovery counts", () => {
+		const sessions = store();
+		const sessionId = sessions.create();
+		const events: Record<string, unknown>[] = [];
+		const manager = new ContextManager(sessions, (event) => events.push(event));
+		sessions.db
+			.query(
+				"UPDATE context_lanes SET state = 'active', owner_task_id = 'missing' WHERE session_id = ? AND name = 'main'",
+			)
+			.run(sessionId);
+		expect(manager.recover(sessionId)).toEqual({
+			repaired: 1,
+			abandoned: 0,
+			failed: 0,
+			episodes: 0,
+		});
+		expect(events.at(-1)).toMatchObject({
+			type: "context.recovery.completed",
+			sessionId,
+			repairedLanes: 1,
+			abandonedLanes: 0,
+			failedTasks: 0,
+			repairedEpisodes: 0,
+		});
 	});
 
 	test("finishes main atomically and remains task-authoritative on retries", () => {

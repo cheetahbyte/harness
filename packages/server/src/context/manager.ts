@@ -60,7 +60,7 @@ import {
 	type SubagentResult,
 } from "./types";
 
-export type ContextCompactionRequest = {
+type ContextCompactionRequest = {
 	messages: unknown[];
 	previousMemory?: CondensationInput;
 	anchors: string[];
@@ -93,6 +93,7 @@ const kinds = new Set<ContextKind>([
 	"subagent-handoff",
 	"long-term-memory",
 ]);
+const STALE_COMPACTION_PLAN = "stale context compaction plan";
 const lifecycles = new Set<ContextLifecycle>([
 	"pinned",
 	"active",
@@ -132,6 +133,8 @@ export type PrepareTurnRequest = {
 	model?: string;
 	serializerVersion?: string;
 	systemPrompt?: string;
+	/** Internal retry count used when an async compaction plan goes stale. */
+	stalePlanCount?: number;
 };
 
 export type CondensationResult = {
@@ -275,9 +278,31 @@ export class ContextManager {
 		this.activeEpisodes.delete(request.sessionId);
 	}
 
-	recover(): { repaired: number; abandoned: number; failed: number } {
-		const result = this.store.recoverLanes();
+	recover(sessionId?: string): {
+		repaired: number;
+		abandoned: number;
+		failed: number;
+		episodes: number;
+	} {
+		const startedAt = performance.now();
+		const result = this.store.recoverLanes(sessionId);
 		this.activeEpisodes.clear();
+		if (sessionId)
+			this.sink?.({
+				type: "context.recovery.completed",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				lane: "all",
+				origin: "task-admission",
+				trigger: "startup-recovery",
+				repairedLanes: result.repaired,
+				abandonedLanes: result.abandoned,
+				failedTasks: result.failed,
+				repairedEpisodes: result.episodes,
+				durationMs: performance.now() - startedAt,
+				retries: 0,
+				stalePlan: false,
+			});
 		return result;
 	}
 
@@ -606,6 +631,7 @@ export class ContextManager {
 			0,
 		);
 		const path = this.store.contextPath(request.sessionId, request.laneId);
+		const stalePlanCount = request.stalePlanCount ?? 0;
 		let messages = [
 			...fixed,
 			...projectedPathPayloads(path, this.episodes(request.sessionId)),
@@ -639,7 +665,7 @@ export class ContextManager {
 			headroomTokens: request.budget - estimatedTokens,
 			budget: request.budget,
 			prefixAlias,
-			stalePlan: false,
+			stalePlan: stalePlanCount > 0,
 			...(request.provider ? { provider: request.provider } : {}),
 			...(request.model ? { model: request.model } : {}),
 		});
@@ -661,7 +687,10 @@ export class ContextManager {
 				"INPUT_TOO_LARGE",
 			);
 
-		let representation = this.fallbackRepresentation(path);
+		let representation = this.fallbackRepresentation(
+			path,
+			this.episodes(request.sessionId),
+		);
 		let compactorDraft: Awaited<ReturnType<ContextCompactor>>;
 		let sourceCount = 0;
 		let sourceTokens = 0;
@@ -677,7 +706,7 @@ export class ContextManager {
 				trigger: shouldCompact ? "automatic" : "budget",
 				beforeTokens: estimatedTokens,
 				prefixAlias,
-				stalePlan: false,
+				stalePlan: stalePlanCount > 0,
 				...(request.provider ? { provider: request.provider } : {}),
 				...(request.model ? { model: request.model } : {}),
 			});
@@ -755,6 +784,34 @@ export class ContextManager {
 				} catch {
 					compactorDraft = undefined;
 				}
+				if (
+					this.store.lane(request.sessionId, request.laneId)?.revision !==
+					lane.revision
+				) {
+					const nextStalePlanCount = stalePlanCount + 1;
+					this.sink?.({
+						type: "context.compaction.failed",
+						timestamp: new Date().toISOString(),
+						sessionId: request.sessionId,
+						taskId: request.taskId,
+						lane: request.laneId,
+						origin: request.laneId,
+						trigger: "automatic",
+						beforeTokens: estimatedTokens,
+						sourceCount,
+						sourceTokens,
+						retries: nextStalePlanCount,
+						stalePlan: true,
+						durationMs: performance.now() - startedAt,
+						error: "stale_compaction_plan",
+						prefixAlias,
+					});
+					const { compactor: _compactor, ...retryRequest } = request;
+					return this.prepareTurn({
+						...retryRequest,
+						stalePlanCount: nextStalePlanCount,
+					});
+				}
 				if (!compactorDraft)
 					this.sink?.({
 						type: "context.compaction.failed",
@@ -783,21 +840,37 @@ export class ContextManager {
 			}
 		}
 		request.signal.throwIfAborted();
-		const checkpoint = this.store.db.transaction(() => {
-			const committed = this.appendCheckpoint(
-				request.sessionId,
-				request.laneId,
-				representation,
-				retainedTail,
-				{
-					condensedCount: Math.max(0, path.length - retainedTail.length),
-					retainedCount: retainedTail.length,
-				},
-			);
-			for (const input of pending)
-				this.appendAtLaneHead(input, request.sessionId, request.laneId);
-			return committed;
-		})();
+		let checkpoint: ContextItem;
+		try {
+			checkpoint = this.store.db.transaction(() => {
+				if (
+					this.store.lane(request.sessionId, request.laneId)?.revision !==
+					lane.revision
+				)
+					throw new Error(STALE_COMPACTION_PLAN);
+				const committed = this.appendCheckpoint(
+					request.sessionId,
+					request.laneId,
+					representation,
+					retainedTail,
+					{
+						condensedCount: Math.max(0, path.length - retainedTail.length),
+						retainedCount: retainedTail.length,
+					},
+				);
+				for (const input of pending)
+					this.appendAtLaneHead(input, request.sessionId, request.laneId);
+				return committed;
+			})();
+		} catch (error) {
+			if (!(error instanceof Error) || error.message !== STALE_COMPACTION_PLAN)
+				throw error;
+			const { compactor: _compactor, ...retryRequest } = request;
+			return this.prepareTurn({
+				...retryRequest,
+				stalePlanCount: stalePlanCount + 1,
+			});
+		}
 		const after = this.store.contextPath(request.sessionId, request.laneId);
 		messages = [
 			...fixed,
@@ -842,9 +915,9 @@ export class ContextManager {
 			cacheWriteTokens: compactorDraft?.cacheWriteTokens ?? 0,
 			headroomTokens: request.budget - estimatedTokens,
 			durationMs: performance.now() - startedAt,
-			retries: compactorDraft?.retries ?? 0,
+			retries: (compactorDraft?.retries ?? 0) + stalePlanCount,
 			prefixAlias,
-			stalePlan: false,
+			stalePlan: stalePlanCount > 0,
 			...((compactorDraft?.provider ?? request.provider)
 				? { provider: compactorDraft?.provider ?? request.provider }
 				: {}),
@@ -874,7 +947,7 @@ export class ContextManager {
 			return this.appendCheckpoint(
 				sessionId,
 				laneName,
-				this.fallbackRepresentation(path),
+				this.fallbackRepresentation(path, this.episodes(sessionId)),
 				retainedTail,
 				{
 					condensedCount: Math.max(0, path.length - retainedTail.length),
@@ -941,9 +1014,47 @@ export class ContextManager {
 
 	private fallbackRepresentation(
 		path: readonly ContextItem[],
+		episodes: readonly ContextEpisode[] = [],
 	): CheckpointRepresentation {
-		void path;
-		return { kind: "fallback", summary: "", references: [] };
+		const activeIds = new Set(
+			episodes
+				.filter((episode) => episode.state === "active")
+				.map((episode) => episode.id),
+		);
+		const anchors = path
+			.filter(
+				(item) =>
+					item.episodeId !== undefined &&
+					activeIds.has(item.episodeId) &&
+					item.kind !== "observation",
+			)
+			.toReversed()
+			.slice(0, 8)
+			.toReversed()
+			.map((item) => boundedText(item.payload, 240));
+		const goals = episodes
+			.filter((episode) => episode.state === "active")
+			.map((episode) => boundedText(episode.name, 160))
+			.slice(0, 4);
+		const conclusions = episodes
+			.filter((episode) => episode.conclusion !== undefined)
+			.map((episode) =>
+				boundedText(`${episode.name}: ${episode.conclusion}`, 320),
+			)
+			.slice(-4);
+		const references = [
+			...new Set(
+				path
+					.filter((item) => activeIds.has(item.episodeId ?? ""))
+					.flatMap((item) =>
+						item.source?.observationId
+							? [`observation://${item.source.observationId}`]
+							: [],
+					),
+			),
+		].slice(0, 8);
+		const summary = JSON.stringify({ goals, anchors, conclusions });
+		return { kind: "fallback", summary, references };
 	}
 
 	private appendCheckpoint(
@@ -1590,7 +1701,7 @@ export class ContextManager {
 		sessionId: string,
 		overheadTokens: number,
 	): AssemblyState {
-		const items = this.store.contextItems(sessionId);
+		const items = this.store.contextPath(sessionId, "main");
 		const episodes = this.episodes(sessionId);
 		return {
 			items,
@@ -1618,11 +1729,11 @@ export class ContextManager {
 			terminal.has(item.id);
 		this.collapseTaskHistory(
 			sessionId,
-			this.store.contextItems(sessionId).filter(inWindow),
+			this.store.contextPath(sessionId, "main").filter(inWindow),
 			options,
 			compaction.evictedIds,
 		);
-		const items = this.store.contextItems(sessionId).filter(inWindow);
+		const items = this.store.contextPath(sessionId, "main").filter(inWindow);
 		const taskEpisodes = this.episodes(sessionId).filter((episode) =>
 			items.some(
 				(item) =>
@@ -1876,6 +1987,11 @@ function boundedAnchorTail(
 
 function tokenCostOf(value: unknown): number {
 	return Number(computeTokenCost(value as never));
+}
+
+function boundedText(value: unknown, limit: number): string {
+	const text = typeof value === "string" ? value : JSON.stringify(value);
+	return (text ?? "").slice(0, limit);
 }
 
 function projectedPayloads(

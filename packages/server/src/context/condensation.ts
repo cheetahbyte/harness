@@ -1,7 +1,6 @@
 import { isAbsolute } from "node:path";
 
 import { tokenCost } from "../token-cost";
-import { projectionCost } from "./projection";
 import { parseObservationUri } from "./recall";
 import type { ContextItem } from "./types";
 
@@ -248,14 +247,4 @@ export function parseCondensationMemory(
 	} catch {
 		return undefined;
 	}
-}
-
-export function projectedSavings(
-	items: readonly ContextItem[],
-	replacementTokens: number,
-): number {
-	return (
-		items.reduce((sum, item) => sum + projectionCost(item), 0) -
-		replacementTokens
-	);
 }

@@ -502,7 +502,7 @@ export class SessionTaskRunner {
 			context,
 			accountant,
 		);
-		this.options.context.recover();
+		this.options.context.recover(id);
 		this.options.store.startContextTask(id, task.id, task.startedAt);
 		return {
 			controller,
