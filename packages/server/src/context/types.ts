@@ -9,6 +9,14 @@ export type ContextKind =
 	| "pinned-note"
 	| "subagent-handoff"
 	| "long-term-memory";
+export type ContextNodeRole = "message" | "checkpoint";
+export type ContextLaneState =
+	| "idle"
+	| "active"
+	| "completed"
+	| "failed"
+	| "cancelled"
+	| "abandoned";
 export type ContextSource = {
 	toolCallId?: string;
 	toolName?: string;
@@ -21,6 +29,12 @@ export type ContextItem = {
 	id: string;
 	sessionId: string;
 	sequence: number;
+	parentId?: string;
+	originLane: string;
+	nodeRole: ContextNodeRole;
+	contentHash: string;
+	sourceDigest?: string;
+	policyVersion?: number;
 	kind: ContextKind;
 	payload: unknown;
 	compactPayload?: unknown;
@@ -35,7 +49,22 @@ export type ContextItem = {
 	createdAt: string;
 	updatedAt: string;
 };
-export type NewContextItem = Omit<ContextItem, "sequence" | "updatedAt">;
+export type NewContextItem = Omit<ContextItem, "sequence" | "updatedAt" | "originLane" | "nodeRole" | "contentHash"> & {
+	originLane?: string;
+	nodeRole?: ContextNodeRole;
+	contentHash?: string;
+};
+export type ContextLane = {
+	sessionId: string;
+	name: string;
+	headItemId?: string;
+	forkedFromItemId?: string;
+	ownerTaskId?: string;
+	state: ContextLaneState;
+	revision: number;
+	createdAt: string;
+	closedAt?: string;
+};
 export type NewEpisodeEvent = {
 	id: string;
 	sessionId: string;

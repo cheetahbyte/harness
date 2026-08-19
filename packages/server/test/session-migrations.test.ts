@@ -41,6 +41,7 @@ function columnNames(store: SessionStore, table: string): string[] {
 const schemaTables = [
 	"context_episode_events",
 	"context_items",
+	"context_lanes",
 	"context_lifecycle",
 	"events",
 	"session_settings",
@@ -175,6 +176,33 @@ db.run("COMMIT");`,
 
 		const upgraded = new SessionStore(path);
 		expect(upgraded.list().map((session) => session.id)).toEqual([id]);
+		upgraded.db.close();
+	});
+
+	test("backfills the persistent tree and repairs missing lifecycle rows", () => {
+		const path = databasePath();
+		const legacy = new Database(path);
+		legacy.run("CREATE TABLE sessions (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, workspace TEXT, title TEXT, naming_prompt_consumed INTEGER NOT NULL DEFAULT 0, has_user_message INTEGER NOT NULL DEFAULT 0)");
+		legacy.run("CREATE TABLE events (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL)");
+		legacy.run("CREATE TABLE session_settings (session_id TEXT PRIMARY KEY, model_config TEXT NOT NULL)");
+		legacy.run("CREATE TABLE context_items (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, compact_payload TEXT, token_cost INTEGER NOT NULL, compact_token_cost INTEGER, source TEXT, group_id TEXT, episode_id TEXT, created_at TEXT NOT NULL)");
+		legacy.run("CREATE TABLE context_lifecycle (item_id TEXT PRIMARY KEY, lifecycle TEXT NOT NULL, projection TEXT NOT NULL, reason TEXT NOT NULL, updated_at TEXT NOT NULL)");
+		legacy.run("CREATE TABLE context_episode_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL, episode_id TEXT NOT NULL, action TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, dependencies TEXT NOT NULL, conclusion TEXT, created_at TEXT NOT NULL)");
+		legacy.run("CREATE TABLE tasks (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, state TEXT NOT NULL, status TEXT, started_at TEXT NOT NULL, finished_at TEXT)");
+		legacy.run("CREATE TABLE task_ledger (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, task_id TEXT NOT NULL, payload TEXT NOT NULL)");
+		legacy.run("CREATE INDEX context_items_session_sequence ON context_items(session_id, sequence)");
+		legacy.query("INSERT INTO sessions (id, created_at, workspace) VALUES (?, ?, ?)").run("migrated", "2026-08-19T00:00:00.000Z", "/workspace");
+		for (const [id, kind, payload] of [["active", "assistant", "one"], ["archived", "tool-result", "two"], ["observation", "observation", "three"]])
+			legacy.query("INSERT INTO context_items (id, session_id, kind, payload, token_cost, created_at) VALUES (?, 'migrated', ?, ?, 1, '2026-08-19T00:00:00.000Z')").run(id, kind, JSON.stringify({ content: payload }));
+		legacy.query("INSERT INTO context_lifecycle (item_id, lifecycle, projection, reason, updated_at) VALUES (?, 'active', 'full', 'legacy', '2026-08-19T00:00:00.000Z')").run("active");
+		legacy.run("PRAGMA user_version = 6");
+		legacy.close();
+
+		const upgraded = new SessionStore(path);
+		expect(columnNames(upgraded, "context_items")).toEqual(expect.arrayContaining(["parent_id", "origin_lane", "node_role", "content_hash", "source_digest", "policy_version"]));
+		expect(upgraded.lane("migrated")).toMatchObject({ name: "main", state: "idle", revision: 3 });
+		expect(upgraded.contextPath("migrated").map(({ id }) => id)).toEqual(["active", "archived", "observation"]);
+		expect(upgraded.contextItem("archived")?.reason).toBe("migration-repair");
 		upgraded.db.close();
 	});
 });
