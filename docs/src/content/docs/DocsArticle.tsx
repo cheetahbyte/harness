@@ -1,6 +1,7 @@
 /** @jsxImportSource solid-js */
 import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 
+import { renderMermaidBlocks } from "../../components/mermaid";
 import { type DocPage, renderDocPage } from "./manifest";
 
 async function copyText(text: string): Promise<boolean> {
@@ -32,6 +33,7 @@ export function DocsArticle(props: { page: DocPage }) {
 	let articleRef: HTMLElement | undefined;
 
 	onMount(() => {
+		if (articleRef) void renderMermaidBlocks(articleRef);
 		const cleanups: (() => void)[] = [];
 		for (const pre of articleRef?.querySelectorAll("pre.tm-code") ?? []) {
 			const button = document.createElement("button");

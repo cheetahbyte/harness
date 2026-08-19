@@ -17,6 +17,7 @@
 		"@tanstack/solid-router": "latest",
 		"@tanstack/solid-router-devtools": "latest",
 		"@tanstack/solid-start": "latest",
+		"mermaid": "^11.16.1",
 		"solid-js": "^1.9.12",
 		"tailwindcss": "^4.1.18"
 	},
