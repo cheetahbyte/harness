@@ -214,6 +214,8 @@ export class SessionStore {
 
 	claimMainLane(sessionId: string, taskId: string): boolean {
 		return this.db.transaction(() => {
+			const lane = this.lane(sessionId, "main");
+			if (lane?.state === "active" && lane.ownerTaskId === taskId) return true;
 			const result = this.db
 				.query(
 					"UPDATE context_lanes SET owner_task_id = ?, state = 'active' WHERE session_id = ? AND name = 'main' AND state = 'idle' AND owner_task_id IS NULL",
@@ -264,22 +266,27 @@ export class SessionStore {
 		try {
 			const append = this.db.transaction(() => {
 				const lane = this.lane(input.sessionId, laneName);
-				if (!lane || lane.revision !== expectedRevision)
+				if (!lane)
 					throw new StaleLaneError();
 				if (input.originLane !== undefined && input.originLane !== laneName)
 					throw new Error("Context origin lane is immutable");
+				const existing = this.contextItem(input.id);
+				if (existing) {
+					if (existing.contentHash !== contentHash)
+						throw new Error(`Context item ${input.id} conflicts with existing content`);
+					if (existing.originLane !== laneName)
+						throw new Error("Context item belongs to another lane");
+					if (
+						input.parentId !== undefined &&
+						existing.parentId !== input.parentId
+					)
+						throw new Error("Context item conflicts with existing parent");
+					throw new IdempotentContextItem(existing);
+				}
+				if (lane.revision !== expectedRevision) throw new StaleLaneError();
 				if (parentId !== undefined) this.assertParent(input.sessionId, parentId);
 				if (parentId !== undefined && parentId !== lane.headItemId)
 					throw new Error("Context parent does not match lane head");
-				const existing = this.contextItem(input.id);
-				if (existing) {
-					if (
-						existing.contentHash === contentHash &&
-						existing.parentId === (lane.headItemId ?? undefined)
-					)
-						throw new IdempotentContextItem(existing);
-					throw new Error(`Context item ${input.id} conflicts with existing content`);
-				}
 				this.db
 					.query(
 						"INSERT INTO context_items (id, session_id, parent_id, origin_lane, node_role, kind, payload, compact_payload, token_cost, compact_token_cost, source, group_id, episode_id, content_hash, source_digest, policy_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

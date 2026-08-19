@@ -37,6 +37,7 @@ describe("persistent context lanes", () => {
 		const sessions = store();
 		const sessionId = sessions.create();
 		expect(sessions.claimMainLane(sessionId, "task-a")).toBe(true);
+		expect(sessions.claimMainLane(sessionId, "task-a")).toBe(true);
 		expect(sessions.claimMainLane(sessionId, "task-b")).toBe(false);
 
 		const first = sessions.appendContextAtHead(input(sessionId, "first"), "main", 0);
@@ -44,6 +45,8 @@ describe("persistent context lanes", () => {
 		if ("status" in first) return;
 		expect(first.parentId).toBeUndefined();
 		expect(sessions.appendContextAtHead(input(sessionId, "second"), "main", 0)).toEqual({ status: "stale" });
+		expect(sessions.appendContextAtHead(input(sessionId, "first"), "main", 0)).toEqual(first);
+		expect(() => sessions.appendContextAtHead({ ...input(sessionId, "first"), payload: { content: "changed" } }, "main", 0)).toThrow("existing content");
 		expect(sessions.contextPath(sessionId, "main").map(({ id }) => id)).toEqual(["first"]);
 	});
 
