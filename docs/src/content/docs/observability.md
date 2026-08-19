@@ -33,6 +33,23 @@ service:
     metrics: { receivers: [otlp], exporters: [debug] }
 ```
 
+```mermaid
+flowchart LR
+    H[Harnez] --> E[Metadata events]
+    E --> T[OTLP traces]
+    E --> M[OTLP metrics]
+    T --> G[Grafana Tempo]
+    M --> P[Prometheus]
+```
+
+Context lifecycle events include `context.prepare`,
+`context.compaction.started`, `context.compaction.completed`,
+`context.compaction.failed`, and `context.recovery.completed`. They expose lane,
+trigger, token buckets, headroom, before/after totals, latency, retry count,
+provider/model, and cache counts. They never expose source messages, summaries,
+tool or MCP payloads, observations, image bytes, credentials, or filesystem
+paths.
+
 By default, events contain only IDs, status, durations, counts, model/tool
 names, and context pressure fields. For local debugging, enable selected
 payloads with a comma-separated list:
@@ -58,6 +75,11 @@ private keys, image bytes, and arbitrary binary values are removed under every
 setting, including `all`. Other private user text can still appear in prompts,
 responses, and tool payloads, so use content capture only with a trusted local
 collector and disable it when the debugging session ends.
+
+Prefix identity is computed locally from the provider, model, serializer
+version, fixed envelope, capability context, tool schemas, and emitted provider
+messages. Telemetry receives only a short HMAC alias. The HMAC key is generated
+once and stored in local server metadata; it never leaves the machine.
 
 ## Local debugging in Grafana
 

@@ -1,12 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	captureContent,
 	captureMaxChars,
 	sanitizedChildEnvironment,
 	RuntimeTelemetry,
 	sanitizeEvent,
+	telemetryPrefixAlias,
 } from "../src/telemetry/runtime";
 import { startOpenTelemetry } from "../src/telemetry/opentelemetry";
+import { SessionStore } from "../src/sessions/store";
 
 describe("telemetry configuration", () => {
 	test("parses capture categories and rejects unknown values", () => {
@@ -54,6 +59,41 @@ describe("telemetry configuration", () => {
 		expect(event["path"]).toBeUndefined();
 		expect(event["apiKey"]).toBeUndefined();
 		expect(sanitizeEvent({ ...event, input: "safe" }, new Set(["tool-arguments"]))["input"]).toBe("safe");
+	});
+
+	test("aliases prefix identity without exporting the fingerprint", () => {
+		const key = new Uint8Array(32).fill(7);
+		const first = telemetryPrefixAlias({ messages: ["secret"], model: "m" }, key);
+		expect(first).toMatch(/^[0-9a-f]{24}$/);
+		expect(first).not.toContain("secret");
+		expect(telemetryPrefixAlias({ messages: ["secret"], model: "m" }, key)).toBe(first);
+		expect(telemetryPrefixAlias({ messages: ["changed"], model: "m" }, key)).not.toBe(first);
+	});
+
+	test("keeps aliases stable across store reopen and changes with prefix inputs", () => {
+		const directory = mkdtempSync(join(tmpdir(), "harnez-telemetry-"));
+		const path = join(directory, "session.sqlite");
+		const firstStore = new SessionStore(path);
+		const key = firstStore.telemetryInstallKey();
+		const base = {
+			provider: "local",
+			model: "coder",
+			serializerVersion: "context-v1",
+			system: "rules",
+			fixed: ["capability"],
+			tools: [{ name: "read", parameters: { type: "object" } }],
+			messages: [{ role: "user", content: "hello" }],
+		};
+		const alias = telemetryPrefixAlias(base, key);
+		for (const field of ["system", "fixed", "tools", "messages", "provider", "model"] as const) {
+			const changed = { ...base, [field]: `${String(base[field])}-changed` };
+			expect(telemetryPrefixAlias(changed, key)).not.toBe(alias);
+		}
+		firstStore.db.close();
+		const reopened = new SessionStore(path);
+		expect(telemetryPrefixAlias(base, reopened.telemetryInstallKey())).toBe(alias);
+		reopened.db.close();
+		rmSync(directory, { recursive: true, force: true });
 	});
 
 	test("recursively sanitizes and serializes captured payloads", () => {
@@ -130,14 +170,25 @@ describe("telemetry configuration", () => {
 		expect(event["response"]).toContain("originalChars=200");
 	});
 
+	test("does not export condensation milestone text by default", () => {
+		const event = sanitizeEvent({
+			type: "context.compaction.completed",
+			timestamp: "now",
+			sessionId: "s",
+			milestone: "private project summary",
+		});
+		expect(event["milestone"]).toBeUndefined();
+	});
+
 	test("redacts sensitive fields for every lifecycle event kind", () => {
-		const types = ["session.started", "task.started", "turn.started", "model.request.started", "model.request.completed", "model.request.failed", "tool.call.started", "tool.call.completed", "tool.call.failed", "skill.discovered", "skill.inspected", "skill.activated", "capability.snapshot.created", "context.assembly.completed", "context.assembly.failed", "context.compaction.completed", "approval.requested", "approval.resolved", "subagent.started", "subagent.completed", "subagent.failed"] as const;
+		const types = ["session.started", "task.started", "turn.started", "model.request.started", "model.request.completed", "model.request.failed", "tool.call.started", "tool.call.completed", "tool.call.failed", "skill.discovered", "skill.inspected", "skill.activated", "capability.snapshot.created", "context.assembly.completed", "context.assembly.failed", "context.prepare", "context.compaction.started", "context.compaction.completed", "context.compaction.failed", "context.recovery.completed", "approval.requested", "approval.resolved", "subagent.started", "subagent.completed", "subagent.failed"] as const;
 		for (const type of types) {
 			const event = sanitizeEvent({ type, timestamp: "now", sessionId: "s", prompt: "secret prompt", response: "secret response", toolArguments: "args", toolResults: "result", mcpPayload: "payload", imageBytes: new Uint8Array([1]), authorization: "Bearer key", path: "/Users/private/file" });
 			expect(event["prompt"]).toBeUndefined();
 			expect(event["response"]).toBeUndefined();
 			expect(event["authorization"]).toBeUndefined();
 			expect(event["imageBytes"]).toBeUndefined();
+			expect(event["messages"]).toBeUndefined();
 		}
 	});
 

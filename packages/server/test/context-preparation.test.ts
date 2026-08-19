@@ -78,6 +78,91 @@ test("preparation commits LLM memory and pending input in one lane update", asyn
 	expect(pending?.parentId).toBe(checkpoint?.id);
 });
 
+test("prefix telemetry aliases include the resolved system prompt", async () => {
+	const { sessionId, store } = setup();
+	const firstEvents: Record<string, unknown>[] = [];
+	const first = new ContextManager(store, (event) => firstEvents.push(event));
+	await first.prepareTurn({
+		sessionId,
+		taskId: "prompt-alias",
+		laneId: "main",
+		fixedMessages: [],
+		capabilityMessages: [],
+		tools: [],
+		systemPrompt: "system one",
+		budget: 12_000,
+		signal: new AbortController().signal,
+	});
+	const secondEvents: Record<string, unknown>[] = [];
+	const second = new ContextManager(store, (event) => secondEvents.push(event));
+	await second.prepareTurn({
+		sessionId,
+		taskId: "prompt-alias",
+		laneId: "main",
+		fixedMessages: [],
+		capabilityMessages: [],
+		tools: [],
+		systemPrompt: "system two",
+		budget: 12_000,
+		signal: new AbortController().signal,
+	});
+	const alias = (events: Record<string, unknown>[]) =>
+		events.find((event) => event["type"] === "context.prepare")?.["prefixAlias"];
+	expect(alias(firstEvents)).toBeString();
+	expect(alias(firstEvents)).not.toBe(alias(secondEvents));
+});
+
+test("compaction telemetry reports bounded metadata without summary content", async () => {
+	const { sessionId, store } = setup();
+	const events: Record<string, unknown>[] = [];
+	const manager = new ContextManager(store, (event) => events.push(event));
+	await manager.prepareTurn({
+		sessionId,
+		taskId: "telemetry",
+		laneId: "main",
+		fixedMessages: [],
+		capabilityMessages: [],
+		tools: [],
+		provider: "test-provider",
+		model: "test-model",
+		budget: 12_000,
+		signal: new AbortController().signal,
+		compactor: async () => ({
+			memory,
+			provider: "test-provider",
+			model: "test-model",
+			inputTokens: 800,
+			outputTokens: 120,
+			cacheReadTokens: 40,
+			cacheWriteTokens: 20,
+			retries: 1,
+		}),
+	});
+	const completed = events.find(
+		(event) => event["type"] === "context.compaction.completed",
+	);
+	expect(completed).toMatchObject({
+		lane: "main",
+		origin: "main",
+		trigger: "automatic-llm",
+		provider: "test-provider",
+		model: "test-model",
+		inputTokens: 800,
+		outputTokens: 120,
+		cacheReadTokens: 40,
+		cacheWriteTokens: 20,
+		retries: 1,
+		stalePlan: false,
+	});
+	expect(completed?.["sourceCount"]).toBeGreaterThan(0);
+	expect(completed?.["sourceTokens"]).toBeGreaterThan(0);
+	expect(completed?.["beforeTokens"]).toBeGreaterThan(
+		completed?.["afterTokens"] as number,
+	);
+	expect(completed).not.toHaveProperty("memory");
+	expect(completed).not.toHaveProperty("milestone");
+});
+
 test("abort after summarization commits neither checkpoint nor pending input", async () => {
 	const { store, sessionId, manager } = setup();
 	const controller = new AbortController();

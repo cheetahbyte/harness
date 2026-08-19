@@ -1,6 +1,7 @@
 import { structuredHash } from "../capabilities/hash";
 import type { SessionStore } from "../sessions/store";
 import type { RuntimeEventSink } from "../telemetry/events";
+import { telemetryPrefixAlias } from "../telemetry/runtime";
 import { tokenCost as computeTokenCost } from "../token-cost";
 import {
 	MEMORY_REASON,
@@ -66,9 +67,19 @@ export type ContextCompactionRequest = {
 	targetMemoryTokens: number;
 	signal: AbortSignal;
 };
-export type ContextCompactor = (
-	request: ContextCompactionRequest,
-) => Promise<{ memory: CondensationInput } | undefined>;
+export type ContextCompactor = (request: ContextCompactionRequest) => Promise<
+	| {
+			memory: CondensationInput;
+			provider?: string;
+			model?: string;
+			inputTokens?: number;
+			outputTokens?: number;
+			cacheReadTokens?: number;
+			cacheWriteTokens?: number;
+			retries?: number;
+	  }
+	| undefined
+>;
 
 export { ContextBudgetError } from "./types";
 
@@ -112,10 +123,15 @@ export type PrepareTurnRequest = {
 	fixedMessages: unknown[];
 	capabilityMessages: unknown[];
 	tools: unknown[];
+	prefixTools?: unknown[];
 	budget: number;
 	signal: AbortSignal;
 	overheadTokens?: number;
 	compactor?: ContextCompactor;
+	provider?: string;
+	model?: string;
+	serializerVersion?: string;
+	systemPrompt?: string;
 };
 
 export type CondensationResult = {
@@ -162,6 +178,7 @@ type AssemblyState = {
 };
 
 export class ContextManager {
+	private readonly telemetryKey: Uint8Array;
 	private readonly activeEpisodes = new Map<
 		string,
 		ContextEpisode | undefined
@@ -173,7 +190,9 @@ export class ContextManager {
 	constructor(
 		private readonly store: SessionStore,
 		private readonly sink?: RuntimeEventSink,
-	) {}
+	) {
+		this.telemetryKey = store.telemetryInstallKey();
+	}
 
 	forkLane(request: {
 		sessionId: string;
@@ -594,6 +613,36 @@ export class ContextManager {
 		];
 		let estimatedTokens =
 			fixedCost + pendingCost + this.pathProjectedCost(path, request.sessionId);
+		const startedAt = performance.now();
+		const prefixAlias = telemetryPrefixAlias(
+			{
+				provider: request.provider ?? "unknown",
+				model: request.model ?? "unknown",
+				serializerVersion: request.serializerVersion ?? "context-v1",
+				system: request.systemPrompt ?? fixed[0],
+				fixed,
+				capabilities: request.capabilityMessages,
+				tools: request.prefixTools ?? request.tools,
+				messages: projectedPathPayloads(path, this.episodes(request.sessionId)),
+			},
+			this.telemetryKey,
+		);
+		this.sink?.({
+			type: "context.prepare",
+			timestamp: new Date().toISOString(),
+			sessionId: request.sessionId,
+			taskId: request.taskId,
+			lane: request.laneId,
+			origin: request.laneId,
+			trigger: "turn",
+			beforeTokens: estimatedTokens,
+			headroomTokens: request.budget - estimatedTokens,
+			budget: request.budget,
+			prefixAlias,
+			stalePlan: false,
+			...(request.provider ? { provider: request.provider } : {}),
+			...(request.model ? { model: request.model } : {}),
+		});
 		const shouldCompact =
 			estimatedTokens >= Math.floor(request.budget * 0.8) &&
 			request.compactor !== undefined;
@@ -613,8 +662,25 @@ export class ContextManager {
 			);
 
 		let representation = this.fallbackRepresentation(path);
+		let compactorDraft: Awaited<ReturnType<ContextCompactor>>;
+		let sourceCount = 0;
+		let sourceTokens = 0;
 		let retainedTail: unknown[] = [];
 		if (shouldCompact || estimatedTokens > request.budget) {
+			this.sink?.({
+				type: "context.compaction.started",
+				timestamp: new Date().toISOString(),
+				sessionId: request.sessionId,
+				taskId: request.taskId,
+				lane: request.laneId,
+				origin: request.laneId,
+				trigger: shouldCompact ? "automatic" : "budget",
+				beforeTokens: estimatedTokens,
+				prefixAlias,
+				stalePlan: false,
+				...(request.provider ? { provider: request.provider } : {}),
+				...(request.model ? { model: request.model } : {}),
+			});
 			const projected = projectedPathPayloads(
 				path,
 				this.episodes(request.sessionId),
@@ -657,34 +723,63 @@ export class ContextManager {
 			}
 			const compactor = request.compactor;
 			const source = projected.slice(0, projected.length - retainedTail.length);
-			const sourceFitsCompactor =
-				source.reduce<number>((sum, value) => sum + tokenCostOf(value), 0) +
-					4_096 <=
-				request.budget;
+			sourceCount = source.length;
+			sourceTokens = source.reduce<number>(
+				(sum, value) => sum + tokenCostOf(value),
+				0,
+			);
+			const sourceFitsCompactor = sourceTokens + 4_096 <= request.budget;
 			if (compactor && source.length && sourceFitsCompactor) {
 				const previous = path
 					.toReversed()
 					.map((item) => validCheckpoint(item))
 					.find((item) => item?.representation.kind === "condensation");
-				const draft = await compactor({
-					messages: source,
-					...(previous?.representation.kind === "condensation"
-						? {
-								previousMemory: previous.representation
-									.memory as CondensationInput,
-							}
-						: {}),
-					anchors: path
-						.filter(
-							(item) => item.kind === "pinned-note" || item.kind === "user",
-						)
-						.map((item) => String(item.payload))
-						.slice(-12),
-					targetMemoryTokens: 2_000,
-					signal: request.signal,
-				});
-				if (draft)
-					representation = { kind: "condensation", memory: draft.memory };
+				try {
+					compactorDraft = await compactor({
+						messages: source,
+						...(previous?.representation.kind === "condensation"
+							? {
+									previousMemory: previous.representation
+										.memory as CondensationInput,
+								}
+							: {}),
+						anchors: path
+							.filter(
+								(item) => item.kind === "pinned-note" || item.kind === "user",
+							)
+							.map((item) => String(item.payload))
+							.slice(-12),
+						targetMemoryTokens: 2_000,
+						signal: request.signal,
+					});
+				} catch {
+					compactorDraft = undefined;
+				}
+				if (!compactorDraft)
+					this.sink?.({
+						type: "context.compaction.failed",
+						timestamp: new Date().toISOString(),
+						sessionId: request.sessionId,
+						taskId: request.taskId,
+						lane: request.laneId,
+						origin: request.laneId,
+						trigger: "automatic",
+						beforeTokens: estimatedTokens,
+						sourceCount,
+						sourceTokens,
+						retries: 1,
+						stalePlan: false,
+						durationMs: performance.now() - startedAt,
+						error: "llm_compaction_failed",
+						prefixAlias,
+						...(request.provider ? { provider: request.provider } : {}),
+						...(request.model ? { model: request.model } : {}),
+					});
+				if (compactorDraft)
+					representation = {
+						kind: "condensation",
+						memory: compactorDraft.memory,
+					};
 			}
 		}
 		request.signal.throwIfAborted();
@@ -719,6 +814,44 @@ export class ContextManager {
 			messages = [...fixed, ...pendingMessages];
 			estimatedTokens = fixedCost + pendingCost;
 		}
+		this.sink?.({
+			type: "context.compaction.completed",
+			timestamp: new Date().toISOString(),
+			sessionId: request.sessionId,
+			taskId: request.taskId,
+			lane: request.laneId,
+			origin: request.laneId,
+			trigger:
+				representation.kind === "condensation" ? "automatic-llm" : "fallback",
+			beforeTokens:
+				fixedCost +
+				pendingCost +
+				this.pathProjectedCost(path, request.sessionId),
+			afterTokens: estimatedTokens,
+			sourceCount,
+			sourceTokens,
+			...(compactorDraft?.inputTokens === undefined
+				? {}
+				: { inputTokens: compactorDraft.inputTokens }),
+			outputTokens:
+				compactorDraft?.outputTokens ??
+				(representation.kind === "condensation"
+					? tokenCostOf(representation.memory)
+					: 0),
+			cacheReadTokens: compactorDraft?.cacheReadTokens ?? 0,
+			cacheWriteTokens: compactorDraft?.cacheWriteTokens ?? 0,
+			headroomTokens: request.budget - estimatedTokens,
+			durationMs: performance.now() - startedAt,
+			retries: compactorDraft?.retries ?? 0,
+			prefixAlias,
+			stalePlan: false,
+			...((compactorDraft?.provider ?? request.provider)
+				? { provider: compactorDraft?.provider ?? request.provider }
+				: {}),
+			...((compactorDraft?.model ?? request.model)
+				? { model: compactorDraft?.model ?? request.model }
+				: {}),
+		});
 		return {
 			messages,
 			estimatedTokens,
@@ -737,8 +870,8 @@ export class ContextManager {
 				(payload as { role?: unknown }).role === "user",
 		);
 		const retainedTail = currentTurn < 0 ? [] : projected.slice(currentTurn);
-		this.store.db.transaction(() => {
-			this.appendCheckpoint(
+		const checkpoint = this.store.db.transaction(() => {
+			return this.appendCheckpoint(
 				sessionId,
 				laneName,
 				this.fallbackRepresentation(path),
@@ -749,6 +882,21 @@ export class ContextManager {
 				},
 			);
 		})();
+		this.sink?.({
+			type: "context.recovery.completed",
+			timestamp: new Date().toISOString(),
+			sessionId,
+			lane: laneName,
+			origin: laneName,
+			trigger: "provider-context-length",
+			checkpointId: checkpoint.id,
+			laneRevision: this.store.lane(sessionId, laneName)?.revision ?? 0,
+			repairedItems: path.length,
+			retainedItems: retainedTail.length,
+			repairedEpisodes: this.episodes(sessionId).length,
+			retries: 1,
+			stalePlan: false,
+		});
 	}
 
 	private pathProjectedCost(
@@ -1071,7 +1219,6 @@ export class ContextManager {
 			...(options.taskId ? { taskId: options.taskId } : {}),
 			...(options.turnId === undefined ? {} : { turnId: options.turnId }),
 			trigger: "explicit",
-			milestone: next.milestone,
 			evictedItems: eligible.length,
 			archivedEpisodes: 0,
 			tokensBefore,

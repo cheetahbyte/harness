@@ -106,6 +106,14 @@ function startEnabledOpenTelemetry(
 	const pressureStreak = meter.createHistogram(
 		"harnez.context.pressure_streak",
 	);
+	const compactionDuration = meter.createHistogram(
+		"harnez.context.compaction.duration",
+		{ unit: "ms" },
+	);
+	const compactionTokens = meter.createHistogram(
+		"harnez.context.compaction.tokens",
+		{ unit: "tokens" },
+	);
 	const spans = new Map<string, { span: Span; ctx: Context }>();
 	const capture = captureContent();
 	const maxChars = captureMaxChars();
@@ -189,7 +197,9 @@ function startEnabledOpenTelemetry(
 			!event.type.startsWith("approval.") &&
 			!event.type.startsWith("subagent.")
 		)
-			finish(key, event);
+			if (!spans.has(key) && event.type === "context.compaction.completed")
+				oneShot("harnez.context.compaction", event);
+			else finish(key, event);
 		else if (event.type.startsWith("context.assembly."))
 			oneShot("harnez.context.assembly", event);
 		else if (
@@ -199,14 +209,11 @@ function startEnabledOpenTelemetry(
 			event.type.startsWith("subagent.")
 		)
 			oneShot(`harnez.${event.type}`, event);
-		if (event.type === "context.compaction.completed") {
-			const span = tracer.startSpan(
-				"harnez.context.compaction",
-				{ attributes: eventAttributes(event) },
-				parent(event),
-			);
-			span.end();
-		}
+		if (
+			event.type === "context.prepare" ||
+			event.type === "context.recovery.completed"
+		)
+			oneShot(`harnez.${event.type}`, event);
 		if (
 			event.type === "model.request.completed" ||
 			event.type === "model.request.failed"
@@ -283,6 +290,21 @@ function startEnabledOpenTelemetry(
 		}
 		if (event.type === "context.compaction.completed")
 			compactions.add(1, { trigger: String(event.trigger ?? "automatic") });
+		if (
+			(event.type === "context.compaction.completed" ||
+				event.type === "context.compaction.failed") &&
+			typeof event.durationMs === "number"
+		)
+			compactionDuration.record(event.durationMs, {
+				trigger: String(event.trigger ?? "unknown"),
+				status: event.type.endsWith("failed") ? "failed" : "completed",
+			});
+		if (event.type === "context.compaction.completed") {
+			if (typeof event.beforeTokens === "number")
+				compactionTokens.record(event.beforeTokens, { kind: "before" });
+			if (typeof event.afterTokens === "number")
+				compactionTokens.record(event.afterTokens, { kind: "after" });
+		}
 	};
 	return { sink, shutdown: () => sdk.shutdown() };
 }

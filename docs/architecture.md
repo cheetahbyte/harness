@@ -129,6 +129,25 @@ Running `harnez` should automatically connect to or start the local server as ne
 
 Remote operation is not an initial requirement.
 
+The context manager persists a prefix tree and projects a bounded branch for
+each provider request:
+
+```mermaid
+flowchart TD
+    S[System and tools] --> P[Project context]
+    P --> H[History root]
+    H --> M[Main lane head]
+    H --> C[Child lane head]
+    M --> K[Checkpoint]
+    K --> Q[Provider-visible tail]
+    Q --> L[LLM condensation or deterministic fallback]
+```
+
+Admission triggers at 80% of the usable input budget and targets 60%. LLM
+condensation is bounded and tool-free; `HARNEZ_LLM_COMPACTION=0` selects the
+deterministic fallback. Exact source history remains persisted, and a provider
+context-length error retains the current turn before one retry.
+
 ---
 
 ## 4. Runtime

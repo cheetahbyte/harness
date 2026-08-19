@@ -455,6 +455,8 @@ export async function managedMessagesAsync({
 	signal,
 	compactor,
 	pendingInput,
+	tools,
+	systemPrompt,
 }: {
 	sessionId: string;
 	model: Model<Api>;
@@ -468,6 +470,8 @@ export async function managedMessagesAsync({
 	signal: AbortSignal;
 	compactor?: ContextCompactor;
 	pendingInput?: PrepareTurnRequest["pendingInput"];
+	tools?: unknown[];
+	systemPrompt?: string;
 }): Promise<AgentMessage[]> {
 	const capabilityItems = task.context.items();
 	const dynamic: AgentMessage[] = [
@@ -504,7 +508,11 @@ export async function managedMessagesAsync({
 		capabilityMessages: [],
 		fixedMessages: dynamic,
 		tools: [],
+		prefixTools: tools ?? [],
 		budget: options.budget,
+		provider: (model as Model<Api> & { provider?: string }).provider,
+		model: model.id,
+		...(systemPrompt === undefined ? {} : { systemPrompt }),
 		overheadTokens: options.overheadTokens,
 		...(pendingInput?.length ? { pendingInput } : {}),
 		...(compactor ? { compactor } : {}),

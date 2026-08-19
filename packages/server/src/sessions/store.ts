@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -46,6 +47,24 @@ export class SessionStore {
 		this.db = new Database(path, { create: true });
 		this.db.run("PRAGMA busy_timeout = 5000");
 		migrate(this.db);
+	}
+
+	/** Stable local key for telemetry aliases; the key itself is never exported. */
+	telemetryInstallKey(): Uint8Array {
+		this.db.run(
+			"CREATE TABLE IF NOT EXISTS server_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+		);
+		const existing = this.db
+			.query("SELECT value FROM server_metadata WHERE key = 'telemetry_key'")
+			.get() as { value: string } | null;
+		if (existing) return Buffer.from(existing.value, "base64");
+		const key = randomBytes(32);
+		this.db
+			.query(
+				"INSERT INTO server_metadata (key, value) VALUES ('telemetry_key', ?)",
+			)
+			.run(key.toString("base64"));
+		return key;
 	}
 
 	create(workspace = process.cwd()): string {
