@@ -428,9 +428,33 @@ export function managedMessages({
 		});
 	const messages = assembly.payloads as AgentMessage[];
 	const lastUser = messages.findLastIndex((message) => message.role === "user");
-	return lastUser < 0
-		? [...messages, ...dynamic]
-		: [...messages.slice(0, lastUser), ...dynamic, ...messages.slice(lastUser)];
+	return dropOrphanToolResults(
+		lastUser < 0
+			? [...messages, ...dynamic]
+			: [
+					...messages.slice(0, lastUser),
+					...dynamic,
+					...messages.slice(lastUser),
+				],
+	);
+}
+
+function dropOrphanToolResults(messages: AgentMessage[]): AgentMessage[] {
+	const pending = new Set<string>();
+	return messages.filter((message) => {
+		if (message.role === "assistant") {
+			pending.clear();
+			for (const content of message.content)
+				if (content.type === "toolCall") pending.add(content.id);
+			return true;
+		}
+		if (message.role === "user") {
+			pending.clear();
+			return true;
+		}
+		if (message.role !== "toolResult") return true;
+		return pending.delete(message.toolCallId);
+	});
 }
 
 export function ensureSystem({

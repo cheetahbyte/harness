@@ -99,6 +99,75 @@ async function until(assertion: () => void): Promise<void> {
 }
 
 describe("first milestone", () => {
+	test("does not send tool results without their assistant tool call", () => {
+		const dir = mkdtempSync(join(tmpdir(), "harnez-core-orphan-tool-"));
+		paths.push(dir);
+		const store = new SessionStore(join(dir, "state.sqlite"));
+		const sessionId = store.create(dir);
+		const context = new ContextManager(store);
+		context.record({
+			sessionId,
+			kind: "assistant",
+			payload: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "call-episode",
+						name: "episode",
+						arguments: {},
+					},
+				],
+			},
+			tokenCost: 10,
+			lifecycle: "archived",
+			projection: "omitted",
+			reason: "compacted",
+			groupId: "group-episode",
+		});
+		context.record({
+			sessionId,
+			kind: "tool-result",
+			payload: {
+				role: "toolResult",
+				toolCallId: "call-episode",
+				toolName: "episode",
+				content: [
+					{
+						type: "text",
+						text: "Action episodes require an exploration dependency",
+					},
+				],
+				isError: true,
+			},
+			tokenCost: 10,
+			lifecycle: "retained",
+			projection: "full",
+			reason: "tool result",
+			groupId: "group-episode",
+		});
+
+		const messages = managedMessages({
+			sessionId,
+			store,
+			context,
+			model: {} as never,
+			contextOptions: () => ({
+				budget: 20_000,
+				target: 16_000,
+				overheadTokens: 0,
+			}),
+		});
+
+		expect(messages).not.toContainEqual(
+			expect.objectContaining({
+				role: "toolResult",
+				toolCallId: "call-episode",
+			}),
+		);
+		store.db.close();
+	});
+
 	test("proactive condensation reaches the next provider assembly and preserves recall", () => {
 		const dir = mkdtempSync(join(tmpdir(), "harnez-core-condensation-"));
 		paths.push(dir);
@@ -107,7 +176,45 @@ describe("first milestone", () => {
 		const context = new ContextManager(store);
 		context.record({ sessionId, kind: "system", payload: "stable semantics", tokenCost: 2, lifecycle: "pinned", projection: "full", reason: "system" });
 		context.record({ sessionId, kind: "user", payload: { role: "user", content: "objective" }, tokenCost: 2, lifecycle: "pinned", projection: "full", reason: "user" });
-		for (let index = 0; index < 6; index++) context.record({ sessionId, kind: "tool-result", payload: { role: "toolResult", content: `recent-${index}` }, tokenCost: 1_000, lifecycle: "retained", projection: "full", reason: "done", groupId: `group-${index}` });
+		for (let index = 0; index < 6; index++) {
+			const groupId = `group-${index}`;
+			context.record({
+				sessionId,
+				kind: "assistant",
+				payload: {
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: `call-${index}`,
+							name: "read",
+							arguments: {},
+						},
+					],
+				},
+				tokenCost: 10,
+				lifecycle: "retained",
+				projection: "full",
+				reason: "tool call",
+				groupId,
+			});
+			context.record({
+				sessionId,
+				kind: "tool-result",
+				payload: {
+					role: "toolResult",
+					toolCallId: `call-${index}`,
+					toolName: "read",
+					content: [{ type: "text", text: `recent-${index}` }],
+					isError: false,
+				},
+				tokenCost: 1_000,
+				lifecycle: "retained",
+				projection: "full",
+				reason: "done",
+				groupId,
+			});
+		}
 		context.recordObservation(sessionId, "exact archived output", { observationId: "obs-core" });
 		const condensed = context.condense(sessionId, { milestone: "subtask done", completedWork: ["implemented"], strategies: [], environmentChanges: [], constraints: [], openQuestions: [], references: ["observation://obs-core"] }, { budget: 20_000, target: 16_000 });
 		expect(condensed.noOp).toBe(false);
