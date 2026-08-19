@@ -44,6 +44,24 @@ Each top-level request runs inside a fresh
 [task runtime](/docs/architecture/task-runtime) with its own capability
 snapshot and execution ledger.
 
+```mermaid
+flowchart LR
+    T[TUI] --> S[Harnez server]
+    S --> C[Context tree and lanes]
+    C --> A[80% admission gate]
+    A --> L[Bounded LLM condensation]
+    L --> F[Deterministic fallback]
+    A --> M[Provider request]
+    M --> O[OpenTelemetry metadata]
+```
+
+At 80% of the usable input budget, admission targets 60%. It attempts one
+bounded LLM condensation when enough source context and reserve remain, then
+uses the deterministic checkpoint fallback if the attempt is disabled or
+fails. `HARNEZ_LLM_COMPACTION=0` selects the fallback directly. A provider
+context-length response creates a recovery checkpoint retaining the current
+turn and retries once.
+
 ## Agent loop
 
 A turn is a straight line: a user message goes through context construction
@@ -83,12 +101,16 @@ and explicit pins collapse into one bounded rolling summary only as a final
 fallback. Tool output is externalized at creation. The model sees a bounded
 preview and a reference it can use to recall the exact result later.
 
-When the context budget is crossed, one deterministic cleanup pass runs:
-completed tool exchanges retire first, completed work archives in a fixed
-order, then the oldest pinned user content rolls into a summary if necessary.
-Capability content is charged against the same final input budget. Nothing is
-deleted; the full event history persists independently of what's currently in
-the model's context.
+When the context budget reaches 80%, Harnez targets 60% of the usable input
+budget. It attempts one bounded LLM condensation, then archives completed tool
+exchanges and work in a deterministic order. If the LLM is disabled or fails,
+the deterministic checkpoint fallback runs. Capability content is charged
+against the same final input budget.
+Nothing is deleted; the full event history persists independently of what's
+currently in the model's context. Main and child lanes share immutable prefix
+nodes but have independent heads and revisions. Checkpoints record their
+covered range and exact retained tail, so a restart reconstructs the same
+provider-visible history.
 
 ## Tool discovery
 

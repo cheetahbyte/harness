@@ -1,6 +1,7 @@
 import { structuredHash } from "../capabilities/hash";
 import type { SessionStore } from "../sessions/store";
 import type { RuntimeEventSink } from "../telemetry/events";
+import { telemetryPrefixAlias } from "../telemetry/runtime";
 import { tokenCost as computeTokenCost } from "../token-cost";
 import {
 	MEMORY_REASON,
@@ -111,10 +112,14 @@ export type PrepareTurnRequest = {
 	fixedMessages: unknown[];
 	capabilityMessages: unknown[];
 	tools: unknown[];
+	prefixTools?: unknown[];
 	budget: number;
 	signal: AbortSignal;
 	overheadTokens?: number;
 	compactor?: ContextCompactor;
+	provider?: string;
+	model?: string;
+	serializerVersion?: string;
 };
 
 export type CondensationResult = {
@@ -161,6 +166,7 @@ type AssemblyState = {
 };
 
 export class ContextManager {
+	private readonly telemetryKey: Uint8Array;
 	private readonly activeEpisodes = new Map<
 		string,
 		ContextEpisode | undefined
@@ -172,7 +178,9 @@ export class ContextManager {
 	constructor(
 		private readonly store: SessionStore,
 		private readonly sink?: RuntimeEventSink,
-	) {}
+	) {
+		this.telemetryKey = store.telemetryInstallKey();
+	}
 
 	markAgentProgress(scopeId: string): void {
 		if (this.pressured.has(scopeId)) this.pressured.add(`${scopeId}:continued`);
@@ -506,6 +514,34 @@ export class ContextManager {
 		];
 		let estimatedTokens =
 			fixedCost + pendingCost + this.pathProjectedCost(path, request.sessionId);
+		const startedAt = performance.now();
+		const prefixAlias = telemetryPrefixAlias(
+			{
+				provider: request.provider ?? "unknown",
+				model: request.model ?? "unknown",
+				serializerVersion: request.serializerVersion ?? "context-v1",
+				system: fixed[0],
+				fixed,
+				capabilities: request.capabilityMessages,
+				tools: request.prefixTools ?? request.tools,
+				messages: projectedPathPayloads(path, this.episodes(request.sessionId)),
+			},
+			this.telemetryKey,
+		);
+		this.sink?.({
+			type: "context.prepare",
+			timestamp: new Date().toISOString(),
+			sessionId: request.sessionId,
+			taskId: request.taskId,
+			lane: request.laneId,
+			trigger: "turn",
+			beforeTokens: estimatedTokens,
+			headroomTokens: request.budget - estimatedTokens,
+			budget: request.budget,
+			prefixAlias,
+			...(request.provider ? { provider: request.provider } : {}),
+			...(request.model ? { model: request.model } : {}),
+		});
 		const shouldCompact =
 			estimatedTokens >= Math.floor(request.budget * 0.8) &&
 			request.compactor !== undefined;
@@ -527,6 +563,18 @@ export class ContextManager {
 		let representation = this.fallbackRepresentation(path);
 		let retainedTail: unknown[] = [];
 		if (shouldCompact || estimatedTokens > request.budget) {
+			this.sink?.({
+				type: "context.compaction.started",
+				timestamp: new Date().toISOString(),
+				sessionId: request.sessionId,
+				taskId: request.taskId,
+				lane: request.laneId,
+				trigger: shouldCompact ? "automatic" : "budget",
+				beforeTokens: estimatedTokens,
+				prefixAlias,
+				...(request.provider ? { provider: request.provider } : {}),
+				...(request.model ? { model: request.model } : {}),
+			});
 			const projected = projectedPathPayloads(
 				path,
 				this.episodes(request.sessionId),
@@ -578,23 +626,39 @@ export class ContextManager {
 					.toReversed()
 					.map((item) => validCheckpoint(item))
 					.find((item) => item?.representation.kind === "condensation");
-				const draft = await compactor({
-					messages: source,
-					...(previous?.representation.kind === "condensation"
-						? {
-								previousMemory: previous.representation
-									.memory as CondensationInput,
-							}
-						: {}),
-					anchors: path
-						.filter(
-							(item) => item.kind === "pinned-note" || item.kind === "user",
-						)
-						.map((item) => String(item.payload))
-						.slice(-12),
-					targetMemoryTokens: 2_000,
-					signal: request.signal,
-				});
+				let draft: Awaited<ReturnType<ContextCompactor>>;
+				try {
+					draft = await compactor({
+						messages: source,
+						...(previous?.representation.kind === "condensation"
+							? {
+									previousMemory: previous.representation
+										.memory as CondensationInput,
+								}
+							: {}),
+						anchors: path
+							.filter(
+								(item) => item.kind === "pinned-note" || item.kind === "user",
+							)
+							.map((item) => String(item.payload))
+							.slice(-12),
+						targetMemoryTokens: 2_000,
+						signal: request.signal,
+					});
+				} catch {
+					this.sink?.({
+						type: "context.compaction.failed",
+						timestamp: new Date().toISOString(),
+						sessionId: request.sessionId,
+						taskId: request.taskId,
+						lane: request.laneId,
+						trigger: "automatic",
+						beforeTokens: estimatedTokens,
+						durationMs: performance.now() - startedAt,
+						error: "llm_compaction_failed",
+						prefixAlias,
+					});
+				}
 				if (draft)
 					representation = { kind: "condensation", memory: draft.memory };
 			}
@@ -631,6 +695,25 @@ export class ContextManager {
 			messages = [...fixed, ...pendingMessages];
 			estimatedTokens = fixedCost + pendingCost;
 		}
+		this.sink?.({
+			type: "context.compaction.completed",
+			timestamp: new Date().toISOString(),
+			sessionId: request.sessionId,
+			taskId: request.taskId,
+			lane: request.laneId,
+			trigger:
+				representation.kind === "condensation" ? "automatic-llm" : "fallback",
+			beforeTokens:
+				fixedCost +
+				pendingCost +
+				this.pathProjectedCost(path, request.sessionId),
+			afterTokens: estimatedTokens,
+			durationMs: performance.now() - startedAt,
+			retries: 0,
+			prefixAlias,
+			...(request.provider ? { provider: request.provider } : {}),
+			...(request.model ? { model: request.model } : {}),
+		});
 		return {
 			messages,
 			estimatedTokens,
@@ -649,8 +732,8 @@ export class ContextManager {
 				(payload as { role?: unknown }).role === "user",
 		);
 		const retainedTail = currentTurn < 0 ? [] : projected.slice(currentTurn);
-		this.store.db.transaction(() => {
-			this.appendCheckpoint(
+		const checkpoint = this.store.db.transaction(() => {
+			return this.appendCheckpoint(
 				sessionId,
 				laneName,
 				this.fallbackRepresentation(path),
@@ -661,6 +744,15 @@ export class ContextManager {
 				},
 			);
 		})();
+		this.sink?.({
+			type: "context.recovery.completed",
+			timestamp: new Date().toISOString(),
+			sessionId,
+			lane: laneName,
+			trigger: "provider-context-length",
+			checkpointId: checkpoint.id,
+			retainedItems: retainedTail.length,
+		});
 	}
 
 	private pathProjectedCost(

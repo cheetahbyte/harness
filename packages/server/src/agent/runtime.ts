@@ -212,6 +212,7 @@ export class HarnezAgentRuntime {
 						groupId: entry.promptGroupId,
 					},
 				],
+				entry.agent.state.tools,
 			);
 		} catch (error) {
 			this.context.completeGroup(sessionId, entry.promptGroupId);
@@ -353,6 +354,8 @@ export class HarnezAgentRuntime {
 					compactor,
 					entry.emit,
 					entry.turnId,
+					undefined,
+					entry.agent.state.tools,
 				);
 			} catch (error) {
 				entry.contextError = asError(error);
@@ -474,6 +477,7 @@ export class HarnezAgentRuntime {
 		emit?: ((event: ServerEvent) => void) | undefined,
 		turnId?: number,
 		pendingInput?: Parameters<typeof managedMessagesAsync>[0]["pendingInput"],
+		tools: unknown[] = [],
 	): Promise<AgentMessage[]> {
 		if (pendingInput?.length) {
 			await managedMessagesAsync({
@@ -484,6 +488,7 @@ export class HarnezAgentRuntime {
 				contextOptions: this.contextOptions.bind(this),
 				signal,
 				pendingInput,
+				tools,
 				...(compactor ? { compactor } : {}),
 			});
 			return this.messages(sessionId, model, task, emit, turnId);
@@ -505,6 +510,7 @@ export class HarnezAgentRuntime {
 			contextOptions: this.contextOptions.bind(this),
 			signal,
 			...(compactor ? { compactor } : {}),
+			tools,
 		});
 		return this.messages(sessionId, model, task, emit, turnId);
 	}

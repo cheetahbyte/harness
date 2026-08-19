@@ -1,3 +1,6 @@
+import { createHmac, randomBytes } from "node:crypto";
+
+import { canonicalJson } from "../capabilities/hash";
 import {
 	noopRuntimeEventSink,
 	type RuntimeEvent,
@@ -24,6 +27,20 @@ const childExcluded =
 	/^(?:OTEL_|HARNEZ_OTEL$|HARNEZ_OTEL_CAPTURE_(?:CONTENT|MAX_CHARS)$)/;
 const DEFAULT_CAPTURE_MAX_CHARS = 16_384;
 const MAX_CAPTURE_CHARS = 1_000_000;
+// The key never leaves this process. Callers can supply a persisted install key
+// when they have one; the default still prevents raw fingerprints from leaving.
+const processTelemetryKey = randomBytes(32);
+
+/** Return a non-reversible, bounded alias for local prefix identity. */
+export function telemetryPrefixAlias(
+	value: unknown,
+	installKey: Uint8Array = processTelemetryKey,
+): string {
+	return createHmac("sha256", installKey)
+		.update(canonicalJson(JSON.parse(JSON.stringify(value))))
+		.digest("hex")
+		.slice(0, 24);
+}
 
 export function captureContent(
 	value = process.env["HARNEZ_OTEL_CAPTURE_CONTENT"],
@@ -268,6 +285,12 @@ export function sanitizeEvent(
 				if (sanitized === undefined) delete result[key];
 				else result[key] = sanitized;
 			}
+			continue;
+		}
+		// Lifecycle telemetry is metadata-only unless a named capture category
+		// explicitly opted in. Do not let arbitrary nested payloads through.
+		if (typeof value === "object" && value !== null) {
+			delete result[key];
 			continue;
 		}
 		if (key.toLowerCase().includes("path") && !capture.has("paths")) {
