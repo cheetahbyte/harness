@@ -67,9 +67,19 @@ export type ContextCompactionRequest = {
 	targetMemoryTokens: number;
 	signal: AbortSignal;
 };
-export type ContextCompactor = (
-	request: ContextCompactionRequest,
-) => Promise<{ memory: CondensationInput } | undefined>;
+export type ContextCompactor = (request: ContextCompactionRequest) => Promise<
+	| {
+			memory: CondensationInput;
+			provider?: string;
+			model?: string;
+			inputTokens?: number;
+			outputTokens?: number;
+			cacheReadTokens?: number;
+			cacheWriteTokens?: number;
+			retries?: number;
+	  }
+	| undefined
+>;
 
 export { ContextBudgetError } from "./types";
 
@@ -652,6 +662,9 @@ export class ContextManager {
 			);
 
 		let representation = this.fallbackRepresentation(path);
+		let compactorDraft: Awaited<ReturnType<ContextCompactor>>;
+		let sourceCount = 0;
+		let sourceTokens = 0;
 		let retainedTail: unknown[] = [];
 		if (shouldCompact || estimatedTokens > request.budget) {
 			this.sink?.({
@@ -710,18 +723,19 @@ export class ContextManager {
 			}
 			const compactor = request.compactor;
 			const source = projected.slice(0, projected.length - retainedTail.length);
-			const sourceFitsCompactor =
-				source.reduce<number>((sum, value) => sum + tokenCostOf(value), 0) +
-					4_096 <=
-				request.budget;
+			sourceCount = source.length;
+			sourceTokens = source.reduce<number>(
+				(sum, value) => sum + tokenCostOf(value),
+				0,
+			);
+			const sourceFitsCompactor = sourceTokens + 4_096 <= request.budget;
 			if (compactor && source.length && sourceFitsCompactor) {
 				const previous = path
 					.toReversed()
 					.map((item) => validCheckpoint(item))
 					.find((item) => item?.representation.kind === "condensation");
-				let draft: Awaited<ReturnType<ContextCompactor>>;
 				try {
-					draft = await compactor({
+					compactorDraft = await compactor({
 						messages: source,
 						...(previous?.representation.kind === "condensation"
 							? {
@@ -739,21 +753,33 @@ export class ContextManager {
 						signal: request.signal,
 					});
 				} catch {
+					compactorDraft = undefined;
+				}
+				if (!compactorDraft)
 					this.sink?.({
 						type: "context.compaction.failed",
 						timestamp: new Date().toISOString(),
 						sessionId: request.sessionId,
 						taskId: request.taskId,
 						lane: request.laneId,
+						origin: request.laneId,
 						trigger: "automatic",
 						beforeTokens: estimatedTokens,
+						sourceCount,
+						sourceTokens,
+						retries: 1,
+						stalePlan: false,
 						durationMs: performance.now() - startedAt,
 						error: "llm_compaction_failed",
 						prefixAlias,
+						...(request.provider ? { provider: request.provider } : {}),
+						...(request.model ? { model: request.model } : {}),
 					});
-				}
-				if (draft)
-					representation = { kind: "condensation", memory: draft.memory };
+				if (compactorDraft)
+					representation = {
+						kind: "condensation",
+						memory: compactorDraft.memory,
+					};
 			}
 		}
 		request.signal.throwIfAborted();
@@ -802,13 +828,29 @@ export class ContextManager {
 				pendingCost +
 				this.pathProjectedCost(path, request.sessionId),
 			afterTokens: estimatedTokens,
+			sourceCount,
+			sourceTokens,
+			...(compactorDraft?.inputTokens === undefined
+				? {}
+				: { inputTokens: compactorDraft.inputTokens }),
+			outputTokens:
+				compactorDraft?.outputTokens ??
+				(representation.kind === "condensation"
+					? tokenCostOf(representation.memory)
+					: 0),
+			cacheReadTokens: compactorDraft?.cacheReadTokens ?? 0,
+			cacheWriteTokens: compactorDraft?.cacheWriteTokens ?? 0,
 			headroomTokens: request.budget - estimatedTokens,
 			durationMs: performance.now() - startedAt,
-			retries: 0,
+			retries: compactorDraft?.retries ?? 0,
 			prefixAlias,
 			stalePlan: false,
-			...(request.provider ? { provider: request.provider } : {}),
-			...(request.model ? { model: request.model } : {}),
+			...((compactorDraft?.provider ?? request.provider)
+				? { provider: compactorDraft?.provider ?? request.provider }
+				: {}),
+			...((compactorDraft?.model ?? request.model)
+				? { model: compactorDraft?.model ?? request.model }
+				: {}),
 		});
 		return {
 			messages,

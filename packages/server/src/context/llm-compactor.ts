@@ -25,6 +25,11 @@ export type CompactionDraft = {
 	memory: CondensationInput;
 	provider: string;
 	model: string;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	retries: number;
 };
 
 export type ContextCompactor = (
@@ -101,6 +106,11 @@ export async function compactWithLlm(
 				memory,
 				provider: request.model.provider,
 				model: request.model.id,
+				inputTokens: response.usage.input,
+				outputTokens: response.usage.output,
+				cacheReadTokens: response.usage.cacheRead,
+				cacheWriteTokens: response.usage.cacheWrite,
+				retries: attempt,
 			};
 		} catch (error) {
 			if (error instanceof DOMException && error.name === "AbortError")

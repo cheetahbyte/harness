@@ -29,10 +29,28 @@ describe("compactWithLlm", () => {
 		const calls: any[][] = [];
 		const result = await compactWithLlm(request(async (...args: any[]) => {
 			calls.push(args);
-			return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify(memory) }] };
+			return {
+				stopReason: "stop",
+				content: [{ type: "text", text: JSON.stringify(memory) }],
+				usage: {
+					input: 800,
+					output: 120,
+					cacheRead: 40,
+					cacheWrite: 20,
+				},
+			};
 		}));
 
-		expect(result).toEqual({ memory, provider: "fake", model: "compact-model" });
+		expect(result).toEqual({
+			memory,
+			provider: "fake",
+			model: "compact-model",
+			inputTokens: 800,
+			outputTokens: 120,
+			cacheReadTokens: 40,
+			cacheWriteTokens: 20,
+			retries: 0,
+		});
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.[2]).toEqual(expect.objectContaining({
 			cacheRetention: "none",

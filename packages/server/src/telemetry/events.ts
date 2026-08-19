@@ -35,6 +35,9 @@ export type RuntimeEvent = {
 	trigger?: string;
 	inputTokens?: number;
 	outputTokens?: number;
+	sourceTokens?: number;
+	cacheReadTokens?: number;
+	cacheWriteTokens?: number;
 	liveTokens?: number;
 	historyTokens?: number;
 	pressureStreak?: number;
