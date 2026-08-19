@@ -26,6 +26,26 @@ skill bodies use task-owned context, but their injected tokens count against
 the same model input budget. See
 [Task runtime](/docs/architecture/task-runtime).
 
+The history is a persistent prefix tree. Child lanes share immutable prefixes
+with the main lane and append their own branches. Checkpoints mark the
+boundary between a shared prefix and the provider-visible tail.
+
+```mermaid
+flowchart TD
+    S[System and tools] --> P[Project context]
+    P --> H[Conversation history]
+    H --> M[Main lane]
+    H --> C[Child lane]
+    M --> K[Checkpoint]
+    K --> T[Retained tail]
+    C --> F[Child checkpoint]
+    F --> R[Handoff result]
+```
+
+The tree lets Harnez reuse immutable prefixes and evict replaceable branches.
+Checkpoints never delete source items: exact history remains in SQLite and can
+be recovered after a restart.
+
 ## Context lifecycle
 
 Each stored conversation item moves through one of four states:
@@ -100,8 +120,18 @@ investigation around until the action that used it has also been archived.
 Before each model request, Harnez recalculates the conversation working set and
 includes the fixed cost of the permanent tool definitions. The default
 conversation budget is whichever is smaller: 80,000 tokens or the model's
-usable input window. Once the working set crosses that limit, Harnez reduces it
-toward 80 percent of the budget.
+usable input window. At 80% pressure, Harnez aims for 60% of the usable budget.
+When LLM compaction is enabled, Harnez attempts a bounded condensation when the
+source prefix and a 4,096-token reserve fit. The LLM has no tools and must
+return validated memory JSON. Invalid output can be retried once. An
+unavailable, failed, or oversized attempt uses the deterministic checkpoint
+fallback. Set `HARNEZ_LLM_COMPACTION=0` to disable the LLM attempt; the fallback
+then runs only when the working set exceeds its budget.
+
+The fallback keeps bounded active episode goals, recent anchors, completed
+episode conclusions, and observation references. If the lane changes while an
+LLM condensation is running, Harnez discards the stale result and replans with
+the deterministic fallback.
 
 For session history, it removes context in three passes:
 
@@ -121,9 +151,39 @@ conclusion and observation addresses stay. Harnez never considers an active
 episode for eviction, and only compacts eligible pinned content in the final
 fallback.
 
+## Explicit condensation
+
+The `condense_context` tool preserves completed work at a natural milestone
+before automatic pressure. Its bounded JSON memory records completed work,
+strategies and outcomes, environment changes, constraints, open questions, and
+`observation://` or workspace-relative references. Calls are rejected while an
+episode is active, for invalid references, or when the resulting memory exceeds
+2,000 estimated tokens.
+
+The next request has three segments: stable semantics (system and user
+instructions, pinned decisions, task capability context, and active episodes),
+one live long-term memory, and the four newest completed exchange groups plus
+active items. Explicit condensation archives only eligible old assistant/tool
+groups and completed episode content; user messages, system rules, pinned
+notes, observations, active/current-task items, predecessor terminal messages,
+and the newest four groups are protected. Exact observations remain recallable.
+A replacement is written atomically and repeated calls replace the single live
+memory. Automatic condensation uses one bounded operation and may retry invalid
+output once. Explicit `condense_context` remains deterministic and does not make
+a model call.
+
+Automatic LLM and deterministic fallback attempts emit compaction lifecycle
+events; successful explicit condensation emits an explicit event and the TUI
+displays its milestone. A no-op or failed call leaves storage unchanged.
+Pinned-history rolling summary remains the final emergency budget fallback.
+
 For each stored conversation item, the context manager records its state,
 projection, token cost, and the reason it was evicted. This information is
-available from `GET /sessions/:id/context`.
+available from `GET /sessions/:id/context`. A provider context-length error
+creates a fallback checkpoint that retains the current turn, then retries the
+same request once. If the protected fixed envelope itself cannot fit, Harnez
+reports an actionable input-size error instead of asking you to start a new
+session.
 
 ## Task capability context
 
@@ -147,6 +207,10 @@ The parent receives a structured result instead of the subagent's full trace.
 The handoff contains its status, findings, decisions, changed files,
 verification, unresolved issues, and artifact references. The parent keeps the
 result it needs without adding every intermediate step to its own context.
+
+Before admitting a task, Harnez repairs stale main-lane ownership and abandons
+or fails inconsistent child-lane tasks. Abandoning a child lane closes its open
+episode. Recovery emits `context.recovery.completed` with repair counts.
 
 ## Related work
 

@@ -16,30 +16,43 @@ import {
 } from "@earendil-works/pi-ai";
 
 import { abortableSleep } from "../../../shared/src/abortable-sleep";
-import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
-import type { ContextManager } from "../context/manager";
+import type {
+	ImageAttachment,
+	ModelConfig,
+	ServerEvent,
+} from "../../../shared/src/protocol";
+import { compactWithLlm } from "../context/llm-compactor";
+import {
+	ContextBudgetError,
+	type ContextCompactor,
+	type ContextManager,
+} from "../context/manager";
 import { log } from "../logger";
 import type { McpRegistry, McpToolDescriptor } from "../mcp/registry";
 import { HarnezProviderError, providerModels } from "../provider";
 import type { SessionStore } from "../sessions/store";
 import type { SkillSnapshotEntry } from "../skills";
 import type { TaskRuntime } from "../task-runtime";
+import type { RuntimeEventSink } from "../telemetry/events";
+import { tokenCost } from "../token-cost";
 import type { CoreTools } from "../tools";
 import {
 	type AgentEntry,
 	ensureSystem,
 	managedMessages,
+	managedMessagesAsync,
 	type QueueCallbacks,
 	queueMessage,
-	recordAgentMessage,
 	translateAgentEvent,
 } from "./events";
+export { SYSTEM_PROMPT } from "../system-prompt";
 import { messageKey } from "./message";
 import { agentTools, TOOL_OVERHEAD_TOKENS } from "./tools";
 
 export type AgentRunInput = {
 	sessionId: string;
 	text: string;
+	images?: ImageAttachment[];
 	config: ModelConfig | undefined;
 	tools: CoreTools;
 	task: TaskRuntime;
@@ -49,6 +62,7 @@ export type AgentRunInput = {
 	mcp: Pick<McpRegistry, "call">;
 	signal: AbortSignal;
 	emit: (event: ServerEvent) => void;
+	turnId?: number;
 };
 
 export type AgentRunTiming = {
@@ -56,8 +70,6 @@ export type AgentRunTiming = {
 	toolDurationMs: number;
 };
 
-export const SYSTEM_PROMPT =
-	"You are Harnez, a coding agent. Your tool list is partial: more tools and skills, including any MCP servers the user connected, wait in a catalog. Before saying you lack a capability, call capabilities_search. Never conclude that a tool is unavailable from your tool list alone, and prefer a catalog tool over improvising with bash. tools_load makes one callable from the next turn. Use the provided tools to inspect and change the current workspace. Batch independent tool calls, including related reads, writes, and edits, in the same turn. Tool output carrying an observation:// reference was archived, not lost: read it back with recall_observation instead of running the tool again. Use episodes and pin_context once context is reported to be under compaction pressure, or when the work ahead will span many tool calls; skip episodes and pin_context for short tasks. Runtime context belongs only to the current task.";
 const DEFAULT_CONTEXT_BUDGET = 80_000;
 /** Floor for models that cannot be resolved, and the old fixed ceiling. */
 const FALLBACK_CAPABILITY_BUDGET = 8_000;
@@ -70,6 +82,10 @@ export class HarnezAgentRuntime {
 	private readonly store: SessionStore;
 	private readonly context: ContextManager;
 	private readonly contextBudget: number;
+	private readonly llmCompaction: boolean;
+	private readonly compactionModelConfigFor:
+		| ((sessionId: string) => string | undefined)
+		| undefined;
 
 	constructor(options: {
 		credentials: CredentialStore;
@@ -77,17 +93,40 @@ export class HarnezAgentRuntime {
 		store: SessionStore;
 		context: ContextManager;
 		contextBudget?: number;
+		llmCompaction?: boolean;
+		compactionModelConfigFor?: (sessionId: string) => string | undefined;
+		sink?: RuntimeEventSink;
 	}) {
 		this.credentials = options.credentials;
 		this.modelsFor = options.modelsFor;
 		this.store = options.store;
 		this.context = options.context;
 		this.contextBudget = options.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
+		this.llmCompaction =
+			options.llmCompaction ?? process.env["HARNEZ_LLM_COMPACTION"] !== "0";
+		this.compactionModelConfigFor = options.compactionModelConfigFor;
+		this.sink = options.sink;
+	}
+	private readonly sink: RuntimeEventSink | undefined;
+	private requestId = 0;
+
+	supportsImages(sessionId: string, config: ModelConfig | undefined): boolean {
+		if (!config) return false;
+		try {
+			return providerModels(
+				config,
+				this.credentials,
+				this.modelsFor(sessionId),
+			).model.input.includes("image");
+		} catch {
+			return false;
+		}
 	}
 
 	async run({
 		sessionId,
 		text,
+		images = [],
 		config,
 		tools,
 		task,
@@ -96,6 +135,7 @@ export class HarnezAgentRuntime {
 		mcp,
 		signal,
 		emit,
+		turnId,
 	}: AgentRunInput): Promise<AgentRunTiming> {
 		if (!config)
 			throw new HarnezProviderError(
@@ -110,11 +150,24 @@ export class HarnezAgentRuntime {
 				this.credentials,
 				this.modelsFor(sessionId),
 			);
+			const compactionReference = this.compactionModelConfigFor?.(sessionId);
+			const compactionConfig = compactionReference
+				? modelConfigFromReference(compactionReference)
+				: undefined;
+			const compaction = compactionConfig
+				? providerModels(
+						compactionConfig,
+						this.credentials,
+						this.modelsFor(sessionId),
+					)
+				: { models, model };
 			const created = this.createAgent({
 				sessionId,
 				key,
 				model,
 				models,
+				compactionModel: compaction.model,
+				compactionModels: compaction.models,
 				tools,
 				config,
 				task,
@@ -122,7 +175,7 @@ export class HarnezAgentRuntime {
 				mcpTools,
 				mcp,
 			});
-			created.agent.subscribe((event) =>
+			created.agent.subscribe((event) => {
 				translateAgentEvent({
 					sessionId,
 					entry: created,
@@ -131,32 +184,62 @@ export class HarnezAgentRuntime {
 					context: this.context,
 					shrink: () => this.shrink(sessionId, created),
 					inspect: () => this.inspect(sessionId),
-				}),
-			);
+					...(this.sink ? { sink: this.sink } : {}),
+				});
+			});
 			this.agents.set(sessionId, created);
 			entry = created;
 		}
 		entry.emit = emit;
+		entry.turnId = turnId ?? entry.turnId + 1;
 		const message: AgentMessage = {
 			role: "user",
-			content: [{ type: "text", text }],
+			content: [
+				{ type: "text", text },
+				...images.map((image) => ({
+					type: "image" as const,
+					data: image.data,
+					mimeType: image.mimeType,
+				})),
+			],
 			timestamp: Date.now(),
 		};
 		entry.promptGroupId = crypto.randomUUID();
-		recordAgentMessage({ sessionId, entry, message, context: this.context });
 		try {
 			/**
 			 * The first assembly of a turn is usually the one that crosses the
 			 * budget, so it has to carry the emitter too — otherwise the cleanup it
 			 * performs is silent and every later assembly finds nothing to report.
 			 */
-			this.messages(sessionId, entry.agent.state.model, entry.task, emit);
+			await this.messagesAsync(
+				sessionId,
+				entry.agent.state.model,
+				entry.task,
+				signal,
+				entry.compactor,
+				emit,
+				turnId,
+				[
+					{
+						sessionId,
+						kind: "user",
+						payload: message,
+						tokenCost: tokenCost(message, 1),
+						lifecycle: "pinned",
+						reason: "user-authored message",
+						groupId: entry.promptGroupId,
+					},
+				],
+				entry.agent.state.tools,
+				entry.agent.state.systemPrompt,
+			);
 		} catch (error) {
 			this.context.completeGroup(sessionId, entry.promptGroupId);
 			entry.promptGroupId = undefined;
 			throw error;
 		}
 		entry.preRecorded.add(messageKey(message));
+		this.context.markAgentProgress(task.id);
 		const abort = () => entry?.agent.abort();
 		signal.addEventListener("abort", abort, { once: true });
 		try {
@@ -199,7 +282,12 @@ export class HarnezAgentRuntime {
 		}
 	}
 
-	steer(sessionId: string, text: string, callbacks: QueueCallbacks): boolean {
+	steer(
+		sessionId: string,
+		text: string,
+		callbacks: QueueCallbacks,
+		images: readonly ImageAttachment[] = [],
+	): boolean {
 		const entry = this.agents.get(sessionId);
 		if (
 			!entry?.agent.state.isStreaming ||
@@ -208,7 +296,7 @@ export class HarnezAgentRuntime {
 			return false;
 		if (entry.steering) entry.steering.onReplaced?.();
 		entry.agent.clearSteeringQueue();
-		const queued = queueMessage(text, callbacks);
+		const queued = queueMessage(text, callbacks, images);
 		entry.steering = queued;
 		entry.queued.set(queued.message, queued);
 		entry.agent.steer(queued.message as never);
@@ -236,6 +324,8 @@ export class HarnezAgentRuntime {
 		key,
 		model,
 		models,
+		compactionModel,
+		compactionModels,
 		tools,
 		config,
 		task,
@@ -247,6 +337,8 @@ export class HarnezAgentRuntime {
 		key: string;
 		model: Model<Api>;
 		models: ReturnType<typeof providerModels>["models"];
+		compactionModel: Model<Api>;
+		compactionModels: ReturnType<typeof providerModels>["models"];
 		tools: CoreTools;
 		config: ModelConfig;
 		task: TaskRuntime;
@@ -254,13 +346,21 @@ export class HarnezAgentRuntime {
 		mcpTools: readonly McpToolDescriptor[];
 		mcp: Pick<McpRegistry, "call">;
 	}): AgentEntry {
-		ensureSystem({
+		const systemPrompt = ensureSystem({
 			sessionId,
 			store: this.store,
 			context: this.context,
-			systemPrompt: SYSTEM_PROMPT,
+			workspace: this.store.workspace(sessionId) ?? process.cwd(),
 		});
-		const entry = newAgentEntry(key, tools, task);
+		const entry = newAgentEntry(key, tools, task, this.sink);
+		const compactor: ContextCompactor | undefined = !this.llmCompaction
+			? undefined
+			: (request) =>
+					compactWithLlm({
+						...request,
+						model: compactionModel,
+						models: compactionModels,
+					});
 		/**
 		 * Publishes a tool mid-task. `entry.agent` is assigned before any tool can
 		 * run, so the deferred read is always resolved by the time this fires.
@@ -271,23 +371,35 @@ export class HarnezAgentRuntime {
 			if (current.some((existing) => existing.name === tool.name)) return;
 			entry.agent.state.tools = [...current, tool];
 		};
-		const managed = (): AgentMessage[] => {
+		const managed = async (signal?: AbortSignal): Promise<AgentMessage[]> => {
 			try {
 				entry.contextError = undefined;
-				return this.messages(sessionId, model, task, entry.emit);
+				return await this.messagesAsync(
+					sessionId,
+					model,
+					task,
+					signal ?? new AbortController().signal,
+					compactor,
+					entry.emit,
+					entry.turnId,
+					undefined,
+					entry.agent.state.tools,
+					entry.agent.state.systemPrompt,
+				);
 			} catch (error) {
 				entry.contextError = asError(error);
 				return [];
 			}
 		};
 		const agent = new Agent({
+			sessionId,
 			initialState: {
 				model,
 				thinkingLevel: clampThinkingLevel(
 					model,
 					config.thinkingLevel ?? "medium",
 				),
-				systemPrompt: SYSTEM_PROMPT,
+				...(systemPrompt === undefined ? {} : { systemPrompt }),
 				tools: agentTools({
 					sessionId,
 					model,
@@ -300,20 +412,21 @@ export class HarnezAgentRuntime {
 					context: this.context,
 					contextOptions: this.contextOptions.bind(this),
 					previewLimit: this.previewLimit.bind(this),
+					...(entry.emit ? { emit: entry.emit } : {}),
 				}),
-				messages: this.messages(sessionId, model, task),
+				messages: [],
 			},
-			transformContext: async () => {
-				const messages = managed();
+			transformContext: async (_messages, signal) => {
+				const messages = await managed(signal);
 				task.context.completeStep();
 				return messages;
 			},
-			prepareNextTurnWithContext: (turn) => {
+			prepareNextTurnWithContext: async (turn, signal) => {
 				this.context.completeTurn(
 					sessionId,
 					turn.toolResults.map((result) => result.toolCallId),
 				);
-				const messages = managed();
+				const messages = await managed(signal);
 				agent.state.messages = messages;
 				/**
 				 * Pi snapshots the tool list once when a prompt starts and then reuses
@@ -329,23 +442,116 @@ export class HarnezAgentRuntime {
 			shouldStopAfterTurn: () => !!entry.contextError,
 			streamFn: (_unused, requestContext, options) => {
 				if (entry.contextError) throw entry.contextError;
+				const requestIds = new Map<number, number>();
+				let retryContext = requestContext;
 				return streamWithRetry(
-					() => models.streamSimple(model, requestContext, options),
+					() => models.streamSimple(model, retryContext, options),
 					options?.signal,
 					{ sessionId, provider: config.provider, model: config.model },
 					(durationMs) => (entry.timing.modelDurationMs += durationMs),
+					(phase, attempt, durationMs, error, response) => {
+						const requestId = requestIds.get(attempt) ?? this.requestId++;
+						if (phase === "started") requestIds.set(attempt, requestId);
+						else requestIds.delete(attempt);
+						this.sink?.({
+							type:
+								phase === "started"
+									? "model.request.started"
+									: phase === "failed"
+										? "model.request.failed"
+										: "model.request.completed",
+							timestamp: new Date().toISOString(),
+							sessionId,
+							taskId: task.id,
+							turnId: entry.turnId,
+							requestId,
+							attempt,
+							provider: config.provider,
+							model: config.model,
+							...(durationMs === undefined ? {} : { durationMs }),
+							...(error ? { error } : {}),
+							...(phase === "started"
+								? { prompt: retryContext }
+								: response
+									? { response }
+									: {}),
+						});
+					},
+					() => {
+						this.context.checkpointProviderOverflow(sessionId);
+						retryContext = {
+							...requestContext,
+							messages: this.messages(
+								sessionId,
+								model,
+								task,
+								entry.emit,
+							) as typeof requestContext.messages,
+						};
+					},
 				);
 			},
 			toolExecution: "parallel",
 		});
 		entry.agent = agent;
+		entry.compactor = compactor;
 		return entry;
+	}
+	private async messagesAsync(
+		sessionId: string,
+		model: Model<Api>,
+		task: TaskRuntime,
+		signal: AbortSignal,
+		compactor?: ContextCompactor,
+		emit?: ((event: ServerEvent) => void) | undefined,
+		turnId?: number,
+		pendingInput?: Parameters<typeof managedMessagesAsync>[0]["pendingInput"],
+		tools: unknown[] = [],
+		systemPrompt?: string,
+	): Promise<AgentMessage[]> {
+		if (pendingInput?.length) {
+			await managedMessagesAsync({
+				sessionId,
+				model,
+				task,
+				context: this.context,
+				contextOptions: this.contextOptions.bind(this),
+				signal,
+				pendingInput,
+				tools,
+				...(systemPrompt === undefined ? {} : { systemPrompt }),
+				...(compactor ? { compactor } : {}),
+			});
+			return this.messages(sessionId, model, task, emit, turnId);
+		}
+		const options = this.contextOptions(model);
+		try {
+			const messages = this.messages(sessionId, model, task, emit, turnId);
+			const inspection = this.context.inspect(sessionId, options);
+			if (inspection.estimatedTokens < Math.floor(options.budget * 0.8))
+				return messages;
+		} catch (error) {
+			if (!(error instanceof ContextBudgetError)) throw error;
+		}
+		await managedMessagesAsync({
+			sessionId,
+			model,
+			task,
+			context: this.context,
+			contextOptions: this.contextOptions.bind(this),
+			signal,
+			...(compactor ? { compactor } : {}),
+			tools,
+			...(systemPrompt === undefined ? {} : { systemPrompt }),
+		});
+		return this.messages(sessionId, model, task, emit, turnId);
 	}
 	private messages(
 		sessionId: string,
 		model: Model<Api>,
 		task?: TaskRuntime,
 		emit?: ((event: ServerEvent) => void) | undefined,
+		turnId?: number,
 	): AgentMessage[] {
 		return managedMessages({
 			sessionId,
@@ -355,6 +561,7 @@ export class HarnezAgentRuntime {
 			context: this.context,
 			contextOptions: this.contextOptions.bind(this),
 			...(emit ? { emit } : {}),
+			...(turnId === undefined ? {} : { turnId }),
 		});
 	}
 	private contextOptions(model: Model<Api>): {
@@ -399,6 +606,19 @@ export class HarnezAgentRuntime {
 	}
 }
 
+function modelConfigFromReference(reference: string): ModelConfig {
+	const separator = reference.indexOf("/");
+	if (separator <= 0 || separator === reference.length - 1)
+		throw new HarnezProviderError(
+			`invalid compactionModel "${reference}"; expected <provider>/<model>`,
+			"configuration",
+		);
+	return {
+		provider: reference.slice(0, separator),
+		model: reference.slice(separator + 1),
+	};
+}
+
 function normalizeProviderError(error: unknown): HarnezProviderError {
 	return error instanceof HarnezProviderError
 		? error
@@ -413,9 +633,18 @@ function streamWithRetry(
 	signal: AbortSignal | undefined,
 	context: { sessionId: string; provider: string; model: string },
 	onComplete: (durationMs: number) => void,
+	onAttempt?: (
+		phase: "started" | "completed" | "failed",
+		attempt: number,
+		durationMs: number | undefined,
+		error?: string,
+		response?: unknown,
+	) => void,
+	onContextLength?: () => void,
 ): AssistantMessageEventStream {
 	const out = createAssistantMessageEventStream();
 	void (async () => {
+		let retriedContextLength = false;
 		for (let attempt = 0; ; attempt++) {
 			log.debug(
 				{ ...context, attempt: attempt + 1 },
@@ -425,12 +654,21 @@ function streamWithRetry(
 				| Extract<AssistantMessageEvent, { type: "done" | "error" }>
 				| undefined;
 			const startedAt = performance.now();
+			onAttempt?.("started", attempt + 1, undefined);
 			try {
 				for await (const event of produce())
 					if (event.type === "done" || event.type === "error") terminal = event;
 					else out.push(event);
 			} finally {
-				onComplete(performance.now() - startedAt);
+				const durationMs = performance.now() - startedAt;
+				onComplete(durationMs);
+				onAttempt?.(
+					terminal?.type === "error" ? "failed" : "completed",
+					attempt + 1,
+					Math.round(durationMs),
+					terminal?.type === "error" ? terminal.error.errorMessage : undefined,
+					terminal?.type === "done" ? terminal.message : terminal?.error,
+				);
 			}
 			if (!terminal) {
 				log.warn(
@@ -440,9 +678,27 @@ function streamWithRetry(
 				return;
 			}
 			const retryError = terminal.type === "error" ? terminal.error : undefined;
+			const contextLength =
+				terminal.type === "error" &&
+				terminal.reason === "error" &&
+				isContextLengthError(terminal.error.errorMessage);
+			if (contextLength && !retriedContextLength) {
+				retriedContextLength = true;
+				try {
+					onContextLength?.();
+					continue;
+				} catch (error) {
+					log.warn(
+						{ ...context, err: error },
+						"context-length recovery could not prepare a retry",
+					);
+					return out.push(terminal);
+				}
+			}
 			const retryable =
 				terminal.type === "error" &&
 				terminal.reason === "error" &&
+				!contextLength &&
 				attempt < MAX_STREAM_RETRIES &&
 				isRetryableAssistantError(terminal.error);
 			if (!retryable) {
@@ -483,6 +739,11 @@ function streamWithRetry(
 	})();
 	return out;
 }
+function isContextLengthError(message: string | undefined): boolean {
+	return /context(?: window| length)|maximum context|too many tokens/i.test(
+		message ?? "",
+	);
+}
 function asError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
 }
@@ -491,12 +752,14 @@ function newAgentEntry(
 	key: string,
 	tools: CoreTools,
 	task: TaskRuntime,
+	sink?: RuntimeEventSink,
 ): AgentEntry {
 	return {
 		key,
 		agent: undefined as unknown as Agent,
 		tools,
 		contextError: undefined,
+		compactor: undefined,
 		promptGroupId: undefined,
 		preRecorded: new Set(),
 		toolGroups: new Map(),
@@ -511,5 +774,9 @@ function newAgentEntry(
 			toolWindowStartedAt: undefined,
 		},
 		emit: undefined,
+		sink,
+		turnId: 0,
+		callIds: new Map(),
+		callStarted: new Map(),
 	};
 }

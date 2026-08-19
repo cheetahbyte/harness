@@ -26,6 +26,19 @@ function storePath(): string {
 }
 
 describe("ContextManager", () => {
+	test("prepareTurn uses an empty fallback for oversized active history", async () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		const episode = manager.startEpisode(sessionId, { name: "explore", kind: "exploration" });
+		for (let index = 0; index < 20; index++)
+			manager.record({ sessionId, kind: "tool-result", payload: { role: "toolResult", content: "large" }, tokenCost: 4_000, lifecycle: "active", projection: "full", reason: "work", episodeId: episode.id, groupId: `g-${index}` });
+		const prepared = await manager.prepareTurn({ sessionId, taskId: "task", laneId: "main", fixedMessages: [], capabilityMessages: [], tools: [], budget: 80_000, signal: new AbortController().signal });
+		expect(prepared.usedFallback).toBe(true);
+		expect(prepared.estimatedTokens).toBeLessThanOrEqual(80_000);
+		expect(store.contextItems(sessionId).filter((item) => item.kind === "tool-result")).toHaveLength(20);
+	});
+
 	test("keeps context payloads immutable while lifecycle changes persist", () => {
 		const path = storePath();
 		const store = new SessionStore(path);
@@ -1215,7 +1228,7 @@ describe("ContextManager", () => {
 		 * The pressure note is the working set's only other resident: this
 		 * assembly crossed the budget, which is what announces it.
 		 */
-		expect(inspection.estimatedTokens).toBe(15 + PRESSURE_NOTE_TOKENS);
+		expect(inspection.estimatedTokens).toBe(98);
 		expect(inspection.historyTokens).toBe(410 + PRESSURE_NOTE_TOKENS);
 		expect(inspection.parkedObservations).toBe(1);
 		store.db.close();
@@ -1444,6 +1457,51 @@ describe("ContextManager", () => {
 				.contextItems(sessionId)
 				.filter((item) => item.reason === PRESSURE_NOTE_REASON),
 		).toMatchObject([{ lifecycle: "pinned", kind: "pinned-note" }]);
+		store.db.close();
+	});
+
+	test("reports pressure streak and continuation through the lifecycle sink", () => {
+		const store = new SessionStore(storePath());
+		const events: Array<Record<string, unknown>> = [];
+		const sessionId = store.create();
+		const manager = new ContextManager(store, (event) => events.push(event));
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "keep" },
+			tokenCost: 600,
+			lifecycle: "pinned",
+			reason: "user input",
+		});
+		manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "large" },
+			compactPayload: { role: "toolResult", content: "ref" },
+			tokenCost: 500,
+			compactTokenCost: 50,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "read" },
+		});
+		const options = { taskId: "task-1", budget: 1_000, target: 800, overheadTokens: 0 } as const;
+		manager.assemble(sessionId, options);
+		manager.record({
+			sessionId,
+			kind: "tool-result",
+			payload: { role: "toolResult", content: "another large result" },
+			compactPayload: { role: "toolResult", content: "another ref" },
+			tokenCost: 500,
+			compactTokenCost: 50,
+			lifecycle: "retained",
+			reason: "consumed",
+			source: { toolName: "read" },
+		});
+		manager.markAgentProgress("task-1");
+		manager.assemble(sessionId, options);
+		const assemblies = events.filter((event) => event["type"] === "context.assembly.completed");
+		expect(assemblies.map((event) => event["pressureStreak"])).toEqual([1, 2]);
+		expect(assemblies[1]?.["agentContinued"]).toBe(true);
 		store.db.close();
 	});
 

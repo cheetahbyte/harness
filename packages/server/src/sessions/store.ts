@@ -1,9 +1,13 @@
 import { Database } from "bun:sqlite";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
+import { structuredHash } from "../capabilities/hash";
 import type {
+	ContextLane,
+	ContextLaneState,
 	ContextEpisodeEvent,
 	ContextItem,
 	ContextLifecycle,
@@ -11,7 +15,7 @@ import type {
 	NewContextItem,
 	NewEpisodeEvent,
 } from "../context/types";
-import type { ExecutionLedgerEntry } from "../task-ledger";
+import type { ExecutionLedgerEntry, TaskRecoveryReason } from "../task-ledger";
 import type { TaskTerminalStatus } from "../task-runtime";
 import { migrate } from "./migrations";
 
@@ -45,13 +49,39 @@ export class SessionStore {
 		migrate(this.db);
 	}
 
-	create(workspace = process.cwd()): string {
-		const id = crypto.randomUUID();
+	/** Stable local key for telemetry aliases; the key itself is never exported. */
+	telemetryInstallKey(): Uint8Array {
+		this.db.run(
+			"CREATE TABLE IF NOT EXISTS server_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+		);
+		const existing = this.db
+			.query("SELECT value FROM server_metadata WHERE key = 'telemetry_key'")
+			.get() as { value: string } | null;
+		if (existing) return Buffer.from(existing.value, "base64");
+		const key = randomBytes(32);
 		this.db
 			.query(
-				"INSERT INTO sessions (id, created_at, workspace) VALUES (?, ?, ?)",
+				"INSERT INTO server_metadata (key, value) VALUES ('telemetry_key', ?)",
 			)
-			.run(id, new Date().toISOString(), workspace);
+			.run(key.toString("base64"));
+		return key;
+	}
+
+	create(workspace = process.cwd()): string {
+		const id = crypto.randomUUID();
+		const createdAt = new Date().toISOString();
+		this.db.transaction(() => {
+			this.db
+				.query(
+					"INSERT INTO sessions (id, created_at, workspace) VALUES (?, ?, ?)",
+				)
+				.run(id, createdAt, workspace);
+			this.db
+				.query(
+					"INSERT INTO context_lanes (session_id, name, state, revision, created_at) VALUES (?, 'main', 'idle', 0, ?)",
+				)
+				.run(id, createdAt);
+		})();
 		return id;
 	}
 
@@ -159,6 +189,270 @@ export class SessionStore {
 			.run(taskId, sessionId, status, startedAt, new Date().toISOString());
 	}
 
+	task(
+		sessionId: string,
+		taskId: string,
+	): { state: string; status?: string } | undefined {
+		const row = this.db
+			.query("SELECT state, status FROM tasks WHERE session_id = ? AND id = ?")
+			.get(sessionId, taskId) as {
+			state: string;
+			status: string | null;
+		} | null;
+		return row
+			? {
+					state: row.state,
+					...(row.status === null ? {} : { status: row.status }),
+				}
+			: undefined;
+	}
+
+	startContextTask(sessionId: string, taskId: string, startedAt: string): void {
+		this.db.transaction(() => {
+			const existing = this.task(sessionId, taskId);
+			if (existing?.state === "terminal")
+				throw new Error("Cannot restart a terminal task");
+			if (!this.claimMainLane(sessionId, taskId))
+				throw new Error("Main context lane is owned by another task");
+			this.db
+				.query(
+					"INSERT OR IGNORE INTO tasks (id, session_id, state, started_at) VALUES (?, ?, 'running', ?)",
+				)
+				.run(taskId, sessionId, startedAt);
+		})();
+	}
+
+	startChildContextTask(input: {
+		sessionId: string;
+		name: string;
+		taskId: string;
+		fromItemId: string;
+		startedAt: string;
+	}): ContextLane {
+		return this.db.transaction(() => {
+			const lane = this.createLane({
+				sessionId: input.sessionId,
+				name: input.name,
+				ownerTaskId: input.taskId,
+				fromItemId: input.fromItemId,
+			});
+			this.db
+				.query(
+					"INSERT INTO tasks (id, session_id, state, started_at) VALUES (?, ?, 'running', ?)",
+				)
+				.run(input.taskId, input.sessionId, input.startedAt);
+			return lane;
+		})();
+	}
+
+	finishContextTask(input: {
+		sessionId: string;
+		taskId: string;
+		status: TaskTerminalStatus;
+		startedAt: string;
+		laneName?: string;
+		ledger?: readonly ExecutionLedgerEntry[];
+		terminalEpisode?: NewEpisodeEvent;
+		handoff?: NewContextItem;
+	}): void {
+		this.db.transaction(() => {
+			const existing = this.task(input.sessionId, input.taskId);
+			if (existing?.state === "terminal") return;
+			const laneName = input.laneName ?? "main";
+			const lane = this.lane(input.sessionId, laneName);
+			if (!lane) throw new Error(`Unknown context lane ${laneName}`);
+			if (lane.ownerTaskId && lane.ownerTaskId !== input.taskId)
+				throw new Error("Context lane is owned by another task");
+			for (const entry of input.ledger ?? [])
+				this.db
+					.query(
+						"INSERT INTO task_ledger (session_id, task_id, payload) VALUES (?, ?, ?)",
+					)
+					.run(input.sessionId, input.taskId, JSON.stringify(entry));
+			if (input.terminalEpisode) this.appendEpisodeEvent(input.terminalEpisode);
+			if (lane.ownerTaskId === input.taskId) {
+				if (laneName === "main")
+					this.db
+						.query(
+							"UPDATE context_lanes SET owner_task_id = NULL, state = 'idle' WHERE session_id = ? AND name = ?",
+						)
+						.run(input.sessionId, laneName);
+				else
+					this.db
+						.query(
+							"UPDATE context_lanes SET owner_task_id = NULL, state = ?, closed_at = ? WHERE session_id = ? AND name = ?",
+						)
+						.run(
+							input.status === "completed"
+								? "completed"
+								: input.status === "cancelled"
+									? "cancelled"
+									: "failed",
+							new Date().toISOString(),
+							input.sessionId,
+							laneName,
+						);
+			}
+			this.db
+				.query(
+					"INSERT INTO tasks (id, session_id, state, status, started_at, finished_at) VALUES (?, ?, 'terminal', ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = 'terminal', status = excluded.status, finished_at = excluded.finished_at WHERE tasks.state <> 'terminal'",
+				)
+				.run(
+					input.taskId,
+					input.sessionId,
+					input.status,
+					input.startedAt,
+					new Date().toISOString(),
+				);
+			if (input.handoff) {
+				const main = this.lane(input.sessionId, "main");
+				if (!main) throw new Error("main lane missing");
+				const result = this.appendContextAtHead(
+					{ ...input.handoff, originLane: "main" },
+					"main",
+					main.revision,
+				);
+				if ("status" in result)
+					throw new Error("main lane changed while handing off");
+			}
+		})();
+	}
+
+	recoverLanes(sessionId?: string): {
+		repaired: number;
+		abandoned: number;
+		failed: number;
+		episodes: number;
+	} {
+		return this.db.transaction(() => {
+			let repaired = 0,
+				abandoned = 0,
+				failed = 0,
+				episodes = 0;
+			const where = sessionId
+				? " WHERE (name <> 'main' OR state = 'active') AND session_id = ?"
+				: " WHERE name <> 'main' OR state = 'active'";
+			const rows = this.db
+				.query(
+					`SELECT session_id, name, owner_task_id, state FROM context_lanes${where}`,
+				)
+				.all(...(sessionId ? [sessionId] : [])) as {
+				session_id: string;
+				name: string;
+				owner_task_id: string | null;
+				state: ContextLaneState;
+			}[];
+			for (const row of rows) {
+				const task = row.owner_task_id
+					? this.task(row.session_id, row.owner_task_id)
+					: undefined;
+				if (
+					row.name === "main" &&
+					(!row.owner_task_id || !task || task.state === "terminal")
+				) {
+					this.db
+						.query(
+							"UPDATE context_lanes SET owner_task_id = NULL, state = 'idle' WHERE session_id = ? AND name = ?",
+						)
+						.run(row.session_id, row.name);
+					repaired++;
+				} else if (
+					row.name !== "main" &&
+					row.state === "active" &&
+					(!task || task.state === "terminal")
+				) {
+					this.db
+						.query(
+							"UPDATE context_lanes SET owner_task_id = NULL, state = 'abandoned', closed_at = ? WHERE session_id = ? AND name = ?",
+						)
+						.run(new Date().toISOString(), row.session_id, row.name);
+					episodes += this.abandonLaneEpisode(row.session_id, row.name) ? 1 : 0;
+					abandoned++;
+				} else if (
+					row.name !== "main" &&
+					row.state !== "active" &&
+					task?.state === "running"
+				) {
+					this.db
+						.query(
+							"UPDATE tasks SET state = 'terminal', status = 'failed', finished_at = ? WHERE id = ? AND session_id = ? AND state = 'running'",
+						)
+						.run(new Date().toISOString(), row.owner_task_id, row.session_id);
+					this.recordTaskRecovery(
+						row.session_id,
+						row.owner_task_id,
+						"owned_lane_terminal",
+					);
+					failed++;
+				}
+			}
+			return { repaired, abandoned, failed, episodes };
+		})();
+	}
+
+	private recordTaskRecovery(
+		sessionId: string,
+		taskId: string | null,
+		reason: TaskRecoveryReason,
+	): void {
+		if (!taskId) return;
+		if (
+			this.taskLedger(sessionId, taskId).some(
+				(entry) => entry.type === "task_recovery" && entry.reason === reason,
+			)
+		)
+			return;
+		this.db
+			.query(
+				"INSERT INTO task_ledger (session_id, task_id, payload) VALUES (?, ?, ?)",
+			)
+			.run(
+				sessionId,
+				taskId,
+				JSON.stringify({
+					type: "task_recovery",
+					reason,
+					at: new Date().toISOString(),
+				}),
+			);
+	}
+
+	private abandonLaneEpisode(sessionId: string, laneName: string): boolean {
+		const episodeId = this.contextPath(sessionId, laneName)
+			.toReversed()
+			.find((item) => item.episodeId)?.episodeId;
+		const starts = this.episodeEvents(sessionId).filter(
+			(event) => event.action === "start",
+		);
+		const start = episodeId
+			? starts.findLast((event) => event.episodeId === episodeId)
+			: starts.findLast((event) =>
+					this.episodeEvents(sessionId).every(
+						(other) =>
+							other.episodeId !== event.episodeId || other.action === "start",
+					),
+				);
+		if (!start) return false;
+		if (
+			this.episodeEvents(sessionId).some(
+				(event) =>
+					event.episodeId === start.episodeId && event.action !== "start",
+			)
+		)
+			return false;
+		this.appendEpisodeEvent({
+			id: crypto.randomUUID(),
+			sessionId,
+			episodeId: start.episodeId,
+			action: "abandoned",
+			name: start.name,
+			kind: start.kind,
+			dependencies: start.dependencies,
+			createdAt: new Date().toISOString(),
+		});
+		return true;
+	}
+
 	events(sessionId: string): ServerEvent[] {
 		return this.eventsFrom(sessionId).map((row) => row.event);
 	}
@@ -181,41 +475,215 @@ export class SessionStore {
 	}
 
 	appendContextItem(input: NewContextItem): ContextItem {
+		const lane = this.lane(input.sessionId, input.originLane ?? "main");
+		if (!lane)
+			throw new Error(`Unknown context lane ${input.originLane ?? "main"}`);
+		const result = this.appendContextAtHead(input, lane.name, lane.revision);
+		if ("status" in result)
+			throw new Error("Context lane changed while appending");
+		const item = result;
+		if (!item) throw new Error(`Context item ${input.id} was not persisted`);
+		return item;
+	}
+
+	lane(sessionId: string, name = "main"): ContextLane | undefined {
+		const row = this.db
+			.query(`${laneQuery} WHERE session_id = ? AND name = ?`)
+			.get(sessionId, name) as ContextLaneRow | null;
+		return row ? laneFromRow(row) : undefined;
+	}
+
+	lanes(sessionId: string): ContextLane[] {
+		return (
+			this.db
+				.query(`${laneQuery} WHERE session_id = ? ORDER BY name`)
+				.all(sessionId) as ContextLaneRow[]
+		).map(laneFromRow);
+	}
+
+	claimMainLane(sessionId: string, taskId: string): boolean {
+		return this.db.transaction(() => {
+			const lane = this.lane(sessionId, "main");
+			if (lane?.state === "active" && lane.ownerTaskId === taskId) return true;
+			const result = this.db
+				.query(
+					"UPDATE context_lanes SET owner_task_id = ?, state = 'active' WHERE session_id = ? AND name = 'main' AND state = 'idle' AND owner_task_id IS NULL",
+				)
+				.run(taskId, sessionId);
+			return result.changes > 0;
+		})();
+	}
+
+	createLane(input: {
+		sessionId: string;
+		name: string;
+		ownerTaskId: string;
+		fromItemId: string;
+	}): ContextLane {
 		this.db.transaction(() => {
-			this.db
-				.query(
-					"INSERT INTO context_items (id, session_id, kind, payload, compact_payload, token_cost, compact_token_cost, source, group_id, episode_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				)
-				.run(
-					input.id,
-					input.sessionId,
-					input.kind,
-					JSON.stringify(input.payload),
-					input.compactPayload === undefined
-						? null
-						: JSON.stringify(input.compactPayload),
-					input.tokenCost,
-					input.compactTokenCost ?? null,
-					input.source === undefined ? null : JSON.stringify(input.source),
-					input.groupId ?? null,
-					input.episodeId ?? null,
-					input.createdAt,
+			const parent = this.contextItem(input.fromItemId);
+			if (!parent || parent.sessionId !== input.sessionId)
+				throw new Error(
+					"Lane fork item belongs to another session or is unknown",
 				);
+			if (
+				!this.contextPath(input.sessionId, "main").some(
+					(item) => item.id === input.fromItemId,
+				)
+			)
+				throw new Error("Child lanes must fork from main");
 			this.db
 				.query(
-					"INSERT INTO context_lifecycle (item_id, lifecycle, projection, reason, updated_at) VALUES (?, ?, ?, ?, ?)",
+					"INSERT INTO context_lanes (session_id, name, head_item_id, forked_from_item_id, owner_task_id, state, revision, created_at) VALUES (?, ?, ?, ?, ?, 'active', 0, ?)",
 				)
 				.run(
-					input.id,
-					input.lifecycle,
-					input.projection,
-					input.reason,
-					input.createdAt,
+					input.sessionId,
+					input.name,
+					input.fromItemId,
+					input.fromItemId,
+					input.ownerTaskId,
+					new Date().toISOString(),
 				);
 		})();
+		const lane = this.lane(input.sessionId, input.name);
+		if (!lane) throw new Error(`Lane ${input.name} was not created`);
+		return lane;
+	}
+
+	appendContextAtHead(
+		input: NewContextItem,
+		laneName: string,
+		expectedRevision: number,
+	): ContextItem | { status: "stale" } {
+		const role = input.nodeRole ?? "message";
+		const payloadJson = JSON.stringify(input.payload);
+		if (payloadJson === undefined)
+			throw new Error("Context payload must be JSON serializable");
+		const compactPayloadJson =
+			input.compactPayload === undefined
+				? undefined
+				: JSON.stringify(input.compactPayload);
+		const contentHash =
+			input.contentHash ??
+			structuredHash({
+				kind: input.kind,
+				nodeRole: role,
+				payload: JSON.parse(payloadJson) as unknown,
+			});
+		const createdAt = input.createdAt ?? new Date().toISOString();
+		const parentId = input.parentId;
+		try {
+			const append = this.db.transaction(() => {
+				const lane = this.lane(input.sessionId, laneName);
+				if (!lane) throw new StaleLaneError();
+				if (input.originLane !== undefined && input.originLane !== laneName)
+					throw new Error("Context origin lane is immutable");
+				const existing = this.contextItem(input.id);
+				if (existing) {
+					if (existing.contentHash !== contentHash)
+						throw new Error(
+							`Context item ${input.id} conflicts with existing content`,
+						);
+					if (existing.originLane !== laneName)
+						throw new Error("Context item belongs to another lane");
+					if (
+						input.parentId !== undefined &&
+						existing.parentId !== input.parentId
+					)
+						throw new Error("Context item conflicts with existing parent");
+					throw new IdempotentContextItem(existing);
+				}
+				if (lane.revision !== expectedRevision) throw new StaleLaneError();
+				if (parentId !== undefined)
+					this.assertParent(input.sessionId, parentId);
+				if (parentId !== undefined && parentId !== lane.headItemId)
+					throw new Error("Context parent does not match lane head");
+				this.db
+					.query(
+						"INSERT INTO context_items (id, session_id, parent_id, origin_lane, node_role, kind, payload, compact_payload, token_cost, compact_token_cost, source, group_id, episode_id, content_hash, source_digest, policy_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					)
+					.run(
+						input.id,
+						input.sessionId,
+						lane.headItemId ?? null,
+						input.originLane ?? laneName,
+						role,
+						input.kind,
+						payloadJson,
+						compactPayloadJson ?? null,
+						input.tokenCost,
+						input.compactTokenCost ?? null,
+						input.source === undefined ? null : JSON.stringify(input.source),
+						input.groupId ?? null,
+						input.episodeId ?? null,
+						contentHash,
+						input.sourceDigest ?? null,
+						input.policyVersion ?? null,
+						createdAt,
+					);
+				this.db
+					.query(
+						"INSERT INTO context_lifecycle (item_id, lifecycle, projection, reason, updated_at) VALUES (?, ?, ?, ?, ?)",
+					)
+					.run(
+						input.id,
+						input.lifecycle,
+						input.projection,
+						input.reason,
+						createdAt,
+					);
+				const updated = this.db
+					.query(
+						"UPDATE context_lanes SET head_item_id = ?, revision = revision + 1 WHERE session_id = ? AND name = ? AND revision = ?",
+					)
+					.run(input.id, input.sessionId, laneName, expectedRevision);
+				if (updated.changes !== 1) throw new StaleLaneError();
+			});
+			append.immediate();
+		} catch (error) {
+			if (error instanceof StaleLaneError) return { status: "stale" };
+			if (error instanceof IdempotentContextItem) return error.item;
+			throw error;
+		}
 		const item = this.contextItem(input.id);
 		if (!item) throw new Error(`Context item ${input.id} was not persisted`);
 		return item;
+	}
+
+	contextPath(sessionId: string, laneName = "main"): ContextItem[] {
+		const lane = this.lane(sessionId, laneName);
+		if (!lane) throw new Error(`Unknown context lane ${laneName}`);
+		const path: ContextItem[] = [];
+		const seen = new Set<string>();
+		let itemId = lane.headItemId;
+		while (itemId) {
+			if (seen.has(itemId)) throw new Error("Context tree contains a cycle");
+			seen.add(itemId);
+			const item = this.contextItem(itemId);
+			if (!item || item.sessionId !== sessionId)
+				throw new Error(`Context parent ${itemId} is invalid`);
+			path.push(item);
+			itemId = item.parentId;
+		}
+		return path.toReversed();
+	}
+
+	private assertParent(sessionId: string, parentId: string): void {
+		const parent = this.contextItem(parentId);
+		if (!parent || parent.sessionId !== sessionId)
+			throw new Error(
+				"Context parent belongs to another session or is unknown",
+			);
+		const seen = new Set<string>();
+		let current: ContextItem | undefined = parent;
+		while (current) {
+			if (seen.has(current.id))
+				throw new Error("Context tree contains a cycle");
+			seen.add(current.id);
+			current = current.parentId
+				? this.contextItem(current.parentId)
+				: undefined;
+		}
 	}
 
 	contextItems(sessionId: string): ContextItem[] {
@@ -293,12 +761,17 @@ export class SessionStore {
 	}
 }
 
-const contextItemQuery = `SELECT context_items.sequence, context_items.id, context_items.session_id, context_items.kind, context_items.payload, context_items.compact_payload, context_items.token_cost, context_items.compact_token_cost, context_items.source, context_items.group_id, context_items.episode_id, context_items.created_at, context_lifecycle.lifecycle, context_lifecycle.projection, context_lifecycle.reason, context_lifecycle.updated_at FROM context_items JOIN context_lifecycle ON context_lifecycle.item_id = context_items.id`;
+const contextItemQuery = `SELECT context_items.sequence, context_items.id, context_items.session_id, context_items.parent_id, context_items.origin_lane, context_items.node_role, context_items.kind, context_items.payload, context_items.compact_payload, context_items.token_cost, context_items.compact_token_cost, context_items.source, context_items.group_id, context_items.episode_id, context_items.content_hash, context_items.source_digest, context_items.policy_version, context_items.created_at, context_lifecycle.lifecycle, context_lifecycle.projection, context_lifecycle.reason, context_lifecycle.updated_at FROM context_items JOIN context_lifecycle ON context_lifecycle.item_id = context_items.id`;
+
+const laneQuery = `SELECT session_id, name, head_item_id, forked_from_item_id, owner_task_id, state, revision, created_at, closed_at FROM context_lanes`;
 
 type ContextItemRow = {
 	sequence: number;
 	id: string;
 	session_id: string;
+	parent_id: string | null;
+	origin_lane: string;
+	node_role: ContextItem["nodeRole"];
 	kind: ContextItem["kind"];
 	payload: string;
 	compact_payload: string | null;
@@ -307,6 +780,9 @@ type ContextItemRow = {
 	source: string | null;
 	group_id: string | null;
 	episode_id: string | null;
+	content_hash: string | null;
+	source_digest: string | null;
+	policy_version: number | null;
 	created_at: string;
 	lifecycle: ContextLifecycle;
 	projection: ContextProjection;
@@ -332,6 +808,20 @@ function contextItemFromRow(row: ContextItemRow): ContextItem {
 		id: row.id,
 		sessionId: row.session_id,
 		sequence: row.sequence,
+		...(row.parent_id === null ? {} : { parentId: row.parent_id }),
+		originLane: row.origin_lane,
+		nodeRole: row.node_role,
+		contentHash:
+			row.content_hash ??
+			structuredHash({
+				kind: row.kind,
+				nodeRole: row.node_role,
+				payload: JSON.parse(row.payload),
+			}),
+		...(row.source_digest === null ? {} : { sourceDigest: row.source_digest }),
+		...(row.policy_version === null
+			? {}
+			: { policyVersion: row.policy_version }),
 		kind: row.kind,
 		payload: JSON.parse(row.payload),
 		...(row.compact_payload === null
@@ -350,4 +840,40 @@ function contextItemFromRow(row: ContextItemRow): ContextItem {
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
 	};
+}
+
+type ContextLaneRow = {
+	session_id: string;
+	name: string;
+	head_item_id: string | null;
+	forked_from_item_id: string | null;
+	owner_task_id: string | null;
+	state: ContextLaneState;
+	revision: number;
+	created_at: string;
+	closed_at: string | null;
+};
+
+function laneFromRow(row: ContextLaneRow): ContextLane {
+	return {
+		sessionId: row.session_id,
+		name: row.name,
+		...(row.head_item_id === null ? {} : { headItemId: row.head_item_id }),
+		...(row.forked_from_item_id === null
+			? {}
+			: { forkedFromItemId: row.forked_from_item_id }),
+		...(row.owner_task_id === null ? {} : { ownerTaskId: row.owner_task_id }),
+		state: row.state,
+		revision: row.revision,
+		createdAt: row.created_at,
+		...(row.closed_at === null ? {} : { closedAt: row.closed_at }),
+	};
+}
+
+class StaleLaneError extends Error {}
+
+class IdempotentContextItem extends Error {
+	constructor(readonly item: ContextItem) {
+		super("context item already exists");
+	}
 }

@@ -1,7 +1,9 @@
 import { serveHarnez } from "./http-server";
 import { log } from "./logger";
+import { startOpenTelemetry } from "./telemetry/opentelemetry";
 
 export function runServer(): ReturnType<typeof Bun.serve> {
+	const telemetry = startOpenTelemetry();
 	const contextBudget =
 		process.env["HARNEZ_CONTEXT_BUDGET"] ??
 		process.env["HARNESS_CONTEXT_BUDGET"];
@@ -15,6 +17,8 @@ export function runServer(): ReturnType<typeof Bun.serve> {
 		...(contextBudget === undefined
 			? {}
 			: { contextBudget: Number(contextBudget) }),
+		llmCompaction: process.env["HARNEZ_LLM_COMPACTION"] !== "0",
+		telemetry,
 	});
 	log.info({ url: server.url }, "server listening");
 	return server;

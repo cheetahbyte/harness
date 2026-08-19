@@ -5,15 +5,19 @@ import type {
 } from "../../shared/src/protocol";
 import { VERSION } from "../../shared/src/version";
 import type { SubagentResult } from "./context/types";
+import { validateImages } from "./images";
 import { log } from "./logger";
 import { HarnezServer } from "./server";
 import { SessionStore } from "./sessions/store";
+import type { RuntimeEventSink } from "./telemetry/events";
 
 type ServeHarnezOptions = {
 	port?: number;
 	workspace?: string;
 	databasePath?: string;
 	contextBudget?: number;
+	llmCompaction?: boolean;
+	telemetry?: { sink: RuntimeEventSink; shutdown: () => Promise<void> };
 };
 
 export function serveHarnez(
@@ -24,9 +28,19 @@ export function serveHarnez(
 		options.workspace,
 		undefined,
 		undefined,
-		options.contextBudget === undefined
-			? {}
-			: { contextBudget: options.contextBudget },
+		options.contextBudget === undefined && options.llmCompaction === undefined
+			? options.telemetry
+				? { telemetry: options.telemetry.sink }
+				: {}
+			: {
+					...(options.contextBudget === undefined
+						? {}
+						: { contextBudget: options.contextBudget }),
+					...(options.llmCompaction === undefined
+						? {}
+						: { llmCompaction: options.llmCompaction }),
+					...(options.telemetry ? { telemetry: options.telemetry.sink } : {}),
+				},
 	);
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
@@ -43,7 +57,10 @@ export function serveHarnez(
 			const hardExit = setTimeout(() => process.exit(0), 3_000);
 			hardExit.unref?.();
 			void harnez.close().then(
-				() => process.exit(0),
+				async () => {
+					await options.telemetry?.shutdown();
+					process.exit(0);
+				},
 				(error) => {
 					log.error({ err: error }, "graceful shutdown failed");
 					process.exit(1);
@@ -137,12 +154,21 @@ async function acceptCommand(
 	requestId: string,
 ): Promise<Response> {
 	harnez.workspace(id); // Validate before detaching the command.
-	void harnez
-		.command(id, (await request.json()) as ClientCommand)
-		.catch((error) => {
-			log.error({ err: error, requestId, sessionId: id }, "command failed");
-			harnez.reportError(id, error);
-		});
+	let command: ClientCommand;
+	try {
+		const body: unknown = await request.json();
+		if (!body || typeof body !== "object" || Array.isArray(body))
+			throw new Error("command must be an object");
+		const candidate = body as ClientCommand;
+		if ("images" in candidate) validateImages(candidate.images);
+		command = candidate;
+	} catch (error) {
+		return errorResponse(error, 400);
+	}
+	void harnez.command(id, command).catch((error) => {
+		log.error({ err: error, requestId, sessionId: id }, "command failed");
+		harnez.reportError(id, error);
+	});
 	return new Response(null, { status: 202 });
 }
 

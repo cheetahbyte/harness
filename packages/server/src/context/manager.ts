@@ -1,5 +1,18 @@
+import { structuredHash } from "../capabilities/hash";
 import type { SessionStore } from "../sessions/store";
+import type { RuntimeEventSink } from "../telemetry/events";
+import { telemetryPrefixAlias } from "../telemetry/runtime";
 import { tokenCost as computeTokenCost } from "../token-cost";
+import {
+	MEMORY_REASON,
+	MEMORY_MAX_TOKENS,
+	type CondensationInput,
+	memoryTokenCost,
+	mergeCondensationMemory,
+	parseCondensationMemory,
+	selectCondensationItems,
+	validateCondensationInput,
+} from "./condensation";
 import {
 	episodeStates,
 	replayEpisodes,
@@ -16,7 +29,9 @@ import {
 	evictionCandidates,
 	evictionGroup,
 	projectedPayload,
+	projectedPathPayloads,
 	projectionCost,
+	validCheckpoint,
 	userVisibleAssistant,
 } from "./projection";
 import {
@@ -26,6 +41,10 @@ import {
 } from "./recall";
 import {
 	ContextBudgetError,
+	type FinishContextTaskRequest,
+	type ContextCheckpointPayload,
+	type CheckpointRepresentation,
+	type PreparedTurn,
 	type ContextEpisode,
 	type ContextInspection,
 	type ContextItem,
@@ -41,6 +60,27 @@ import {
 	type SubagentResult,
 } from "./types";
 
+type ContextCompactionRequest = {
+	messages: unknown[];
+	previousMemory?: CondensationInput;
+	anchors: string[];
+	targetMemoryTokens: number;
+	signal: AbortSignal;
+};
+export type ContextCompactor = (request: ContextCompactionRequest) => Promise<
+	| {
+			memory: CondensationInput;
+			provider?: string;
+			model?: string;
+			inputTokens?: number;
+			outputTokens?: number;
+			cacheReadTokens?: number;
+			cacheWriteTokens?: number;
+			retries?: number;
+	  }
+	| undefined
+>;
+
 export { ContextBudgetError } from "./types";
 
 const kinds = new Set<ContextKind>([
@@ -51,7 +91,9 @@ const kinds = new Set<ContextKind>([
 	"observation",
 	"pinned-note",
 	"subagent-handoff",
+	"long-term-memory",
 ]);
+const STALE_COMPACTION_PLAN = "stale context compaction plan";
 const lifecycles = new Set<ContextLifecycle>([
 	"pinned",
 	"active",
@@ -63,6 +105,48 @@ export const PRESSURE_NOTE_REASON = "working-context pressure";
 export const PRESSURE_NOTE =
 	"Context is under compaction pressure: older tool output is being archived to observation:// references, which recall_observation reads back. Use episode to bound work that continues past this point, and pin_context for anything later steps must not lose.";
 export const PRESSURE_NOTE_TOKENS = computeTokenCost(PRESSURE_NOTE);
+
+export type CondensationOptions = {
+	overheadTokens?: number;
+	budget?: number;
+	target?: number;
+	currentTaskStartSequence?: number;
+	predecessorTerminalIds?: readonly string[];
+	taskId?: string;
+	turnId?: number;
+};
+
+export type PrepareTurnRequest = {
+	sessionId: string;
+	taskId: string;
+	laneId: string;
+	pendingInput?: RecordInput[];
+	fixedMessages: unknown[];
+	capabilityMessages: unknown[];
+	tools: unknown[];
+	prefixTools?: unknown[];
+	budget: number;
+	signal: AbortSignal;
+	overheadTokens?: number;
+	compactor?: ContextCompactor;
+	provider?: string;
+	model?: string;
+	serializerVersion?: string;
+	systemPrompt?: string;
+	/** Internal retry count used when an async compaction plan goes stale. */
+	stalePlanCount?: number;
+};
+
+export type CondensationResult = {
+	noOp: boolean;
+	assemblyId?: number;
+	milestone: string;
+	archivedItems: number;
+	archivedEpisodes: number;
+	tokensBefore: number;
+	tokensAfter: number;
+	memoryTokens: number;
+};
 
 /** Marker reason identifying the single live rolling summary item. */
 export const ROLLING_SUMMARY_REASON = "rolling summary";
@@ -76,6 +160,14 @@ type AssemblyOptions = {
 	budget: number;
 	target: number;
 	overheadTokens: number;
+	taskId?: string;
+	turnId?: number;
+	trigger?:
+		| "initial"
+		| "transform-context"
+		| "prepare-next-turn"
+		| "shrink"
+		| "explicit";
 };
 type TaskAssemblyOptions = AssemblyOptions & {
 	submissionWatermark: number;
@@ -89,12 +181,139 @@ type AssemblyState = {
 };
 
 export class ContextManager {
+	private readonly telemetryKey: Uint8Array;
 	private readonly activeEpisodes = new Map<
 		string,
 		ContextEpisode | undefined
 	>();
 
-	constructor(private readonly store: SessionStore) {}
+	private readonly pressureStreak = new Map<string, number>();
+	private readonly pressured = new Set<string>();
+	private readonly assemblyIds = new Map<string, number>();
+	constructor(
+		private readonly store: SessionStore,
+		private readonly sink?: RuntimeEventSink,
+	) {
+		this.telemetryKey = store.telemetryInstallKey();
+	}
+
+	forkLane(request: {
+		sessionId: string;
+		name: string;
+		ownerTaskId: string;
+		fromItemId: string;
+	}): import("./types").ContextLane {
+		return this.store.startChildContextTask({
+			sessionId: request.sessionId,
+			name: request.name,
+			taskId: request.ownerTaskId,
+			fromItemId: request.fromItemId,
+			startedAt: new Date().toISOString(),
+		});
+	}
+
+	finishTask(request: FinishContextTaskRequest): void {
+		const laneName = request.laneId ?? "main";
+		const episode = request.episodeId
+			? this.episodes(request.sessionId).find(
+					(item) => item.id === request.episodeId && item.state === "active",
+				)
+			: this.episodes(request.sessionId).find(
+					(item) => item.state === "active",
+				);
+		const terminalEpisode = episode
+			? {
+					id: crypto.randomUUID(),
+					sessionId: request.sessionId,
+					episodeId: episode.id,
+					action:
+						request.status === "failed"
+							? ("failed" as const)
+							: request.status === "cancelled" ||
+								  request.status === "superseded"
+								? ("cancelled" as const)
+								: episode.kind === "action"
+									? ("end" as const)
+									: ("abandoned" as const),
+					name: episode.name,
+					kind: episode.kind,
+					dependencies: episode.dependencies,
+					createdAt: new Date().toISOString(),
+				}
+			: undefined;
+		const handoffPayload = request.handoff
+			? {
+					role: "user" as const,
+					content: `Subagent handoff:\n${JSON.stringify(request.handoff)}`,
+					timestamp: Date.now(),
+				}
+			: undefined;
+		const handoff =
+			request.handoff && handoffPayload
+				? {
+						id: `handoff-${request.taskId}`,
+						sessionId: request.sessionId,
+						kind: "subagent-handoff" as const,
+						payload: request.handoff,
+						compactPayload: handoffPayload,
+						tokenCost: computeTokenCost(request.handoff),
+						compactTokenCost: computeTokenCost(handoffPayload),
+						lifecycle: "retained" as const,
+						projection: "compact" as const,
+						reason: "structured subagent handoff",
+						source: { subagentId: laneName },
+						createdAt: new Date().toISOString(),
+					}
+				: undefined;
+		this.store.finishContextTask({
+			sessionId: request.sessionId,
+			taskId: request.taskId,
+			status: request.status,
+			startedAt: request.startedAt ?? new Date().toISOString(),
+			laneName,
+			...(request.ledger ? { ledger: request.ledger } : {}),
+			...(terminalEpisode ? { terminalEpisode } : {}),
+			...(handoff ? { handoff } : {}),
+		});
+		this.activeEpisodes.delete(request.sessionId);
+	}
+
+	recover(sessionId?: string): {
+		repaired: number;
+		abandoned: number;
+		failed: number;
+		episodes: number;
+	} {
+		const startedAt = performance.now();
+		const result = this.store.recoverLanes(sessionId);
+		this.activeEpisodes.clear();
+		if (sessionId)
+			this.sink?.({
+				type: "context.recovery.completed",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				lane: "all",
+				origin: "task-admission",
+				trigger: "startup-recovery",
+				repairedLanes: result.repaired,
+				abandonedLanes: result.abandoned,
+				failedTasks: result.failed,
+				repairedEpisodes: result.episodes,
+				durationMs: performance.now() - startedAt,
+				retries: 0,
+				stalePlan: false,
+			});
+		return result;
+	}
+
+	markAgentProgress(scopeId: string): void {
+		if (this.pressured.has(scopeId)) this.pressured.add(`${scopeId}:continued`);
+	}
+	clearPressure(scopeId: string): void {
+		this.pressureStreak.delete(scopeId);
+		this.pressured.delete(scopeId);
+		this.pressured.delete(`${scopeId}:continued`);
+	}
 
 	record(input: RecordInput, options?: PinOptions): ContextItem {
 		if (!options) return this.persist(input);
@@ -390,6 +609,744 @@ export class ContextManager {
 		});
 	}
 
+	/**
+	 * Prepares a provider turn and guarantees deterministic progress when the
+	 * fixed envelope plus pending input can fit. Remote condensation is added by
+	 * the runtime task; this method is intentionally synchronous internally so
+	 * existing callers remain compatible.
+	 */
+	async prepareTurn(request: PrepareTurnRequest): Promise<PreparedTurn> {
+		if (request.signal.aborted) throw new DOMException("Aborted", "AbortError");
+		const lane = this.store.lane(request.sessionId, request.laneId);
+		if (!lane) throw new Error(`Unknown context lane ${request.laneId}`);
+		const fixed = [...request.fixedMessages, ...request.capabilityMessages];
+		const pending = request.pendingInput ?? [];
+		const pendingMessages = pending.map((input) => input.payload);
+		const fixedCost = fixed.reduce<number>(
+			(sum, value) => sum + tokenCostOf(value),
+			tokenCostOf(request.tools) + (request.overheadTokens ?? 0),
+		);
+		const pendingCost = pending.reduce<number>(
+			(sum, input) => sum + input.tokenCost,
+			0,
+		);
+		const path = this.store.contextPath(request.sessionId, request.laneId);
+		const stalePlanCount = request.stalePlanCount ?? 0;
+		let messages = [
+			...fixed,
+			...projectedPathPayloads(path, this.episodes(request.sessionId)),
+			...pendingMessages,
+		];
+		let estimatedTokens =
+			fixedCost + pendingCost + this.pathProjectedCost(path, request.sessionId);
+		const startedAt = performance.now();
+		const prefixAlias = telemetryPrefixAlias(
+			{
+				provider: request.provider ?? "unknown",
+				model: request.model ?? "unknown",
+				serializerVersion: request.serializerVersion ?? "context-v1",
+				system: request.systemPrompt ?? fixed[0],
+				fixed,
+				capabilities: request.capabilityMessages,
+				tools: request.prefixTools ?? request.tools,
+				messages: projectedPathPayloads(path, this.episodes(request.sessionId)),
+			},
+			this.telemetryKey,
+		);
+		this.sink?.({
+			type: "context.prepare",
+			timestamp: new Date().toISOString(),
+			sessionId: request.sessionId,
+			taskId: request.taskId,
+			lane: request.laneId,
+			origin: request.laneId,
+			trigger: "turn",
+			beforeTokens: estimatedTokens,
+			headroomTokens: request.budget - estimatedTokens,
+			budget: request.budget,
+			prefixAlias,
+			stalePlan: stalePlanCount > 0,
+			...(request.provider ? { provider: request.provider } : {}),
+			...(request.model ? { model: request.model } : {}),
+		});
+		const shouldCompact =
+			estimatedTokens >= Math.floor(request.budget * 0.8) &&
+			request.compactor !== undefined;
+		if (estimatedTokens <= request.budget && !shouldCompact) {
+			request.signal.throwIfAborted();
+			this.store.db.transaction(() => {
+				for (const input of pending)
+					this.appendAtLaneHead(input, request.sessionId, request.laneId);
+			})();
+			return { messages, estimatedTokens, usedFallback: false };
+		}
+		if (fixedCost + pendingCost > request.budget)
+			throw new ContextBudgetError(
+				fixedCost + pendingCost,
+				request.budget,
+				"INPUT_TOO_LARGE",
+			);
+
+		let representation = this.fallbackRepresentation(
+			path,
+			this.episodes(request.sessionId),
+		);
+		let compactorDraft: Awaited<ReturnType<ContextCompactor>>;
+		let sourceCount = 0;
+		let sourceTokens = 0;
+		let retainedTail: unknown[] = [];
+		if (shouldCompact || estimatedTokens > request.budget) {
+			this.sink?.({
+				type: "context.compaction.started",
+				timestamp: new Date().toISOString(),
+				sessionId: request.sessionId,
+				taskId: request.taskId,
+				lane: request.laneId,
+				origin: request.laneId,
+				trigger: shouldCompact ? "automatic" : "budget",
+				beforeTokens: estimatedTokens,
+				prefixAlias,
+				stalePlan: stalePlanCount > 0,
+				...(request.provider ? { provider: request.provider } : {}),
+				...(request.model ? { model: request.model } : {}),
+			});
+			const projected = projectedPathPayloads(
+				path,
+				this.episodes(request.sessionId),
+			);
+			const tailBudget = Math.min(
+				20_000,
+				Math.max(
+					0,
+					Math.floor(request.budget * 0.6) - fixedCost - pendingCost - 2_000,
+				),
+			);
+			const currentTurn = projected.findLastIndex(
+				(payload) =>
+					!!payload &&
+					typeof payload === "object" &&
+					(payload as { role?: unknown }).role === "user",
+			);
+			const tailStart = pending.length
+				? projected.length
+				: currentTurn < 0
+					? projected.length - 1
+					: currentTurn;
+			retainedTail =
+				tailStart >= projected.length ? [] : projected.slice(tailStart);
+			let tailCost = retainedTail.reduce<number>(
+				(sum, value) => sum + tokenCostOf(value),
+				0,
+			);
+			if (tailCost > tailBudget)
+				throw new ContextBudgetError(
+					fixedCost + pendingCost + tailCost,
+					request.budget,
+					"INPUT_TOO_LARGE",
+				);
+			for (let index = tailStart - 1; index >= 0; index--) {
+				const cost = tokenCostOf(projected[index]);
+				if (tailCost + cost > tailBudget) break;
+				retainedTail.unshift(projected[index]);
+				tailCost += cost;
+			}
+			const compactor = request.compactor;
+			const source = projected.slice(0, projected.length - retainedTail.length);
+			sourceCount = source.length;
+			sourceTokens = source.reduce<number>(
+				(sum, value) => sum + tokenCostOf(value),
+				0,
+			);
+			const sourceFitsCompactor = sourceTokens + 4_096 <= request.budget;
+			if (compactor && source.length && sourceFitsCompactor) {
+				const previous = path
+					.toReversed()
+					.map((item) => validCheckpoint(item))
+					.find((item) => item?.representation.kind === "condensation");
+				try {
+					compactorDraft = await compactor({
+						messages: source,
+						...(previous?.representation.kind === "condensation"
+							? {
+									previousMemory: previous.representation
+										.memory as CondensationInput,
+								}
+							: {}),
+						anchors: path
+							.filter(
+								(item) => item.kind === "pinned-note" || item.kind === "user",
+							)
+							.map((item) => String(item.payload))
+							.slice(-12),
+						targetMemoryTokens: 2_000,
+						signal: request.signal,
+					});
+				} catch {
+					compactorDraft = undefined;
+				}
+				if (
+					this.store.lane(request.sessionId, request.laneId)?.revision !==
+					lane.revision
+				) {
+					const nextStalePlanCount = stalePlanCount + 1;
+					this.sink?.({
+						type: "context.compaction.failed",
+						timestamp: new Date().toISOString(),
+						sessionId: request.sessionId,
+						taskId: request.taskId,
+						lane: request.laneId,
+						origin: request.laneId,
+						trigger: "automatic",
+						beforeTokens: estimatedTokens,
+						sourceCount,
+						sourceTokens,
+						retries: nextStalePlanCount,
+						stalePlan: true,
+						durationMs: performance.now() - startedAt,
+						error: "stale_compaction_plan",
+						prefixAlias,
+					});
+					const { compactor: _compactor, ...retryRequest } = request;
+					return this.prepareTurn({
+						...retryRequest,
+						stalePlanCount: nextStalePlanCount,
+					});
+				}
+				if (!compactorDraft)
+					this.sink?.({
+						type: "context.compaction.failed",
+						timestamp: new Date().toISOString(),
+						sessionId: request.sessionId,
+						taskId: request.taskId,
+						lane: request.laneId,
+						origin: request.laneId,
+						trigger: "automatic",
+						beforeTokens: estimatedTokens,
+						sourceCount,
+						sourceTokens,
+						retries: 1,
+						stalePlan: false,
+						durationMs: performance.now() - startedAt,
+						error: "llm_compaction_failed",
+						prefixAlias,
+						...(request.provider ? { provider: request.provider } : {}),
+						...(request.model ? { model: request.model } : {}),
+					});
+				if (compactorDraft)
+					representation = {
+						kind: "condensation",
+						memory: compactorDraft.memory,
+					};
+			}
+		}
+		request.signal.throwIfAborted();
+		let checkpoint: ContextItem;
+		try {
+			checkpoint = this.store.db.transaction(() => {
+				if (
+					this.store.lane(request.sessionId, request.laneId)?.revision !==
+					lane.revision
+				)
+					throw new Error(STALE_COMPACTION_PLAN);
+				const committed = this.appendCheckpoint(
+					request.sessionId,
+					request.laneId,
+					representation,
+					retainedTail,
+					{
+						condensedCount: Math.max(0, path.length - retainedTail.length),
+						retainedCount: retainedTail.length,
+					},
+				);
+				for (const input of pending)
+					this.appendAtLaneHead(input, request.sessionId, request.laneId);
+				return committed;
+			})();
+		} catch (error) {
+			if (!(error instanceof Error) || error.message !== STALE_COMPACTION_PLAN)
+				throw error;
+			const { compactor: _compactor, ...retryRequest } = request;
+			return this.prepareTurn({
+				...retryRequest,
+				stalePlanCount: stalePlanCount + 1,
+			});
+		}
+		const after = this.store.contextPath(request.sessionId, request.laneId);
+		messages = [
+			...fixed,
+			...projectedPathPayloads(after, this.episodes(request.sessionId)),
+		];
+		estimatedTokens =
+			fixedCost +
+			projectedPathPayloads(
+				after,
+				this.episodes(request.sessionId),
+			).reduce<number>((sum, payload) => sum + tokenCostOf(payload), 0);
+		if (estimatedTokens > request.budget) {
+			// The fallback has no summary/tail; only fixed + pending can remain.
+			messages = [...fixed, ...pendingMessages];
+			estimatedTokens = fixedCost + pendingCost;
+		}
+		this.sink?.({
+			type: "context.compaction.completed",
+			timestamp: new Date().toISOString(),
+			sessionId: request.sessionId,
+			taskId: request.taskId,
+			lane: request.laneId,
+			origin: request.laneId,
+			trigger:
+				representation.kind === "condensation" ? "automatic-llm" : "fallback",
+			beforeTokens:
+				fixedCost +
+				pendingCost +
+				this.pathProjectedCost(path, request.sessionId),
+			afterTokens: estimatedTokens,
+			sourceCount,
+			sourceTokens,
+			...(compactorDraft?.inputTokens === undefined
+				? {}
+				: { inputTokens: compactorDraft.inputTokens }),
+			outputTokens:
+				compactorDraft?.outputTokens ??
+				(representation.kind === "condensation"
+					? tokenCostOf(representation.memory)
+					: 0),
+			cacheReadTokens: compactorDraft?.cacheReadTokens ?? 0,
+			cacheWriteTokens: compactorDraft?.cacheWriteTokens ?? 0,
+			headroomTokens: request.budget - estimatedTokens,
+			durationMs: performance.now() - startedAt,
+			retries: (compactorDraft?.retries ?? 0) + stalePlanCount,
+			prefixAlias,
+			stalePlan: stalePlanCount > 0,
+			...((compactorDraft?.provider ?? request.provider)
+				? { provider: compactorDraft?.provider ?? request.provider }
+				: {}),
+			...((compactorDraft?.model ?? request.model)
+				? { model: compactorDraft?.model ?? request.model }
+				: {}),
+		});
+		return {
+			messages,
+			estimatedTokens,
+			checkpointId: checkpoint.id,
+			usedFallback: representation.kind === "fallback",
+		};
+	}
+
+	checkpointProviderOverflow(sessionId: string, laneName = "main"): void {
+		const path = this.store.contextPath(sessionId, laneName);
+		const projected = projectedPathPayloads(path, this.episodes(sessionId));
+		const currentTurn = projected.findLastIndex(
+			(payload) =>
+				!!payload &&
+				typeof payload === "object" &&
+				(payload as { role?: unknown }).role === "user",
+		);
+		const retainedTail = currentTurn < 0 ? [] : projected.slice(currentTurn);
+		const checkpoint = this.store.db.transaction(() => {
+			return this.appendCheckpoint(
+				sessionId,
+				laneName,
+				this.fallbackRepresentation(path, this.episodes(sessionId)),
+				retainedTail,
+				{
+					condensedCount: Math.max(0, path.length - retainedTail.length),
+					retainedCount: retainedTail.length,
+				},
+			);
+		})();
+		this.sink?.({
+			type: "context.recovery.completed",
+			timestamp: new Date().toISOString(),
+			sessionId,
+			lane: laneName,
+			origin: laneName,
+			trigger: "provider-context-length",
+			checkpointId: checkpoint.id,
+			laneRevision: this.store.lane(sessionId, laneName)?.revision ?? 0,
+			repairedItems: path.length,
+			retainedItems: retainedTail.length,
+			repairedEpisodes: this.episodes(sessionId).length,
+			retries: 1,
+			stalePlan: false,
+		});
+	}
+
+	private pathProjectedCost(
+		path: readonly ContextItem[],
+		sessionId: string,
+	): number {
+		const payloads = projectedPathPayloads(path, this.episodes(sessionId));
+		if (!path.some((item) => item.nodeRole === "checkpoint"))
+			return path.reduce(
+				(sum, item) =>
+					sum + (item.kind === "observation" ? 0 : projectionCost(item)),
+				0,
+			);
+		return payloads.reduce<number>(
+			(sum, payload) => sum + tokenCostOf(payload),
+			0,
+		);
+	}
+
+	private appendAtLaneHead(
+		input: RecordInput,
+		sessionId: string,
+		laneName: string,
+	): ContextItem {
+		const lane = this.store.lane(sessionId, laneName);
+		if (!lane) throw new Error(`Unknown context lane ${laneName}`);
+		const result = this.store.appendContextAtHead(
+			{
+				...input,
+				id: input.id ?? crypto.randomUUID(),
+				createdAt: input.createdAt ?? new Date().toISOString(),
+				projection: input.projection ?? "full",
+				originLane: laneName,
+			},
+			laneName,
+			lane.revision,
+		);
+		if ("status" in result)
+			throw new Error("Context lane changed while appending");
+		return result;
+	}
+
+	private fallbackRepresentation(
+		path: readonly ContextItem[],
+		episodes: readonly ContextEpisode[] = [],
+	): CheckpointRepresentation {
+		const activeIds = new Set(
+			episodes
+				.filter((episode) => episode.state === "active")
+				.map((episode) => episode.id),
+		);
+		const anchors = path
+			.filter(
+				(item) =>
+					item.episodeId !== undefined &&
+					activeIds.has(item.episodeId) &&
+					item.kind !== "observation",
+			)
+			.toReversed()
+			.slice(0, 8)
+			.toReversed()
+			.map((item) => boundedText(item.payload, 240));
+		const goals = episodes
+			.filter((episode) => episode.state === "active")
+			.map((episode) => boundedText(episode.name, 160))
+			.slice(0, 4);
+		const conclusions = episodes
+			.filter((episode) => episode.conclusion !== undefined)
+			.map((episode) =>
+				boundedText(`${episode.name}: ${episode.conclusion}`, 320),
+			)
+			.slice(-4);
+		const references = [
+			...new Set(
+				path
+					.filter((item) => activeIds.has(item.episodeId ?? ""))
+					.flatMap((item) =>
+						item.source?.observationId
+							? [`observation://${item.source.observationId}`]
+							: [],
+					),
+			),
+		].slice(0, 8);
+		const summary = JSON.stringify({ goals, anchors, conclusions });
+		return { kind: "fallback", summary, references };
+	}
+
+	private appendCheckpoint(
+		sessionId: string,
+		laneName: string,
+		representation: CheckpointRepresentation,
+		retainedTail: unknown[] = [],
+		coverageCounts: {
+			condensedCount?: number;
+			retainedCount?: number;
+			references?: string[];
+			omittedDigest?: string;
+		} = {},
+	): ContextItem {
+		const lane = this.store.lane(sessionId, laneName);
+		if (!lane) throw new Error(`Unknown context lane ${laneName}`);
+		const path = this.store.contextPath(sessionId, laneName);
+		const coveredThroughId = path.at(-1)?.id;
+		const baseCheckpoint = path.findLast(
+			(item) => item.nodeRole === "checkpoint",
+		);
+		const baseIndex = baseCheckpoint ? path.lastIndexOf(baseCheckpoint) : -1;
+		const sourceItems = path
+			.slice(baseIndex + 1)
+			.filter((item) => item.nodeRole !== "checkpoint");
+		const condensedCount = Math.min(
+			coverageCounts.condensedCount ?? 0,
+			sourceItems.length,
+		);
+		const retainedCount = Math.min(
+			coverageCounts.retainedCount ?? 0,
+			sourceItems.length - condensedCount,
+		);
+		const omittedCount = sourceItems.length - condensedCount - retainedCount;
+		const coverageDigest = structuredHash(
+			sourceItems.map(({ id, contentHash }) => ({ id, contentHash })),
+		);
+		const sourceDigest = structuredHash({
+			policyVersion: 1,
+			...(baseCheckpoint?.sourceDigest
+				? { base: baseCheckpoint.sourceDigest }
+				: {}),
+			items: sourceItems.map(({ id, contentHash }) => ({ id, contentHash })),
+		});
+		const payload: ContextCheckpointPayload = {
+			schemaVersion: 1,
+			...(coveredThroughId === undefined ? {} : { coveredThroughId }),
+			...(baseCheckpoint?.id ? { baseCheckpointId: baseCheckpoint.id } : {}),
+			baseRevision: lane.revision,
+			omittedDigest: coverageCounts.omittedDigest ?? coverageDigest,
+			coverage: {
+				sourceCount: sourceItems.length,
+				condensedCount,
+				retainedCount,
+				omittedCount,
+				omittedDigest: coverageCounts.omittedDigest ?? coverageDigest,
+				references: (coverageCounts.references ?? []).slice(0, 8),
+			},
+			sourceDigest,
+			policyVersion: 1,
+			representation,
+			retainedTail,
+		};
+		const result = this.store.appendContextAtHead(
+			{
+				id: crypto.randomUUID(),
+				sessionId,
+				createdAt: new Date().toISOString(),
+				originLane: laneName,
+				nodeRole: "checkpoint",
+				kind: "long-term-memory",
+				payload,
+				sourceDigest,
+				policyVersion: 1,
+				tokenCost: computeTokenCost(payload),
+				lifecycle: "pinned",
+				projection: "full",
+				reason:
+					representation.kind === "fallback"
+						? "deterministic fallback"
+						: MEMORY_REASON,
+			},
+			laneName,
+			lane.revision,
+		);
+		if ("status" in result)
+			throw new Error("Context lane changed while checkpointing");
+		return result;
+	}
+
+	condense(
+		sessionId: string,
+		input: CondensationInput,
+		options: CondensationOptions = {},
+	): CondensationResult {
+		const next = validateCondensationInput(input);
+		const scopeId = options.taskId ?? sessionId;
+		const assemblyId =
+			(this.assemblyIds.set(scopeId, (this.assemblyIds.get(scopeId) ?? 0) + 1),
+			this.assemblyIds.get(scopeId)!);
+		const items = this.store.contextItems(sessionId);
+		const priorItem = items
+			.toReversed()
+			.find(
+				(item) =>
+					item.nodeRole === "checkpoint" && item.lifecycle !== "archived",
+			);
+		const priorCheckpoint = priorItem ? validCheckpoint(priorItem) : undefined;
+		const prior =
+			priorCheckpoint?.representation.kind === "condensation"
+				? (
+						priorCheckpoint.representation as {
+							kind: "condensation";
+							memory: CondensationInput;
+						}
+					).memory
+				: priorItem
+					? parseCondensationMemory(priorItem.payload)
+					: undefined;
+		const merged = mergeCondensationMemory(prior, next);
+		const memoryTokens = memoryTokenCost(merged);
+		if (memoryTokens > MEMORY_MAX_TOKENS)
+			throw new Error("Condensation memory exceeds 2,000 tokens");
+		const latestCheckpoint = items
+			.map((item, index) => ({ item, index }))
+			.filter(({ item }) => validCheckpoint(item) !== undefined)
+			.at(-1);
+		const baseCheckpoint = latestCheckpoint?.item;
+		const sourceItems = latestCheckpoint
+			? items.slice(latestCheckpoint.index + 1)
+			: items;
+		const eligible = selectCondensationItems(sourceItems, options);
+		const tokensBefore = latestCheckpoint
+			? projectedEstimatedCost(
+					this.store.contextPath(sessionId, "main"),
+					options.overheadTokens ?? 0,
+					this.episodes(sessionId),
+				)
+			: estimatedCost(
+					items,
+					options.overheadTokens ?? 0,
+					this.episodes(sessionId),
+				);
+		if (!eligible.length)
+			return {
+				noOp: true,
+				assemblyId,
+				milestone: next.milestone,
+				archivedItems: 0,
+				archivedEpisodes: 0,
+				tokensBefore,
+				tokensAfter: tokensBefore,
+				memoryTokens,
+			};
+		const tailGroups = new Set(
+			items
+				.toReversed()
+				.filter((item) => item.groupId)
+				.map((item) => item.groupId!)
+				.slice(0, 4),
+		);
+		const eligibleIds = new Set(eligible.map((item) => item.id));
+		const retentionCandidates = sourceItems.filter(
+			(item) =>
+				(item.kind === "user" ||
+					item.kind === "pinned-note" ||
+					(item.groupId !== undefined && tailGroups.has(item.groupId))) &&
+				item.nodeRole !== "checkpoint" &&
+				!eligibleIds.has(item.id),
+		);
+		const inheritedTail = baseCheckpoint
+			? (validCheckpoint(baseCheckpoint)?.retainedTail ?? [])
+			: [];
+		const tailBudget = Math.min(
+			20_000,
+			Math.floor((options.budget ?? 80_000) * 0.25),
+		);
+		const episodeTail = episodeConclusionPayloads(
+			items,
+			this.episodes(sessionId).map((episode) =>
+				episode.state === "completed"
+					? { ...episode, state: "archived" }
+					: episode,
+			),
+		);
+		const groups = new Map<string, ContextItem[]>();
+		for (const item of retentionCandidates) {
+			const key = item.groupId ?? item.id;
+			groups.set(key, [...(groups.get(key) ?? []), item]);
+		}
+		const stableKey = retentionCandidates.find(
+			(item) => item.kind === "user" || item.kind === "pinned-note",
+		);
+		const stableGroupKey = stableKey?.groupId ?? stableKey?.id;
+		const recentKeys = [...groups.keys()]
+			.toReversed()
+			.filter((key) => key !== stableGroupKey);
+		const retainedIds = new Set<string>();
+		let tailTokens = 0;
+		const retainGroup = (key: string): void => {
+			const group = groups.get(key) ?? [];
+			const cost = group.reduce((sum, item) => {
+				const payload = projectedPayload(item);
+				return sum + (payload === undefined ? 0 : tokenCostOf(payload));
+			}, 0);
+			if (tailTokens + cost > tailBudget) return;
+			for (const item of group) retainedIds.add(item.id);
+			tailTokens += cost;
+		};
+		if (stableGroupKey) retainGroup(stableGroupKey);
+		const anchorTail = boundedAnchorTail(
+			inheritedTail,
+			episodeTail,
+			tailBudget - tailTokens,
+		);
+		tailTokens += anchorTail.tokens;
+		for (const key of recentKeys) retainGroup(key);
+		const retainedItems = sourceItems.filter((item) =>
+			retainedIds.has(item.id),
+		);
+		const boundedTail = [
+			...anchorTail.messages,
+			...retainedItems.flatMap((item) => {
+				const payload = projectedPayload(item);
+				return payload === undefined ? [] : [payload];
+			}),
+		];
+		const omittedItems = sourceItems.filter(
+			(item) => !eligibleIds.has(item.id) && !retainedIds.has(item.id),
+		);
+		const omittedDigest = structuredHash(
+			omittedItems.map(({ id, contentHash }) => ({ id, contentHash })),
+		);
+		this.appendCheckpoint(
+			sessionId,
+			"main",
+			{ kind: "condensation", memory: merged },
+			boundedTail,
+			{
+				condensedCount: eligible.length,
+				retainedCount: retainedItems.length,
+				omittedDigest,
+			},
+		);
+		const tokensAfter =
+			(options.overheadTokens ?? 0) +
+			projectedPathPayloads(
+				this.store.contextPath(sessionId, "main"),
+				this.episodes(sessionId),
+			).reduce<number>((sum, payload) => sum + tokenCostOf(payload), 0);
+		this.sink?.({
+			type: "context.assembly.completed",
+			timestamp: new Date().toISOString(),
+			sessionId,
+			...(options.taskId ? { taskId: options.taskId } : {}),
+			...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+			trigger: "explicit",
+			scope: options.taskId ? "task" : "session",
+			tokensBefore,
+			tokensAfter,
+			budget: options.budget ?? tokensAfter,
+			target: options.target ?? tokensAfter,
+			underPressure: false,
+			evictedItems: eligible.length,
+			archivedEpisodes: 0,
+			liveTokens: tokensAfter,
+			historyTokens: items.reduce((sum, item) => sum + item.tokenCost, 0),
+		});
+		this.sink?.({
+			type: "context.compaction.completed",
+			timestamp: new Date().toISOString(),
+			sessionId,
+			...(options.taskId ? { taskId: options.taskId } : {}),
+			...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+			trigger: "explicit",
+			evictedItems: eligible.length,
+			archivedEpisodes: 0,
+			tokensBefore,
+			tokensAfter,
+		});
+		return {
+			noOp: false,
+			assemblyId,
+			milestone: next.milestone,
+			archivedItems: eligible.length,
+			archivedEpisodes: 0,
+			tokensBefore,
+			tokensAfter,
+			memoryTokens,
+		};
+	}
+
 	recall(
 		sessionId: string,
 		reference: string | ObservationRecallInput,
@@ -504,6 +1461,10 @@ export class ContextManager {
 		tokensAfter: number;
 		episodesArchived: number;
 	} {
+		const scopeId = options.taskId ?? sessionId;
+		const assemblyId =
+			(this.assemblyIds.set(scopeId, (this.assemblyIds.get(scopeId) ?? 0) + 1),
+			this.assemblyIds.get(scopeId)!);
 		let state = this.assemblyState(sessionId, options.overheadTokens);
 		const evictedIds: string[] = [];
 		const archivedEpisodeIds: string[] = [];
@@ -521,8 +1482,21 @@ export class ContextManager {
 			);
 		if (underPressure && state.estimatedTokens > options.budget)
 			state = this.compactPinned(sessionId, state, options, evictedIds);
-		if (underPressure && state.estimatedTokens > options.budget)
+		if (underPressure && state.estimatedTokens > options.budget) {
+			this.sink?.({
+				type: "context.assembly.failed",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				...(options.taskId ? { taskId: options.taskId } : {}),
+				...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+				assemblyId,
+				budget: options.budget,
+				tokensBefore,
+				tokensAfter: state.estimatedTokens,
+				error: "budget",
+			});
 			throw new ContextBudgetError(state.estimatedTokens, options.budget);
+		}
 		/**
 		 * After the archiving pass, never before it: a note about scarce budget
 		 * that competed for that same budget could be the weight that pushes an
@@ -531,11 +1505,53 @@ export class ContextManager {
 		 */
 		if (underPressure)
 			this.notePressure(sessionId, state.estimatedTokens, options.budget);
+		const pressureStreak = underPressure
+			? (this.pressureStreak.get(scopeId) ?? 0) + 1
+			: 0;
+		if (underPressure) this.pressureStreak.set(scopeId, pressureStreak);
+		else this.pressureStreak.delete(scopeId);
+		if (underPressure) this.pressured.add(scopeId);
+		this.sink?.({
+			type: "context.assembly.completed",
+			timestamp: new Date().toISOString(),
+			sessionId,
+			...(options.taskId ? { taskId: options.taskId } : {}),
+			...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+			assemblyId,
+			trigger: options.trigger ?? "initial",
+			scope: options.taskId ? "task" : "session",
+			tokensBefore,
+			tokensAfter: state.estimatedTokens,
+			budget: options.budget,
+			target: options.target,
+			underPressure,
+			pressureStreak,
+			agentContinued: this.pressured.has(`${scopeId}:continued`),
+			evictedItems: evictedIds.length,
+			archivedEpisodes: archivedEpisodeIds.length,
+			liveTokens: state.estimatedTokens,
+			historyTokens: this.store
+				.contextItems(sessionId)
+				.reduce((sum, item) => sum + item.tokenCost, 0),
+			rollingSummaryChanged: evictedIds.some(
+				(id) =>
+					this.store.contextItems(sessionId).find((item) => item.id === id)
+						?.reason === ROLLING_SUMMARY_REASON,
+			),
+		});
+		if (evictedIds.length)
+			this.sink?.({
+				type: "context.compaction.completed",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				...(options.taskId ? { taskId: options.taskId } : {}),
+				...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+				assemblyId,
+				trigger: "automatic",
+				evictedItems: evictedIds.length,
+			});
 		return {
-			payloads: [
-				...projectedPayloads(state.items),
-				...episodeConclusionPayloads(state.items, state.episodes),
-			],
+			payloads: [...projectedPayloads(state.items, state.episodes)],
 			estimatedTokens: state.estimatedTokens,
 			evictedIds,
 			tokensBefore,
@@ -685,7 +1701,7 @@ export class ContextManager {
 		sessionId: string,
 		overheadTokens: number,
 	): AssemblyState {
-		const items = this.store.contextItems(sessionId);
+		const items = this.store.contextPath(sessionId, "main");
 		const episodes = this.episodes(sessionId);
 		return {
 			items,
@@ -713,19 +1729,27 @@ export class ContextManager {
 			terminal.has(item.id);
 		this.collapseTaskHistory(
 			sessionId,
-			this.store.contextItems(sessionId).filter(inWindow),
+			this.store.contextPath(sessionId, "main").filter(inWindow),
 			options,
 			compaction.evictedIds,
 		);
-		const items = this.store.contextItems(sessionId).filter(inWindow);
-		const estimatedTokens = items.reduce(
-			(total, item) => total + projectionCost(item),
+		const items = this.store.contextPath(sessionId, "main").filter(inWindow);
+		const taskEpisodes = this.episodes(sessionId).filter((episode) =>
+			items.some(
+				(item) =>
+					item.episodeId === episode.id &&
+					item.sequence > options.taskStartSequence,
+			),
+		);
+		const estimatedTokens = estimatedCost(
+			items,
 			options.overheadTokens,
+			taskEpisodes,
 		);
 		if (estimatedTokens > options.budget)
 			throw new ContextBudgetError(estimatedTokens, options.budget);
 		return {
-			payloads: projectedPayloads(items),
+			payloads: projectedPayloads(items, taskEpisodes),
 			estimatedTokens,
 			evictedIds: compaction.evictedIds,
 			/**
@@ -868,7 +1892,11 @@ export class ContextManager {
 		}
 		return {
 			sessionId,
-			estimatedTokens: estimatedCost(items, overheadTokens, episodes),
+			estimatedTokens: projectedEstimatedCost(
+				this.store.contextPath(sessionId, "main"),
+				overheadTokens,
+				episodes,
+			),
 			historyTokens,
 			parkedObservations,
 			...(inspectOptions.budget === undefined
@@ -915,14 +1943,98 @@ export class ContextManager {
 	}
 }
 
+function projectedEstimatedCost(
+	path: ContextItem[],
+	overheadTokens: number,
+	episodes: ContextEpisode[],
+): number {
+	return (
+		overheadTokens +
+		projectedPathPayloads(path, episodes).reduce<number>(
+			(sum, payload) => sum + tokenCostOf(payload),
+			0,
+		)
+	);
+}
+
+function boundedAnchorTail(
+	inherited: readonly unknown[],
+	conclusions: readonly unknown[],
+	budget: number,
+): { messages: unknown[]; tokens: number } {
+	const selectedInherited = new Set<number>();
+	const selectedConclusions = new Set<number>();
+	let tokens = 0;
+	const admit = (value: unknown): boolean => {
+		const cost = tokenCostOf(value);
+		if (tokens + cost > budget) return false;
+		tokens += cost;
+		return true;
+	};
+	for (let index = 0; index < conclusions.length; index++)
+		if (admit(conclusions[index])) selectedConclusions.add(index);
+	if (inherited.length && admit(inherited[0])) selectedInherited.add(0);
+	for (let index = inherited.length - 1; index > 0; index--)
+		if (admit(inherited[index])) selectedInherited.add(index);
+	return {
+		messages: [
+			...inherited.filter((_, index) => selectedInherited.has(index)),
+			...conclusions.filter((_, index) => selectedConclusions.has(index)),
+		],
+		tokens,
+	};
+}
+
+function tokenCostOf(value: unknown): number {
+	return Number(computeTokenCost(value as never));
+}
+
+function boundedText(value: unknown, limit: number): string {
+	const text = typeof value === "string" ? value : JSON.stringify(value);
+	return (text ?? "").slice(0, limit);
+}
+
 function projectedPayloads(
 	items: ContextItem[],
+	episodes: ContextEpisode[] = [],
 ): NonNullable<ReturnType<typeof projectedPayload>>[] {
-	return items.flatMap((item) => {
-		if (item.kind === "system" || item.kind === "observation") return [];
-		const payload = projectedPayload(item);
-		return payload == null ? [] : [payload];
-	});
+	if (items.some((item) => item.nodeRole === "checkpoint"))
+		return projectedPathPayloads(items, episodes) as NonNullable<
+			ReturnType<typeof projectedPayload>
+		>[];
+	const ordered = items.toSorted(
+		(a, b) => assemblyRank(a) - assemblyRank(b) || a.sequence - b.sequence,
+	);
+	return [
+		...ordered
+			.filter((item) => assemblyRank(item) === 0)
+			.flatMap(projectedItemPayload),
+		...episodeConclusionPayloads(items, episodes),
+		...ordered
+			.filter((item) => assemblyRank(item) === 1)
+			.flatMap(projectedItemPayload),
+		...ordered
+			.filter((item) => assemblyRank(item) === 2)
+			.flatMap(projectedItemPayload),
+	];
+}
+
+function projectedItemPayload(
+	item: ContextItem,
+): NonNullable<ReturnType<typeof projectedPayload>>[] {
+	if (item.kind === "system" || item.kind === "observation") return [];
+	const value = projectedPayload(item);
+	return value == null ? [] : [value];
+}
+
+function assemblyRank(item: ContextItem): number {
+	return item.kind === "system" ||
+		item.kind === "user" ||
+		item.kind === "pinned-note"
+		? 0
+		: item.kind === "long-term-memory"
+			? 1
+			: 2;
 }
 
 function userText(payload: unknown): string {

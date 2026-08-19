@@ -5,11 +5,20 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
-import type { ServerEvent } from "../../../shared/src/protocol";
-import type { ContextManager } from "../context/manager";
+import type {
+	ImageAttachment,
+	ServerEvent,
+} from "../../../shared/src/protocol";
+import type {
+	ContextCompactor,
+	ContextManager,
+	PrepareTurnRequest,
+} from "../context/manager";
 import { ContextBudgetError, type ContextInspection } from "../context/types";
 import type { SessionStore } from "../sessions/store";
+import { resolveSystemPrompt } from "../system-prompt";
 import type { TaskRuntime } from "../task-runtime";
+import type { RuntimeEventSink } from "../telemetry/events";
 import { tokenCost } from "../token-cost";
 import type { CoreTools } from "../tools";
 import { detailsRecord, messageKey } from "./message";
@@ -25,6 +34,7 @@ export type AgentEntry = {
 	agent: Agent;
 	tools: CoreTools;
 	contextError: Error | undefined;
+	compactor: ContextCompactor | undefined;
 	promptGroupId: string | undefined;
 	preRecorded: Set<string>;
 	toolGroups: Map<string, string>;
@@ -40,6 +50,10 @@ export type AgentEntry = {
 	};
 	/** Emitter for the in-flight run; context assembly reports compaction through it. */
 	emit: ((event: ServerEvent) => void) | undefined;
+	sink: RuntimeEventSink | undefined;
+	turnId: number;
+	callIds: Map<string, number>;
+	callStarted: Map<string, number>;
 };
 
 export function translateAgentEvent({
@@ -50,6 +64,7 @@ export function translateAgentEvent({
 	context,
 	shrink,
 	inspect,
+	sink,
 }: {
 	sessionId: string;
 	entry: AgentEntry;
@@ -58,6 +73,7 @@ export function translateAgentEvent({
 	context: ContextManager;
 	shrink: () => void;
 	inspect: () => ContextInspection;
+	sink?: RuntimeEventSink;
 }): void {
 	switch (event.type) {
 		case "message_start":
@@ -80,7 +96,25 @@ export function translateAgentEvent({
 		case "agent_end":
 			handleAgentEnd(sessionId, entry, context, shrink, emit);
 			return;
-		case "tool_execution_start":
+		case "tool_execution_start": {
+			const startSource = event.toolName.startsWith("mcp__") ? "mcp" : "harnez";
+			entry.callStarted.set(event.toolCallId, performance.now());
+			sink?.({
+				type: "tool.call.started",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				taskId: entry.task.id,
+				source: startSource,
+				turnId: entry.turnId,
+				callId:
+					entry.callIds.get(event.toolCallId) ??
+					(entry.callIds.set(event.toolCallId, entry.callIds.size + 1),
+					entry.callIds.size),
+				tool: event.toolName,
+				...(startSource === "mcp"
+					? { mcpPayload: { arguments: event.args } }
+					: { toolArguments: event.args }),
+			});
 			if (!entry.timing.activeToolCalls.size)
 				entry.timing.toolWindowStartedAt = performance.now();
 			entry.timing.activeToolCalls.add(event.toolCallId);
@@ -91,8 +125,29 @@ export function translateAgentEvent({
 				input: event.args,
 			});
 			return;
-		case "tool_execution_end":
+		}
+		case "tool_execution_end": {
+			const endSource = event.toolName.startsWith("mcp__") ? "mcp" : "harnez";
+			sink?.({
+				type: event.isError ? "tool.call.failed" : "tool.call.completed",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				taskId: entry.task.id,
+				source: endSource,
+				turnId: entry.turnId,
+				callId: entry.callIds.get(event.toolCallId) ?? 0,
+				tool: event.toolName,
+				durationMs: Math.round(
+					performance.now() -
+						(entry.callStarted.get(event.toolCallId) ?? performance.now()),
+				),
+				...(endSource === "mcp"
+					? { mcpPayload: { result: event.result } }
+					: { toolResults: event.result }),
+			});
 			entry.timing.activeToolCalls.delete(event.toolCallId);
+			entry.callIds.delete(event.toolCallId);
+			entry.callStarted.delete(event.toolCallId);
 			if (
 				!entry.timing.activeToolCalls.size &&
 				entry.timing.toolWindowStartedAt !== undefined
@@ -109,6 +164,7 @@ export function translateAgentEvent({
 				isError: event.isError,
 			});
 			return;
+		}
 		// Pi lifecycle events Harnez does not surface.
 		case "agent_start":
 		case "turn_start":
@@ -218,12 +274,13 @@ function handleAgentEnd(
 					type: "context-budget-error",
 					estimatedTokens: entry.contextError.estimatedTokens,
 					budget: entry.contextError.budget,
+					code: entry.contextError.code,
 				}
 			: { type: "error", message: entry.contextError.message },
 	);
 }
 
-export function recordAgentMessage({
+function recordAgentMessage({
 	sessionId,
 	entry,
 	message,
@@ -304,6 +361,7 @@ export function managedMessages({
 	context,
 	contextOptions,
 	emit,
+	turnId,
 }: {
 	sessionId: string;
 	model: Model<Api>;
@@ -316,6 +374,7 @@ export function managedMessages({
 		overheadTokens: number;
 	};
 	emit?: ((event: ServerEvent) => void) | undefined;
+	turnId?: number;
 }): AgentMessage[] {
 	const capabilityItems = task?.context.items() ?? [];
 	if (store.contextItems(sessionId).length === 0 && !capabilityItems.length)
@@ -353,11 +412,18 @@ export function managedMessages({
 		task.taskStartSequence !== undefined
 			? context.assembleTask(sessionId, {
 					...options,
+					taskId: task.id,
+					...(turnId === undefined ? {} : { turnId }),
+					trigger: "prepare-next-turn",
 					submissionWatermark: task.submissionWatermark,
 					taskStartSequence: task.taskStartSequence,
 					predecessorTerminalIds: task.predecessorTerminalMessageIds,
 				})
-			: context.assemble(sessionId, options);
+			: context.assemble(sessionId, {
+					...options,
+					...(task ? { taskId: task.id } : {}),
+					...(turnId === undefined ? {} : { turnId }),
+				});
 	if (emit && assembly.evictedIds.length)
 		emit({
 			type: "context-compaction",
@@ -368,24 +434,131 @@ export function managedMessages({
 		});
 	const messages = assembly.payloads as AgentMessage[];
 	const lastUser = messages.findLastIndex((message) => message.role === "user");
-	return lastUser < 0
-		? [...messages, ...dynamic]
-		: [...messages.slice(0, lastUser), ...dynamic, ...messages.slice(lastUser)];
+	return dropOrphanToolResults(
+		lastUser < 0
+			? [...messages, ...dynamic]
+			: [
+					...messages.slice(0, lastUser),
+					...dynamic,
+					...messages.slice(lastUser),
+				],
+	);
+}
+
+/** Async admission path used at prompt boundaries; this is where LLM compaction runs. */
+export async function managedMessagesAsync({
+	sessionId,
+	model,
+	task,
+	context,
+	contextOptions,
+	signal,
+	compactor,
+	pendingInput,
+	tools,
+	systemPrompt,
+}: {
+	sessionId: string;
+	model: Model<Api>;
+	task: TaskRuntime;
+	context: ContextManager;
+	contextOptions: (model: Model<Api>) => {
+		budget: number;
+		target: number;
+		overheadTokens: number;
+	};
+	signal: AbortSignal;
+	compactor?: ContextCompactor;
+	pendingInput?: PrepareTurnRequest["pendingInput"];
+	tools?: unknown[];
+	systemPrompt?: string;
+}): Promise<AgentMessage[]> {
+	const capabilityItems = task.context.items();
+	const dynamic: AgentMessage[] = [
+		...(task.predecessorDigest
+			? [
+					{
+						role: "user" as const,
+						content: [
+							{
+								type: "text" as const,
+								text: `Advisory predecessor control-plane digest:\n${JSON.stringify(task.predecessorDigest)}`,
+							},
+						],
+						timestamp: new Date(task.startedAt).getTime(),
+					},
+				]
+			: []),
+		...capabilityItems.map((item): AgentMessage => ({
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text: `Task capability context (${item.capability.id}):\n${typeof item.content === "string" ? item.content : JSON.stringify(item.content)}`,
+				},
+			],
+			timestamp: new Date(task.startedAt).getTime(),
+		})),
+	];
+	const options = contextOptions(model);
+	const prepared = await context.prepareTurn({
+		sessionId,
+		taskId: task.id,
+		laneId: "main",
+		capabilityMessages: [],
+		fixedMessages: dynamic,
+		tools: [],
+		prefixTools: tools ?? [],
+		budget: options.budget,
+		provider: (model as Model<Api> & { provider?: string }).provider,
+		model: model.id,
+		...(systemPrompt === undefined ? {} : { systemPrompt }),
+		overheadTokens: options.overheadTokens,
+		...(pendingInput?.length ? { pendingInput } : {}),
+		...(compactor ? { compactor } : {}),
+		signal,
+	});
+	return dropOrphanToolResults(prepared.messages as AgentMessage[]);
+}
+
+function dropOrphanToolResults(messages: AgentMessage[]): AgentMessage[] {
+	const pending = new Set<string>();
+	return messages.filter((message) => {
+		if (message.role === "assistant") {
+			pending.clear();
+			for (const content of message.content)
+				if (content.type === "toolCall") pending.add(content.id);
+			return true;
+		}
+		if (message.role === "user") {
+			pending.clear();
+			return true;
+		}
+		if (message.role !== "toolResult") return true;
+		return pending.delete(message.toolCallId);
+	});
 }
 
 export function ensureSystem({
 	sessionId,
 	store,
 	context,
-	systemPrompt,
+	workspace,
 }: {
 	sessionId: string;
 	store: SessionStore;
 	context: ContextManager;
-	systemPrompt: string;
-}): void {
-	if (store.contextItems(sessionId).some((item) => item.kind === "system"))
-		return;
+	workspace: string;
+}): string {
+	const existing = store
+		.contextItems(sessionId)
+		.find((item) => item.kind === "system");
+	if (existing) {
+		if (typeof existing.payload !== "string")
+			throw new Error(`session ${sessionId} has an invalid system prompt`);
+		return existing.payload;
+	}
+	const systemPrompt = resolveSystemPrompt(workspace);
 	context.record({
 		sessionId,
 		kind: "system",
@@ -394,17 +567,26 @@ export function ensureSystem({
 		lifecycle: "pinned",
 		reason: "Harnez system prompt",
 	});
+	return systemPrompt;
 }
 
 export function queueMessage(
 	text: string,
 	callbacks: QueueCallbacks,
+	images: readonly ImageAttachment[] = [],
 ): QueuedMessage {
 	return {
 		...callbacks,
 		message: {
 			role: "user",
-			content: [{ type: "text", text }],
+			content: [
+				{ type: "text", text },
+				...images.map((image) => ({
+					type: "image" as const,
+					data: image.data,
+					mimeType: image.mimeType,
+				})),
+			],
 			timestamp: Date.now(),
 		},
 	};

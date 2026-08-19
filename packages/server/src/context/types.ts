@@ -7,7 +7,16 @@ export type ContextKind =
 	| "tool-result"
 	| "observation"
 	| "pinned-note"
-	| "subagent-handoff";
+	| "subagent-handoff"
+	| "long-term-memory";
+type ContextNodeRole = "message" | "checkpoint";
+export type ContextLaneState =
+	| "idle"
+	| "active"
+	| "completed"
+	| "failed"
+	| "cancelled"
+	| "abandoned";
 export type ContextSource = {
 	toolCallId?: string;
 	toolName?: string;
@@ -20,6 +29,12 @@ export type ContextItem = {
 	id: string;
 	sessionId: string;
 	sequence: number;
+	parentId?: string;
+	originLane: string;
+	nodeRole: ContextNodeRole;
+	contentHash: string;
+	sourceDigest?: string;
+	policyVersion?: number;
 	kind: ContextKind;
 	payload: unknown;
 	compactPayload?: unknown;
@@ -34,12 +49,59 @@ export type ContextItem = {
 	createdAt: string;
 	updatedAt: string;
 };
-export type NewContextItem = Omit<ContextItem, "sequence" | "updatedAt">;
+export type CheckpointRepresentation =
+	| { kind: "condensation"; memory: unknown }
+	| { kind: "fallback"; summary: string; references: string[] };
+export type ContextCheckpointPayload = {
+	schemaVersion: 1;
+	coveredThroughId?: string;
+	baseCheckpointId?: string;
+	baseRevision: number;
+	omittedDigest: string;
+	coverage: {
+		sourceCount: number;
+		condensedCount: number;
+		retainedCount: number;
+		omittedCount: number;
+		omittedDigest: string;
+		references: string[];
+	};
+	sourceDigest: string;
+	policyVersion: number;
+	representation: CheckpointRepresentation;
+	/** The exact provider-visible tail retained after the covered prefix. */
+	retainedTail: unknown[];
+};
+export type PreparedTurn = {
+	messages: unknown[];
+	estimatedTokens: number;
+	checkpointId?: string;
+	usedFallback: boolean;
+};
+export type NewContextItem = Omit<
+	ContextItem,
+	"sequence" | "updatedAt" | "originLane" | "nodeRole" | "contentHash"
+> & {
+	originLane?: string;
+	nodeRole?: ContextNodeRole;
+	contentHash?: string;
+};
+export type ContextLane = {
+	sessionId: string;
+	name: string;
+	headItemId?: string;
+	forkedFromItemId?: string;
+	ownerTaskId?: string;
+	state: ContextLaneState;
+	revision: number;
+	createdAt: string;
+	closedAt?: string;
+};
 export type NewEpisodeEvent = {
 	id: string;
 	sessionId: string;
 	episodeId: string;
-	action: "start" | "end";
+	action: "start" | "end" | "failed" | "cancelled" | "abandoned";
 	name: string;
 	kind: "exploration" | "action";
 	dependencies: string[];
@@ -54,7 +116,23 @@ export type ContextEpisode = {
 	kind: "exploration" | "action";
 	dependencies: string[];
 	conclusion?: string;
-	state: "active" | "completed" | "archived";
+	state:
+		| "active"
+		| "completed"
+		| "failed"
+		| "cancelled"
+		| "abandoned"
+		| "archived";
+};
+export type FinishContextTaskRequest = {
+	sessionId: string;
+	taskId: string;
+	status: "completed" | "failed" | "cancelled" | "superseded";
+	startedAt?: string;
+	laneId?: string;
+	episodeId?: string;
+	ledger?: readonly import("../task-ledger").ExecutionLedgerEntry[];
+	handoff?: SubagentResult;
 };
 export type ObservationRecallInput = {
 	observationId: string;
@@ -133,6 +211,7 @@ export class ContextBudgetError extends Error {
 	constructor(
 		readonly estimatedTokens: number,
 		readonly budget: number,
+		readonly code: "CONTEXT_BUDGET" | "INPUT_TOO_LARGE" = "CONTEXT_BUDGET",
 	) {
 		super(
 			`Context budget cannot be satisfied (${estimatedTokens} > ${budget})`,

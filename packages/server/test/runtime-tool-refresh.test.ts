@@ -19,6 +19,8 @@ import { mcpCapabilities } from "../src/mcp/capabilities";
 import type { McpToolDescriptor } from "../src/mcp/registry";
 import { SessionStore } from "../src/sessions/store";
 import { TaskRuntime } from "../src/task-runtime";
+import type { RuntimeEvent } from "../src/telemetry/events";
+import { sanitizeEvent } from "../src/telemetry/runtime";
 import { CoreTools } from "../src/tools";
 
 /**
@@ -193,6 +195,66 @@ test("step capability context reaches one inference", async () => {
 	expect(task.context.items()).toEqual([]);
 }, 30_000);
 
+test("model telemetry carries the provider request and terminal response", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "harnez-runtime-telemetry-"));
+	paths.push(dir);
+	const store = new SessionStore(join(dir, "state.sqlite"));
+	const sessionId = store.create(dir);
+	const context = new ContextManager(store);
+	const tools = new CoreTools(dir);
+	const snapshot = new CapabilityCatalog(
+		tools.capabilities(GENERATION),
+		GENERATION,
+	).snapshot({
+		tool: { maxLevel: "execute", confirmation: "none" },
+		skill: { maxLevel: "activate" },
+	});
+	const task = new TaskRuntime(
+		snapshot,
+		new CapabilityContext({}, (base, items) => ({ base, items })),
+		crypto.getRandomValues(new Uint8Array(32)),
+	);
+	const models = scriptedModels([[{ type: "text", text: "captured answer" }]]);
+	const events: RuntimeEvent[] = [];
+	const runtime = new HarnezAgentRuntime({
+		credentials: {} as CredentialStore,
+		modelsFor: () => models as never,
+		store,
+		context,
+		sink: (event) => events.push(event),
+	});
+
+	await runtime.run({
+		sessionId,
+		text: "captured question",
+		images: [
+			{ id: "image-1", mimeType: "image/png", data: "private-image-bytes" },
+		],
+		config: { provider: "fake", model: "model-1" },
+		tools,
+		task,
+		skills: [],
+		mcpTools: [],
+		mcp: { call: async () => "" },
+		signal: new AbortController().signal,
+		emit: () => {},
+	});
+
+	const started = events.find(
+		(event) => event.type === "model.request.started",
+	)!;
+	const completed = events.find(
+		(event) => event.type === "model.request.completed",
+	)!;
+	expect(JSON.stringify(started["prompt"])).toContain("captured question");
+	expect(JSON.stringify(completed["response"])).toContain("captured answer");
+	expect(started.requestId).toBe(completed.requestId);
+	const captured = sanitizeEvent(started, new Set(["prompts", "paths"]));
+	expect(captured["prompt"]).not.toContain("private-image-bytes");
+	expect(captured["prompt"]).toContain('"mimeType":"image/png"');
+	expect(sanitizeEvent(started)["prompt"]).toBeUndefined();
+}, 30_000);
+
 test("a tool loaded mid-run is callable on the next turn of the same run", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "harnez-runtime-"));
 	paths.push(dir);
@@ -224,11 +286,13 @@ test("a tool loaded mid-run is callable on the next turn of the same run", async
 		[toolCall("mcp__echo__shout", "call-2", { text: "hello" })],
 		[{ type: "text", text: "done" }],
 	]);
+	const telemetry: RuntimeEvent[] = [];
 	const runtime = new HarnezAgentRuntime({
 		credentials: {} as CredentialStore,
 		modelsFor: () => models as never,
 		store,
 		context,
+		sink: (event) => telemetry.push(event),
 	});
 
 	const results: string[] = [];
@@ -258,4 +322,44 @@ test("a tool loaded mid-run is callable on the next turn of the same run", async
 
 	// The second turn must reach the server rather than "Tool ... not found".
 	expect(calls).toEqual(["echo/shout"]);
+	const builtInStart = telemetry.find(
+		(event) =>
+			event.type === "tool.call.started" && event.tool === "tools_load",
+	)!;
+	const builtInEnd = telemetry.find(
+		(event) =>
+			event.type === "tool.call.completed" && event.tool === "tools_load",
+	)!;
+	const mcpStart = telemetry.find(
+		(event) =>
+			event.type === "tool.call.started" && event.tool === descriptor.name,
+	)!;
+	const mcpEnd = telemetry.find(
+		(event) =>
+			event.type === "tool.call.completed" && event.tool === descriptor.name,
+	)!;
+	expect(JSON.stringify(builtInStart["toolArguments"])).toContain(
+		"tool:mcp__echo__shout",
+	);
+	expect(JSON.stringify(builtInEnd["toolResults"])).toContain(
+		"Loaded mcp__echo__shout",
+	);
+	expect(JSON.stringify(mcpStart["mcpPayload"])).toContain("hello");
+	expect(JSON.stringify(mcpEnd["mcpPayload"])).toContain("SHOUTED");
+	expect(
+		sanitizeEvent(builtInStart, new Set(["tool-arguments"]))[
+			"toolArguments"
+		],
+	).toBeDefined();
+	expect(
+		sanitizeEvent(mcpStart, new Set(["tool-arguments"]))["mcpPayload"],
+	).toBeUndefined();
+	expect(
+		sanitizeEvent(mcpStart, new Set(["mcp-payloads"]))["mcpPayload"],
+	).toBeDefined();
+	expect(
+		sanitizeEvent(builtInStart, new Set(["mcp-payloads"]))[
+			"toolArguments"
+		],
+	).toBeUndefined();
 }, 30_000);

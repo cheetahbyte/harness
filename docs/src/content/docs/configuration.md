@@ -49,6 +49,7 @@ token set or an API key. Harnez writes the file with `0o600` permissions, and
     "model": "qwen3-coder:30b",
     "thinkingLevel": "medium"
   },
+  "compactionModel": "ollama/gpt-oss:20b",
   "fastCycle": [
     { "provider": "openai-codex", "model": "gpt-5.1-codex", "thinkingLevel": "medium" },
     { "provider": "anthropic", "model": "claude-opus-4-5", "thinkingLevel": "high" }
@@ -81,6 +82,10 @@ placeholder key, so compatible local servers must tolerate an
 `model` is whatever `/model` last set. `thinkingLevel` is the last level
 selected with `Shift+Tab`; supported levels depend on the model. `baseUrl`
 only applies to the `openai-compatible` provider.
+
+`compactionModel` optionally selects a separate model for LLM context
+compaction in `<provider>/<model>` form. It falls back to `model` when omitted.
+Project settings override global settings.
 
 `fastCycle` is the list `Ctrl+P` steps through, in the order `/fast-cycle`
 listed the models. Each entry carries its own `thinkingLevel`, so `Shift+Tab`
@@ -142,6 +147,33 @@ user-level prompt templates in `~/.harnez/prompts` and `~/.agents/prompts`. The
 pre-rename `.harness` directories are still scanned, ranking just below their
 `.harnez` counterparts.
 
+## System prompt files
+
+The built-in operator prompt can be replaced or extended with Markdown files:
+
+```text
+$XDG_CONFIG_HOME/harnez/SYSTEM.md             # replace the built-in prompt
+$XDG_CONFIG_HOME/harnez/APPEND_SYSTEM.md      # append global rules
+<repo>/.harnez/APPEND_SYSTEM.md                # append project rules
+```
+
+When `$XDG_CONFIG_HOME` is unset, `~/.config` is used. Existing files under
+`harness` are accepted as a legacy fallback for each corresponding `harnez`
+path. If both names exist, the `harnez` file wins. The files are resolved in
+the order shown: `SYSTEM.md` (or the built-in prompt), global append, then
+project append. A project cannot replace the operator prompt because
+project-local `SYSTEM.md` is not supported.
+
+The resolved prompt is fixed when a new session first runs an agent task.
+Editing these files affects new sessions only; existing sessions retain their
+prompt, including after a server restart. `SYSTEM.md` replaces the built-in
+capability and compaction guidance, so use `APPEND_SYSTEM.md` when you want to
+keep those instructions. Leading and trailing whitespace is removed from each
+body, and non-empty bodies are separated by two newlines. Empty append files
+are ignored; an empty `SYSTEM.md` is a valid replacement. Invalid UTF-8,
+directories, and other read failures stop task startup and identify the file
+path in the error.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -149,7 +181,23 @@ pre-rename `.harness` directories are still scanned, ranking just below their
 | `HARNEZ_PORT` | Server listen port. Default `7432`. |
 | `HARNEZ_URL` | Server URL the TUI connects to. Default `http://localhost:7432`. |
 | `HARNEZ_CONTEXT_BUDGET` | Overrides the context token budget used for compaction. |
+| `HARNEZ_LLM_COMPACTION` | Set to `0` to skip LLM condensation. Deterministic fallback remains available after the context budget is exceeded. |
 | `HARNEZ_LOG_LEVEL` | Pino log level. Default `info`. |
+| `HARNEZ_OTEL` | Set to `1` to enable OpenTelemetry traces and metrics. |
+| `HARNEZ_OTEL_CAPTURE_CONTENT` | Comma-separated opt-in payload categories, or `all`. Default empty. |
+| `HARNEZ_OTEL_CAPTURE_MAX_CHARS` | Maximum characters per captured telemetry payload. Default `16384`; maximum `1000000`. |
 | `HARNEZ_SHOW_STATUS` | Set to `1` to show status and token-usage rows in the TUI transcript. |
 | `XDG_CONFIG_HOME` | Overrides the base config directory in place of `~/.config`. |
 | `HARNEZ_OPENAI_API_KEY` / `OPENAI_API_KEY` | API key for the `openai-compatible` provider, checked in that order. |
+
+Set `HARNEZ_OTEL=1` to enable OpenTelemetry export. Harnez then uses the
+standard `OTEL_*` variables for endpoint, protocol, headers, service name,
+resource attributes, exporters, and sampling. Content capture is disabled by
+default; see [Observability](/docs/advanced/observability) before enabling it.
+
+Context admission triggers at 80% of the usable budget and targets 60%. The
+runtime makes one bounded LLM condensation operation when it can reserve enough
+space for the request and can retry invalid output once. A failed operation
+uses deterministic checkpoint compaction. With `HARNEZ_LLM_COMPACTION=0`, the
+fallback waits until the budget is exceeded. Provider context-length errors
+create a recovery checkpoint and retry once with the current turn preserved.

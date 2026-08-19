@@ -121,6 +121,19 @@ test("providers merge by ID, with project entries replacing global entries", () 
 	expect(store.providers()["local"]?.models).toEqual(["qwen3-coder:30b"]);
 });
 
+test("compaction model uses project settings before global settings", () => {
+	const dir = workspace();
+	const global = settingsFile(dir, "global.json", {
+		compactionModel: "ollama/qwen2.5:7b",
+	});
+	const project = settingsFile(dir, "project.json", {
+		compactionModel: "company/summarizer",
+	});
+
+	const store = new SettingsStore(global, project);
+	expect(store.compactionModel()).toBe("company/summarizer");
+});
+
 test.each([
 	[[], "providers must be an object"],
 	[{ " ": {} }, 'provider " " ID must not be blank'],

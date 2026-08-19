@@ -1,4 +1,9 @@
-import type { ModelConfig, ServerEvent } from "../../../shared/src/protocol";
+import type {
+	ImageAttachment,
+	ModelConfig,
+	ServerEvent,
+} from "../../../shared/src/protocol";
+import { displayUserInput } from "../../../shared/src/protocol";
 import { slashCommandPattern } from "../../../shared/src/slash-command";
 import type { AgentRunTiming, HarnezAgentRuntime } from "../agent/runtime";
 import { contextCapabilities } from "../agent/tools";
@@ -19,6 +24,7 @@ import type { McpRegistry, McpToolDescriptor } from "../mcp/registry";
 import { expandPrompt, scanPrompts } from "../prompts";
 import { activateSkill, type SkillSnapshotEntry, scanSkills } from "../skills";
 import { TaskRuntime, type TaskTerminalStatus } from "../task-runtime";
+import type { RuntimeEventSink } from "../telemetry/events";
 import { tokenCost } from "../token-cost";
 import { CoreTools } from "../tools";
 import type { QueuedTask, SchedulerDecision } from "./scheduler";
@@ -29,7 +35,9 @@ export type PendingSteer = {
 	id: string;
 	type: "steer";
 	text: string;
+	images?: ImageAttachment[];
 };
+export type InitialInput = { text: string; images?: ImageAttachment[] };
 
 export type RunningTask = {
 	controller: AbortController;
@@ -52,17 +60,20 @@ type RunnerOptions = {
 	workspace: (sessionId: string) => string;
 	modelConfig: (sessionId: string) => ModelConfig | undefined;
 	emit: (sessionId: string, event: ServerEvent) => void;
+	sink?: RuntimeEventSink;
 };
 
 type RunInput = {
 	id: string;
 	session: Session;
-	command: string | QueuedTask | PendingSteer;
+	command: string | InitialInput | QueuedTask | PendingSteer;
 	predecessor?: TaskRuntime;
 	resume?: RunningTask;
 };
 
 export class SessionTaskRunner {
+	private readonly turnIds = new Map<string, number>();
+	private readonly startedTasks = new Set<string>();
 	constructor(private readonly options: RunnerOptions) {}
 
 	async run(input: RunInput): Promise<void> {
@@ -70,8 +81,12 @@ export class SessionTaskRunner {
 		if (session.running) return;
 		const controller = new AbortController();
 		const startedAt = Date.now();
-		const pending = typeof command === "string" ? undefined : command;
+		const pending =
+			typeof command === "string" || isInitialInput(command)
+				? undefined
+				: command;
 		const text = commandText(command);
+		const images = commandImages(command);
 		const pendingType = pendingCommandType(pending);
 		const running = resume
 			? this.resumeTask(session, resume, controller, text)
@@ -79,18 +94,38 @@ export class SessionTaskRunner {
 					id,
 					session,
 					text,
+					images,
 					controller,
 					...(predecessor ? { predecessor } : {}),
 					...(pending && "submissionWatermark" in pending
 						? { submissionWatermark: pending.submissionWatermark }
 						: {}),
 				});
-		this.emitStart(id, running, pending, pendingType, text);
+		this.emitStart(id, running, pending, pendingType, text, images);
+		if (!this.startedTasks.has(running.task.id))
+			this.options.sink?.({
+				type: "task.started",
+				timestamp: new Date().toISOString(),
+				sessionId: id,
+				taskId: running.task.id,
+			});
+		this.startedTasks.add(running.task.id);
+		const turnId =
+			(this.turnIds.set(id, (this.turnIds.get(id) ?? 0) + 1),
+			this.turnIds.get(id)!);
+		this.options.sink?.({
+			type: "turn.started",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+			turnId,
+		});
 		let timing: AgentRunTiming;
 		try {
 			timing = await this.options.runtime.run({
 				sessionId: id,
 				text: running.prompt,
+				...(images.length ? { images } : {}),
 				config: this.options.modelConfig(id),
 				tools: running.tools,
 				task: running.task,
@@ -99,17 +134,52 @@ export class SessionTaskRunner {
 				mcp: running.mcp,
 				signal: controller.signal,
 				emit: (event) => this.options.emit(id, event),
+				turnId,
 			});
 		} catch (error) {
-			await this.fail(id, session, running, pending, error);
+			this.options.sink?.({
+				type: "turn.completed",
+				timestamp: new Date().toISOString(),
+				sessionId: id,
+				taskId: running.task.id,
+				turnId,
+				status: "failed",
+				durationMs: Date.now() - startedAt,
+			});
+			await this.fail(id, session, running, pending, error, startedAt);
 			return;
 		}
 		delete session.running;
 		if (controller.signal.aborted) {
+			this.options.sink?.({
+				type: "turn.completed",
+				timestamp: new Date().toISOString(),
+				sessionId: id,
+				taskId: running.task.id,
+				turnId,
+				status: "cancelled",
+				durationMs: Date.now() - startedAt,
+			});
 			await this.abort(id, session, running, pending, startedAt, timing);
 			return;
 		}
 		this.succeed(id, running, pending, startedAt, timing);
+		this.options.sink?.({
+			type: "turn.completed",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+			turnId,
+			durationMs: Date.now() - startedAt,
+		});
+		this.options.sink?.({
+			type: "task.completed",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+			status: "completed",
+			durationMs: Date.now() - startedAt,
+		});
 		await this.advance(id, session, session.scheduler.settle(running.task));
 	}
 
@@ -153,6 +223,7 @@ export class SessionTaskRunner {
 	private async startTask(
 		input: Omit<RunInput, "command" | "resume"> & {
 			text: string;
+			images: ImageAttachment[];
 			controller: AbortController;
 			submissionWatermark?: number;
 		},
@@ -178,10 +249,11 @@ export class SessionTaskRunner {
 		pending: QueuedTask | PendingSteer | undefined,
 		pendingType: QueuedTask["kind"] | PendingSteer["type"] | undefined,
 		text: string,
+		images: ImageAttachment[],
 	): void {
 		this.options.emit(id, {
 			type: "user",
-			text,
+			text: displayText(text, images),
 			...(pending ? { id: pending.id } : {}),
 		});
 		if (pending)
@@ -215,8 +287,17 @@ export class SessionTaskRunner {
 		running: RunningTask,
 		pending: QueuedTask | PendingSteer | undefined,
 		error: unknown,
+		startedAt: number,
 	): Promise<void> {
 		log.error({ err: error, sessionId: id }, "run failed");
+		this.options.sink?.({
+			type: "task.completed",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+			status: "failed",
+			durationMs: Date.now() - startedAt,
+		});
 		const message = error instanceof Error ? error.message : String(error);
 		/**
 		 * The budget cliff is the one failure the user can act on, and it is the
@@ -231,6 +312,7 @@ export class SessionTaskRunner {
 						type: "context-budget-error",
 						estimatedTokens: error.estimatedTokens,
 						budget: error.budget,
+						code: error.code,
 					}
 				: { type: "error", message },
 		);
@@ -286,6 +368,14 @@ export class SessionTaskRunner {
 			running.task,
 			running.task.result()?.status ?? "cancelled",
 		);
+		this.options.sink?.({
+			type: "task.completed",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: running.task.id,
+			status: running.task.result()?.status ?? "cancelled",
+			durationMs,
+		});
 		this.finishPending(id, pending);
 		await this.advance(id, session, session.scheduler.settle(running.task));
 	}
@@ -315,16 +405,24 @@ export class SessionTaskRunner {
 	private async createTask({
 		id,
 		text,
+		images,
 		controller,
 		predecessor,
 		submissionWatermark,
 	}: {
 		id: string;
 		text: string;
+		images: ImageAttachment[];
 		controller: AbortController;
 		predecessor?: TaskRuntime;
 		submissionWatermark?: number;
 	}): Promise<RunningTask> {
+		if (images.length) {
+			if (
+				!this.options.runtime.supportsImages(id, this.options.modelConfig(id))
+			)
+				throw new Error("configured model does not support images");
+		}
 		const bindingGeneration = crypto.randomUUID();
 		const contextWatermark = this.options.store.contextSequence(id);
 		const workspace = this.options.workspace(id);
@@ -378,15 +476,34 @@ export class SessionTaskRunner {
 			...(predecessor ? { predecessor } : {}),
 			...(submissionWatermark === undefined ? {} : { submissionWatermark }),
 		});
+		for (const skill of skills)
+			this.options.sink?.({
+				type: "skill.discovered",
+				timestamp: new Date().toISOString(),
+				sessionId: id,
+				taskId: task.id,
+				skill: skill.capability.name,
+				skillHash: skill.ref.bodyHash,
+			});
+		this.options.sink?.({
+			type: "capability.snapshot.created",
+			timestamp: new Date().toISOString(),
+			sessionId: id,
+			taskId: task.id,
+			capabilitySnapshotId: bindingGeneration,
+		});
 		this.loadTools(task, snapshot, context, accountant);
 		const { prompt, selected } = selectedSkills(expanded, skills);
 		const skipped = await this.activateSkills(
 			id,
+			task.id,
 			selected,
 			snapshot,
 			context,
 			accountant,
 		);
+		this.options.context.recover(id);
+		this.options.store.startContextTask(id, task.id, task.startedAt);
 		return {
 			controller,
 			task,
@@ -438,6 +555,8 @@ export class SessionTaskRunner {
 				taskStartSequence: contextWatermark,
 				predecessorTerminalMessageIds:
 					predecessor?.result()?.terminalMessageIds ?? [],
+				sessionId: id,
+				...(this.options.sink ? { sink: this.options.sink } : {}),
 			},
 		);
 		const accountant = {
@@ -506,6 +625,7 @@ export class SessionTaskRunner {
 	 */
 	private async activateSkills(
 		id: string,
+		taskId: string,
 		selected: readonly SkillSnapshotEntry[],
 		snapshot: CapabilitySnapshot,
 		context: CapabilityContext,
@@ -513,8 +633,25 @@ export class SessionTaskRunner {
 	): Promise<string[]> {
 		const skipped: string[] = [];
 		for (const entry of selected) {
+			this.options.sink?.({
+				type: "skill.inspected",
+				timestamp: new Date().toISOString(),
+				sessionId: id,
+				taskId,
+				skill: entry.capability.name,
+				skillHash: entry.ref.bodyHash,
+			});
 			const ref = snapshot.reference(entry.capability.id, "operator");
 			const admission = await activateSkill(entry, ref, context, accountant);
+			if (admission.status !== "rejected")
+				this.options.sink?.({
+					type: "skill.activated",
+					timestamp: new Date().toISOString(),
+					sessionId: id,
+					taskId,
+					skill: entry.capability.name,
+					skillHash: entry.ref.bodyHash,
+				});
 			if (admission.status !== "rejected") continue;
 			const reason = describeRejection(
 				admission,
@@ -538,9 +675,15 @@ export class SessionTaskRunner {
 		task: TaskRuntime,
 		status: TaskTerminalStatus,
 	): void {
+		this.options.context.clearPressure(task.id);
 		this.options.runtime.forget(id);
-		this.options.store.appendTaskLedger(id, task.id, task.ledger());
-		this.options.store.recordTaskTerminal(id, task.id, status, task.startedAt);
+		this.options.context.finishTask({
+			sessionId: id,
+			taskId: task.id,
+			status: status === "superseded" ? "cancelled" : status,
+			startedAt: task.startedAt,
+			ledger: task.ledger(),
+		});
 		this.options.emit(id, {
 			type: "task-state",
 			taskId: task.id,
@@ -563,9 +706,37 @@ export class SessionTaskRunner {
 	}
 }
 
-function commandText(command: string | QueuedTask | PendingSteer): string {
+function commandText(
+	command: string | InitialInput | QueuedTask | PendingSteer,
+): string {
 	if (typeof command === "string") return command;
-	return "userInput" in command ? command.userInput.text : command.text;
+	if (!("id" in command) && !("userInput" in command))
+		return (command as InitialInput).text;
+	return "userInput" in command
+		? (command as QueuedTask).userInput.text
+		: (command as PendingSteer).text;
+}
+
+function commandImages(
+	command: string | InitialInput | QueuedTask | PendingSteer,
+): ImageAttachment[] {
+	if (typeof command === "string") return [];
+	if (!("id" in command) && !("userInput" in command))
+		return (command as InitialInput).images ?? [];
+	return (
+		("userInput" in command
+			? (command as QueuedTask).userInput.images
+			: (command as PendingSteer).images) ?? []
+	);
+}
+
+function isInitialInput(command: object): command is InitialInput {
+	return "text" in command && !("id" in command) && !("userInput" in command);
+}
+
+function displayText(text: string, images: readonly ImageAttachment[]): string {
+	if (!images.length) return text;
+	return displayUserInput(text, images);
 }
 
 export function pendingCommandType(

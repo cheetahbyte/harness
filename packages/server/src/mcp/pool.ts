@@ -8,6 +8,7 @@ import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/typ
 
 import { VERSION } from "../../../shared/src/version";
 import { log } from "../logger";
+import { sanitizedChildEnvironment } from "../telemetry/runtime";
 import type { ResolvedServer } from "./config";
 
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -351,10 +352,7 @@ function transportFor(
  * secrets out of the config file.
  */
 function inheritedEnvironment(): Record<string, string> {
-	const environment: Record<string, string> = {};
-	for (const [key, value] of Object.entries(process.env))
-		if (value !== undefined) environment[key] = value;
-	return environment;
+	return sanitizedChildEnvironment();
 }
 
 function flatten(content: unknown): string {

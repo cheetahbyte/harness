@@ -152,6 +152,16 @@ Closing the TUI therefore does not discard completed conversation history.
 Back up the database before moving it between Harnez versions. A binary refuses
 to open a database whose schema is newer than it supports.
 
+## Pasting images
+
+Paste PNG, JPEG, GIF, or WebP images directly into the composer. Each message
+accepts up to four images, with an 8 MiB decoded limit per image and 20 MiB in
+total. The transcript displays placeholders such as `[Image #1]`; numbering
+starts over for every submitted message, and image bytes are not written to
+the event log. Images require a configured vision-capable model. Remote and
+headless clipboard access, file pickers, drag-and-drop, thumbnails, and image
+editing are not supported.
+
 ## Current limits
 
 You cannot yet regenerate or delete a session title manually. Title changes are

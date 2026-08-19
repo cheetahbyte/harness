@@ -21,6 +21,7 @@ export type ProviderSettings = Record<string, OpenAICompatibleProviderSettings>;
 
 type Settings = {
 	model?: ModelConfig;
+	compactionModel?: string;
 	fastCycle?: FastCycleEntry[];
 	disableThinkingBlocks?: boolean;
 	disabledMcpServers?: string[];
@@ -33,8 +34,10 @@ type Settings = {
  * `harness`. An existing legacy file keeps being used — including for writes —
  * so upgrading never silently strands someone's credentials or settings.
  */
-export function globalHarnezPath(file: string): string {
-	const config = process.env["XDG_CONFIG_HOME"] ?? join(homedir(), ".config");
+export function globalHarnezPath(file: string, home?: string): string {
+	const config = home
+		? join(home, ".config")
+		: (process.env["XDG_CONFIG_HOME"] ?? join(homedir(), ".config"));
 	const path = join(config, "harnez", file);
 	if (existsSync(path)) return path;
 	const legacy = join(config, "harness", file);
@@ -63,6 +66,10 @@ export class SettingsStore {
 
 	modelConfig(): ModelConfig | undefined {
 		return this.project.model ?? this.global.model;
+	}
+
+	compactionModel(): string | undefined {
+		return this.project.compactionModel ?? this.global.compactionModel;
 	}
 
 	setModelConfig(model: ModelConfig): void {

@@ -15,6 +15,7 @@ import {
 	type ExecutionLedgerEntry,
 	type TaskLedgerDigest,
 } from "./task-ledger";
+import type { RuntimeEventSink } from "./telemetry/events";
 
 export type TaskId = string;
 export type CallId = string;
@@ -73,6 +74,10 @@ export class TaskRuntime {
 	private readonly events: ExecutionLedgerEntry[] = [];
 	private readonly inFlight = new Map<CallId, InFlight>();
 	private readonly pendingConfirmations = new Map<string, string>();
+	private readonly approvalIds = new Map<string, number>();
+	private approvalSequence = 0;
+	private readonly telemetry: RuntimeEventSink | undefined;
+	private readonly sessionId: string | undefined;
 	private readonly confirmedCalls = new Map<string, string>();
 	private readonly confirmedCapabilities = new Set<string>();
 	private readonly loadedCapabilities = new Map<string, CapabilityRef>();
@@ -99,12 +104,16 @@ export class TaskRuntime {
 			taskStartSequence?: number;
 			predecessorTerminalMessageIds?: readonly string[];
 			now?: () => Date;
+			sessionId?: string;
+			sink?: RuntimeEventSink;
 		} = {},
 	) {
 		this.id = options.id ?? crypto.randomUUID();
 		this.now = options.now ?? (() => new Date());
 		this.startedAt = options.startedAt ?? this.timestamp();
 		this.cancellationGraceMs = options.cancellationGraceMs ?? 1_000;
+		this.telemetry = options.sink;
+		this.sessionId = options.sessionId;
 		this.unknownPriorEffectsAcknowledged = !options.unknownPriorMutatingEffects;
 		this.predecessorDigest = options.predecessorDigest
 			? structuredClone(options.predecessorDigest)
@@ -178,6 +187,16 @@ export class TaskRuntime {
 		if (!capabilityId) throw new Error("unknown confirmation request");
 		this.pendingConfirmations.delete(callId);
 		this.confirmedCalls.set(callId, capabilityId);
+		const approvalId = this.approvalIds.get(callId);
+		if (approvalId !== undefined && this.sessionId)
+			this.telemetry?.({
+				type: "approval.resolved",
+				timestamp: new Date().toISOString(),
+				sessionId: this.sessionId,
+				taskId: this.id,
+				approvalId,
+				status: "approved",
+			});
 	}
 
 	load(ref: CapabilityRef): void {
@@ -302,6 +321,17 @@ export class TaskRuntime {
 		}
 		const callId = crypto.randomUUID();
 		this.pendingConfirmations.set(callId, capabilityId);
+		const approvalId = ++this.approvalSequence;
+		this.approvalIds.set(callId, approvalId);
+		if (this.sessionId)
+			this.telemetry?.({
+				type: "approval.requested",
+				timestamp: new Date().toISOString(),
+				sessionId: this.sessionId,
+				taskId: this.id,
+				approvalId,
+				capabilityId,
+			});
 		throw new ConfirmationRequiredError(callId, capabilityId);
 	}
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -12,17 +12,26 @@ import type { AuthType, ServerEvent } from "../../shared/src/protocol";
 import type { AuthInteraction } from "@earendil-works/pi-ai";
 import { createHarnezModels, JsonCredentialStore } from "../src/provider";
 import { HarnezServer } from "../src/server";
+import { managedMessages } from "../src/agent/events";
+import { ContextManager } from "../src/context/manager";
 import { SessionStore } from "../src/sessions/store";
 import { SettingsStore } from "../src/settings-store";
 import { BashTool } from "../src/tools/bash";
 
 const paths: string[] = [];
 const originalConfigHome = process.env["XDG_CONFIG_HOME"];
+const originalLlmCompaction = process.env["HARNEZ_LLM_COMPACTION"];
+beforeEach(() => {
+	process.env["HARNEZ_LLM_COMPACTION"] = "0";
+});
 afterEach(() => {
 	for (const path of paths.splice(0))
 		rmSync(path, { recursive: true, force: true });
 	if (originalConfigHome === undefined) delete process.env["XDG_CONFIG_HOME"];
 	else process.env["XDG_CONFIG_HOME"] = originalConfigHome;
+	if (originalLlmCompaction === undefined)
+		delete process.env["HARNEZ_LLM_COMPACTION"];
+	else process.env["HARNEZ_LLM_COMPACTION"] = originalLlmCompaction;
 });
 function harnez(contextBudget?: number) {
 	const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
@@ -97,6 +106,133 @@ async function until(assertion: () => void): Promise<void> {
 }
 
 describe("first milestone", () => {
+	test("does not send tool results without their assistant tool call", () => {
+		const dir = mkdtempSync(join(tmpdir(), "harnez-core-orphan-tool-"));
+		paths.push(dir);
+		const store = new SessionStore(join(dir, "state.sqlite"));
+		const sessionId = store.create(dir);
+		const context = new ContextManager(store);
+		context.record({
+			sessionId,
+			kind: "assistant",
+			payload: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "call-episode",
+						name: "episode",
+						arguments: {},
+					},
+				],
+			},
+			tokenCost: 10,
+			lifecycle: "archived",
+			projection: "omitted",
+			reason: "compacted",
+			groupId: "group-episode",
+		});
+		context.record({
+			sessionId,
+			kind: "tool-result",
+			payload: {
+				role: "toolResult",
+				toolCallId: "call-episode",
+				toolName: "episode",
+				content: [
+					{
+						type: "text",
+						text: "Action episodes require an exploration dependency",
+					},
+				],
+				isError: true,
+			},
+			tokenCost: 10,
+			lifecycle: "retained",
+			projection: "full",
+			reason: "tool result",
+			groupId: "group-episode",
+		});
+
+		const messages = managedMessages({
+			sessionId,
+			store,
+			context,
+			model: {} as never,
+			contextOptions: () => ({
+				budget: 20_000,
+				target: 16_000,
+				overheadTokens: 0,
+			}),
+		});
+
+		expect(messages).not.toContainEqual(
+			expect.objectContaining({
+				role: "toolResult",
+				toolCallId: "call-episode",
+			}),
+		);
+		store.db.close();
+	});
+
+	test("proactive condensation reaches the next provider assembly and preserves recall", () => {
+		const dir = mkdtempSync(join(tmpdir(), "harnez-core-condensation-"));
+		paths.push(dir);
+		const store = new SessionStore(join(dir, "state.sqlite"));
+		const sessionId = store.create(dir);
+		const context = new ContextManager(store);
+		context.record({ sessionId, kind: "system", payload: "stable semantics", tokenCost: 2, lifecycle: "pinned", projection: "full", reason: "system" });
+		context.record({ sessionId, kind: "user", payload: { role: "user", content: "objective" }, tokenCost: 2, lifecycle: "pinned", projection: "full", reason: "user" });
+		for (let index = 0; index < 6; index++) {
+			const groupId = `group-${index}`;
+			context.record({
+				sessionId,
+				kind: "assistant",
+				payload: {
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: `call-${index}`,
+							name: "read",
+							arguments: {},
+						},
+					],
+				},
+				tokenCost: 10,
+				lifecycle: "retained",
+				projection: "full",
+				reason: "tool call",
+				groupId,
+			});
+			context.record({
+				sessionId,
+				kind: "tool-result",
+				payload: {
+					role: "toolResult",
+					toolCallId: `call-${index}`,
+					toolName: "read",
+					content: [{ type: "text", text: `recent-${index}` }],
+					isError: false,
+				},
+				tokenCost: 1_000,
+				lifecycle: "retained",
+				projection: "full",
+				reason: "done",
+				groupId,
+			});
+		}
+		context.recordObservation(sessionId, "exact archived output", { observationId: "obs-core" });
+		const condensed = context.condense(sessionId, { milestone: "subtask done", completedWork: ["implemented"], strategies: [], environmentChanges: [], constraints: [], openQuestions: [], references: ["observation://obs-core"] }, { budget: 20_000, target: 16_000 });
+		expect(condensed.noOp).toBe(false);
+		const messages = managedMessages({ sessionId, store, context, model: {} as never, contextOptions: () => ({ budget: 20_000, target: 16_000, overheadTokens: 0 }) });
+		const serialized = JSON.stringify(messages);
+		expect(serialized).toContain("<harnez-long-term-memory>");
+		expect(serialized).toContain("recent-5");
+		expect(context.recall(sessionId, "observation://obs-core").text).toBe("exact archived output");
+		const automatic = context.assemble(sessionId, { budget: 1_000, target: 800, overheadTokens: 0 });
+		expect(automatic.tokensAfter).toBeLessThanOrEqual(automatic.tokensBefore);
+	});
 	test("does not list a session until a user submits a message", async () => {
 		const { server } = harnez();
 		const id = server.createSession();
@@ -132,6 +268,34 @@ describe("first milestone", () => {
 			id: "user-1",
 			text: "Remember this message",
 		});
+	});
+
+	test("rejects images on non-vision models without user or context records", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harnez-image-model-test-"));
+		paths.push(dir);
+		const server = new HarnezServer(new SessionStore(join(dir, "state.sqlite")), dir, fakeModels({ input: ["text"] }), settings(dir));
+		const id = server.createSession();
+		await server.command(id, { type: "configure", provider: "fake", model: "model-1" });
+		await expect(server.command(id, { type: "prompt", text: "image", images: [{ id: "00000000-0000-4000-8000-000000000001", mimeType: "image/png", data: "iVBORw0KGgo=" }] })).rejects.toThrow("does not support images");
+		expect(server.store.events(id).some((event) => event.type === "user")).toBe(false);
+		expect(server.store.contextItems(id)).toEqual([]);
+	});
+
+	test("records vision images after text in provider order", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "harnez-image-model-test-"));
+		paths.push(dir);
+		const server = new HarnezServer(new SessionStore(join(dir, "state.sqlite")), dir, fakeModels({ input: ["text", "image"], contextWindow: 100_000, maxTokens: 1_000 }), settings(dir));
+		const images = [
+			{ id: "00000000-0000-4000-8000-000000000001", mimeType: "image/png" as const, data: "iVBORw0KGgo=" },
+			{ id: "00000000-0000-4000-8000-000000000002", mimeType: "image/png" as const, data: "iVBORw0KGgo=" },
+		];
+		let received: { text?: string; images?: typeof images } | undefined;
+		(server as unknown as { runtime: { run: (input: { text: string; images?: typeof images }) => Promise<{ modelDurationMs: number; toolDurationMs: number }> } }).runtime.run = async (input) => { received = input; return { modelDurationMs: 0, toolDurationMs: 0 }; };
+		const id = server.createSession();
+		await server.command(id, { type: "configure", provider: "fake", model: "model-1" });
+		await server.command(id, { type: "prompt", text: "image", images });
+		expect(received?.text).toBe("image");
+		expect(received?.images).toEqual(images);
 	});
 
 	test("keeps each session's workspace", () => {
@@ -2029,7 +2193,7 @@ function episodeId(
 		}
 	});
 
-	test("summarizes an over-budget prompt before calling the provider", async () => {
+	test("rejects an individually impossible prompt before persistence", async () => {
 		process.env["HARNESS_OPENAI_API_KEY"] = "test";
 		let calls = 0;
 		const provider = Bun.serve({
@@ -2052,17 +2216,60 @@ function episodeId(
 				type: "prompt",
 				text: "too much context ".repeat(500),
 			});
-			expect(calls).toBe(1);
+			expect(calls).toBe(0);
 			expect(
 				server.store
 					.contextItems(id)
-					.some((item) => item.reason === "rolling summary"),
-			).toBe(true);
+					.some((item) => item.kind === "user"),
+			).toBe(false);
 			expect(
 				server.store
 					.events(id)
 					.some((event) => event.type === "context-budget-error"),
-			).toBe(false);
+			).toBe(true);
+		} finally {
+			provider.stop(true);
+			delete process.env["HARNESS_OPENAI_API_KEY"];
+		}
+	});
+
+	test("retries one provider context-length rejection with bounded history", async () => {
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
+		let calls = 0;
+		const provider = Bun.serve({
+			port: 0,
+			fetch: () => {
+				calls++;
+				if (calls === 1)
+					return Response.json(
+						{
+							error: {
+								message: "maximum context length exceeded",
+								type: "invalid_request_error",
+								code: "context_length_exceeded",
+							},
+						},
+						{ status: 400 },
+					);
+				return sseResponse(doneChunks());
+			},
+		});
+		try {
+			const { server } = harnez();
+			const id = server.createSession();
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			await server.command(id, { type: "prompt", text: "keep this turn" });
+			expect(calls).toBe(2);
+			expect(
+				server.store
+					.contextItems(id)
+					.some((item) => item.nodeRole === "checkpoint"),
+			).toBe(true);
 		} finally {
 			provider.stop(true);
 			delete process.env["HARNESS_OPENAI_API_KEY"];

@@ -332,20 +332,26 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 				if (event.type === "context-compaction")
 					return append({
 						kind: "compaction",
-						text: `retired ${event.evictedCount} ${event.evictedCount === 1 ? "item" : "items"}${
-							event.episodesArchived
-								? ` and ${event.episodesArchived} ${event.episodesArchived === 1 ? "episode" : "episodes"}`
-								: ""
-						} · ${formatTokens(event.tokensBefore)} ↦ ${formatTokens(event.tokensAfter)} · all recallable`,
+						text:
+							event.trigger === "explicit" && event.milestone
+								? `⋯ condensed context at ${event.milestone}: ${formatTokens(event.tokensBefore)} → ${formatTokens(event.tokensAfter)} tokens`
+								: `retired ${event.evictedCount} ${event.evictedCount === 1 ? "item" : "items"}${
+										event.episodesArchived
+											? ` and ${event.episodesArchived} ${event.episodesArchived === 1 ? "episode" : "episodes"}`
+											: ""
+									} · ${formatTokens(event.tokensBefore)} ↦ ${formatTokens(event.tokensAfter)} · all recallable`,
 					});
 				if (event.type === "context-budget-error") {
 					set({ running: false });
 					return append({
 						kind: "error",
 						error: true,
-						text: `Context budget exceeded: protected content alone needs ${formatTokens(
-							event.estimatedTokens,
-						)} but the budget is ${formatTokens(event.budget)}. Raise HARNEZ_CONTEXT_BUDGET or start a new session.`,
+						text:
+							event.code === "INPUT_TOO_LARGE"
+								? `This request needs ${formatTokens(event.estimatedTokens)} tokens but the input budget is ${formatTokens(event.budget)}. Shorten the request or raise HARNEZ_CONTEXT_BUDGET.`
+								: `Context budget exceeded: protected content alone needs ${formatTokens(
+										event.estimatedTokens,
+									)} but the budget is ${formatTokens(event.budget)}. Raise HARNEZ_CONTEXT_BUDGET.`,
 					});
 				}
 				if (event.type === "completed") {
