@@ -58,6 +58,17 @@ import {
 	type SubagentResult,
 } from "./types";
 
+export type ContextCompactionRequest = {
+	messages: unknown[];
+	previousMemory?: CondensationInput;
+	anchors: string[];
+	targetMemoryTokens: number;
+	signal: AbortSignal;
+};
+export type ContextCompactor = (
+	request: ContextCompactionRequest,
+) => Promise<{ memory: CondensationInput } | undefined>;
+
 export { ContextBudgetError } from "./types";
 
 const kinds = new Set<ContextKind>([
@@ -102,6 +113,8 @@ export type PrepareTurnRequest = {
 	tools: unknown[];
 	budget: number;
 	signal: AbortSignal;
+	overheadTokens?: number;
+	compactor?: ContextCompactor;
 };
 
 export type CondensationResult = {
@@ -479,7 +492,7 @@ export class ContextManager {
 		const pendingMessages = pending.map((input) => input.payload);
 		const fixedCost = fixed.reduce<number>(
 			(sum, value) => sum + tokenCostOf(value),
-			tokenCostOf(request.tools),
+			tokenCostOf(request.tools) + (request.overheadTokens ?? 0),
 		);
 		const pendingCost = pending.reduce<number>(
 			(sum, input) => sum + input.tokenCost,
@@ -493,7 +506,10 @@ export class ContextManager {
 		];
 		let estimatedTokens =
 			fixedCost + pendingCost + this.pathProjectedCost(path, request.sessionId);
-		if (estimatedTokens <= request.budget) {
+		const shouldCompact =
+			estimatedTokens >= Math.floor(request.budget * 0.8) &&
+			request.compactor !== undefined;
+		if (estimatedTokens <= request.budget && !shouldCompact) {
 			for (const input of pending)
 				this.appendAtLaneHead(input, request.sessionId, request.laneId);
 			return { messages, estimatedTokens, usedFallback: false };
@@ -501,10 +517,60 @@ export class ContextManager {
 		if (fixedCost + pendingCost > request.budget)
 			throw new ContextBudgetError(fixedCost + pendingCost, request.budget);
 
+		let representation = this.fallbackRepresentation(path);
+		let retainedTail: unknown[] = [];
+		if (shouldCompact || estimatedTokens > request.budget) {
+			const projected = projectedPathPayloads(
+				path,
+				this.episodes(request.sessionId),
+			);
+			const tailBudget = Math.min(
+				20_000,
+				Math.max(0, Math.floor(request.budget * 0.6) - fixedCost - 2_000),
+			);
+			let tailCost = 0;
+			for (let index = projected.length - 1; index >= 0; index--) {
+				const cost = tokenCostOf(projected[index]);
+				if (retainedTail.length && tailCost + cost > tailBudget) break;
+				retainedTail.unshift(projected[index]);
+				tailCost += cost;
+			}
+			const compactor = request.compactor;
+			if (compactor && projected.length > retainedTail.length) {
+				const previous = path
+					.toReversed()
+					.map((item) => validCheckpoint(item))
+					.find((item) => item?.representation.kind === "condensation");
+				const draft = await compactor({
+					messages: projected.slice(0, projected.length - retainedTail.length),
+					...(previous?.representation.kind === "condensation"
+						? {
+								previousMemory: previous.representation
+									.memory as CondensationInput,
+							}
+						: {}),
+					anchors: path
+						.filter(
+							(item) => item.kind === "pinned-note" || item.kind === "user",
+						)
+						.map((item) => String(item.payload))
+						.slice(-12),
+					targetMemoryTokens: 2_000,
+					signal: request.signal,
+				});
+				if (draft)
+					representation = { kind: "condensation", memory: draft.memory };
+			}
+		}
 		const checkpoint = this.appendCheckpoint(
 			request.sessionId,
 			request.laneId,
-			this.fallbackRepresentation(path),
+			representation,
+			retainedTail,
+			{
+				condensedCount: Math.max(0, path.length - retainedTail.length),
+				retainedCount: retainedTail.length,
+			},
 		);
 		for (const input of pending)
 			this.appendAtLaneHead(input, request.sessionId, request.laneId);
@@ -523,7 +589,7 @@ export class ContextManager {
 			messages,
 			estimatedTokens,
 			checkpointId: checkpoint.id,
-			usedFallback: true,
+			usedFallback: representation.kind === "fallback",
 		};
 	}
 

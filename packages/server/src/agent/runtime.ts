@@ -21,7 +21,8 @@ import type {
 	ModelConfig,
 	ServerEvent,
 } from "../../../shared/src/protocol";
-import type { ContextManager } from "../context/manager";
+import { compactWithLlm } from "../context/llm-compactor";
+import type { ContextCompactor, ContextManager } from "../context/manager";
 import { log } from "../logger";
 import type { McpRegistry, McpToolDescriptor } from "../mcp/registry";
 import { HarnezProviderError, providerModels } from "../provider";
@@ -34,6 +35,7 @@ import {
 	type AgentEntry,
 	ensureSystem,
 	managedMessages,
+	managedMessagesAsync,
 	type QueueCallbacks,
 	queueMessage,
 	recordAgentMessage,
@@ -177,14 +179,21 @@ export class HarnezAgentRuntime {
 			timestamp: Date.now(),
 		};
 		entry.promptGroupId = crypto.randomUUID();
-		recordAgentMessage({ sessionId, entry, message, context: this.context });
+		let baselineMessages: AgentMessage[];
 		try {
 			/**
 			 * The first assembly of a turn is usually the one that crosses the
 			 * budget, so it has to carry the emitter too — otherwise the cleanup it
 			 * performs is silent and every later assembly finds nothing to report.
 			 */
-			this.messages(
+			entry.agent.state.messages = await this.messagesAsync(
+				sessionId,
+				entry.agent.state.model,
+				entry.task,
+				signal,
+				entry.compactor,
+			);
+			baselineMessages = this.messages(
 				sessionId,
 				entry.agent.state.model,
 				entry.task,
@@ -196,6 +205,8 @@ export class HarnezAgentRuntime {
 			entry.promptGroupId = undefined;
 			throw error;
 		}
+		recordAgentMessage({ sessionId, entry, message, context: this.context });
+		entry.agent.state.messages = baselineMessages!;
 		entry.preRecorded.add(messageKey(message));
 		this.context.markAgentProgress(task.id);
 		const abort = () => entry?.agent.abort();
@@ -307,6 +318,10 @@ export class HarnezAgentRuntime {
 			workspace: this.store.workspace(sessionId) ?? process.cwd(),
 		});
 		const entry = newAgentEntry(key, tools, task, this.sink);
+		const compactor: ContextCompactor | undefined =
+			process.env["HARNEZ_LLM_COMPACTION"] === "0"
+				? undefined
+				: (request) => compactWithLlm({ ...request, model, models });
 		/**
 		 * Publishes a tool mid-task. `entry.agent` is assigned before any tool can
 		 * run, so the deferred read is always resolved by the time this fires.
@@ -317,16 +332,8 @@ export class HarnezAgentRuntime {
 			if (current.some((existing) => existing.name === tool.name)) return;
 			entry.agent.state.tools = [...current, tool];
 		};
-		const managed = (): AgentMessage[] => {
-			try {
-				entry.contextError = undefined;
-				return this.messages(sessionId, model, task, entry.emit);
-			} catch (error) {
-				entry.contextError = asError(error);
-				return [];
-			}
-		};
 		const agent = new Agent({
+			sessionId,
 			initialState: {
 				model,
 				thinkingLevel: clampThinkingLevel(
@@ -350,17 +357,31 @@ export class HarnezAgentRuntime {
 				}),
 				messages: this.messages(sessionId, model, task),
 			},
-			transformContext: async () => {
-				const messages = managed();
+			transformContext: async (_messages, signal) => {
+				await this.messagesAsync(
+					sessionId,
+					model,
+					task,
+					signal ?? new AbortController().signal,
+					compactor,
+				);
+				const messages = this.messages(sessionId, model, task);
 				task.context.completeStep();
 				return messages;
 			},
-			prepareNextTurnWithContext: (turn) => {
+			prepareNextTurnWithContext: async (turn, signal) => {
 				this.context.completeTurn(
 					sessionId,
 					turn.toolResults.map((result) => result.toolCallId),
 				);
-				const messages = managed();
+				await this.messagesAsync(
+					sessionId,
+					model,
+					task,
+					signal ?? new AbortController().signal,
+					compactor,
+				);
+				const messages = this.messages(sessionId, model, task);
 				agent.state.messages = messages;
 				/**
 				 * Pi snapshots the tool list once when a prompt starts and then reuses
@@ -415,7 +436,29 @@ export class HarnezAgentRuntime {
 			toolExecution: "parallel",
 		});
 		entry.agent = agent;
+		entry.compactor = compactor;
 		return entry;
+	}
+	private async messagesAsync(
+		sessionId: string,
+		model: Model<Api>,
+		task: TaskRuntime,
+		signal: AbortSignal,
+		compactor?: ContextCompactor,
+	): Promise<AgentMessage[]> {
+		const options = this.contextOptions(model);
+		const inspection = this.context.inspect(sessionId, options);
+		if (inspection.estimatedTokens < Math.floor(options.budget * 0.8))
+			return this.messages(sessionId, model, task);
+		return managedMessagesAsync({
+			sessionId,
+			model,
+			task,
+			context: this.context,
+			contextOptions: this.contextOptions.bind(this),
+			signal,
+			...(compactor ? { compactor } : {}),
+		});
 	}
 	private messages(
 		sessionId: string,
@@ -592,6 +635,7 @@ function newAgentEntry(
 		agent: undefined as unknown as Agent,
 		tools,
 		contextError: undefined,
+		compactor: undefined,
 		promptGroupId: undefined,
 		preRecorded: new Set(),
 		toolGroups: new Map(),
