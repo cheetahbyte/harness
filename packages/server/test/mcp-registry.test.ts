@@ -80,12 +80,15 @@ test("connects a stdio server and honors the subprocess contract", async () => {
 		OTEL_EXPORTER_OTLP_HEADERS: process.env["OTEL_EXPORTER_OTLP_HEADERS"],
 		HARNEZ_OTEL: process.env["HARNEZ_OTEL"],
 		HARNEZ_OTEL_CAPTURE_CONTENT: process.env["HARNEZ_OTEL_CAPTURE_CONTENT"],
+		HARNEZ_OTEL_CAPTURE_MAX_CHARS:
+			process.env["HARNEZ_OTEL_CAPTURE_MAX_CHARS"],
 	};
 	Object.assign(process.env, {
 		OTEL_EXPORTER_OTLP_ENDPOINT: "http://secret.invalid",
 		OTEL_EXPORTER_OTLP_HEADERS: "authorization=secret",
 		HARNEZ_OTEL: "1",
 		HARNEZ_OTEL_CAPTURE_CONTENT: "prompts",
+		HARNEZ_OTEL_CAPTURE_MAX_CHARS: "64",
 	});
 	process.env["HARNEZ_MCP_TEST_AMBIENT"] = "from-parent";
 	const mcp = registry(root, {
@@ -122,6 +125,7 @@ test("connects a stdio server and honors the subprocess contract", async () => {
 	expect(report.otelHeaders).toBeNull();
 	expect(report.harnezOtel).toBeNull();
 	expect(report.captureContent).toBeNull();
+	expect(report.captureMaxChars).toBeNull();
 	delete process.env["HARNEZ_MCP_TEST_AMBIENT"];
 	for (const [key, value] of Object.entries(telemetryEnvironment)) {
 		if (value === undefined) delete process.env[key];

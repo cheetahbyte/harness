@@ -12,7 +12,7 @@ import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 
 import type { RuntimeEvent, RuntimeEventSink } from "./events";
-import { captureContent, sanitizeEvent } from "./runtime";
+import { captureContent, captureMaxChars, sanitizeEvent } from "./runtime";
 
 const eventAttributes = (
 	event: RuntimeEvent,
@@ -28,7 +28,11 @@ const eventAttributes = (
 						typeof value === "boolean"),
 			)
 			.map(([key, value]) => [
-				`harnez.${key}`,
+				key === "prompt"
+					? "gen_ai.input.messages"
+					: key === "response"
+						? "gen_ai.output.messages"
+						: `harnez.${key}`,
 				value as string | number | boolean,
 			]),
 	);
@@ -104,6 +108,7 @@ function startEnabledOpenTelemetry(
 	);
 	const spans = new Map<string, { span: Span; ctx: Context }>();
 	const capture = captureContent();
+	const maxChars = captureMaxChars();
 	const parent = (event: RuntimeEvent): Context =>
 		spans.get(`${event.sessionId}:task:${event.taskId}`)?.ctx ??
 		spans.get(`${event.sessionId}:session`)?.ctx ??
@@ -144,7 +149,7 @@ function startEnabledOpenTelemetry(
 		span.end();
 	};
 	const sink: RuntimeEventSink = (raw) => {
-		const event = sanitizeEvent(raw, capture);
+		const event = sanitizeEvent(raw, capture, maxChars);
 		const base = event.type.replace(/\.(started|completed|failed)$/, "");
 		const key = `${event.sessionId}:${event.taskId ?? ""}:${base}:${event.requestId ?? event.callId ?? event.approvalId ?? event.turnId ?? ""}`;
 		if (event.type === "session.started")

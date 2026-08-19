@@ -376,13 +376,16 @@ export class HarnezAgentRuntime {
 			shouldStopAfterTurn: () => !!entry.contextError,
 			streamFn: (_unused, requestContext, options) => {
 				if (entry.contextError) throw entry.contextError;
+				const requestIds = new Map<number, number>();
 				return streamWithRetry(
 					() => models.streamSimple(model, requestContext, options),
 					options?.signal,
 					{ sessionId, provider: config.provider, model: config.model },
 					(durationMs) => (entry.timing.modelDurationMs += durationMs),
-					(phase, attempt, durationMs, error) => {
-						const requestId = this.requestId++;
+					(phase, attempt, durationMs, error, response) => {
+						const requestId = requestIds.get(attempt) ?? this.requestId++;
+						if (phase === "started") requestIds.set(attempt, requestId);
+						else requestIds.delete(attempt);
 						this.sink?.({
 							type:
 								phase === "started"
@@ -400,6 +403,11 @@ export class HarnezAgentRuntime {
 							model: config.model,
 							...(durationMs === undefined ? {} : { durationMs }),
 							...(error ? { error } : {}),
+							...(phase === "started"
+								? { prompt: requestContext }
+								: response
+									? { response }
+									: {}),
 						});
 					},
 				);
@@ -488,6 +496,7 @@ function streamWithRetry(
 		attempt: number,
 		durationMs: number | undefined,
 		error?: string,
+		response?: unknown,
 	) => void,
 ): AssistantMessageEventStream {
 	const out = createAssistantMessageEventStream();
@@ -514,6 +523,7 @@ function streamWithRetry(
 					attempt + 1,
 					Math.round(durationMs),
 					terminal?.type === "error" ? terminal.error.errorMessage : undefined,
+					terminal?.type === "done" ? terminal.message : terminal?.error,
 				);
 			}
 			if (!terminal) {

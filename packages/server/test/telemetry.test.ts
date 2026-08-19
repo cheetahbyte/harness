@@ -1,15 +1,38 @@
 import { describe, expect, test } from "bun:test";
-import { captureContent, sanitizedChildEnvironment, RuntimeTelemetry, sanitizeEvent } from "../src/telemetry/runtime";
+import {
+	captureContent,
+	captureMaxChars,
+	sanitizedChildEnvironment,
+	RuntimeTelemetry,
+	sanitizeEvent,
+} from "../src/telemetry/runtime";
 import { startOpenTelemetry } from "../src/telemetry/opentelemetry";
 
 describe("telemetry configuration", () => {
 	test("parses capture categories and rejects unknown values", () => {
 		expect([...captureContent("prompts, paths")]).toEqual(["prompts", "paths"]);
+		expect([...captureContent("all")]).toEqual([
+			"prompts",
+			"responses",
+			"tool-arguments",
+			"tool-results",
+			"mcp-payloads",
+			"paths",
+		]);
 		expect(() => captureContent("secrets")).toThrow("unknown");
 	});
 
+	test("validates the capture value limit", () => {
+		expect(captureMaxChars(undefined)).toBe(16_384);
+		expect(captureMaxChars("64")).toBe(64);
+		for (const value of ["0", "1.5", "wat", "1000001"])
+			expect(() => captureMaxChars(value)).toThrow(
+				"HARNEZ_OTEL_CAPTURE_MAX_CHARS",
+			);
+	});
+
 	test("removes telemetry configuration from children", () => {
-		const env = sanitizedChildEnvironment({ PATH: "/bin", OTEL_EXPORTER_OTLP_ENDPOINT: "secret", HARNEZ_OTEL: "1", HARNEZ_OTEL_CAPTURE_CONTENT: "prompts", OTHER: "kept" });
+		const env = sanitizedChildEnvironment({ PATH: "/bin", OTEL_EXPORTER_OTLP_ENDPOINT: "secret", HARNEZ_OTEL: "1", HARNEZ_OTEL_CAPTURE_CONTENT: "prompts", HARNEZ_OTEL_CAPTURE_MAX_CHARS: "64", OTHER: "kept" });
 		expect(env).toEqual({ PATH: "/bin", OTHER: "kept" });
 	});
 
@@ -31,6 +54,80 @@ describe("telemetry configuration", () => {
 		expect(event["path"]).toBeUndefined();
 		expect(event["apiKey"]).toBeUndefined();
 		expect(sanitizeEvent({ ...event, input: "safe" }, new Set(["tool-arguments"]))["input"]).toBe("safe");
+	});
+
+	test("recursively sanitizes and serializes captured payloads", () => {
+		const cyclic: Record<string, unknown> = {
+			text: "inspect /Users/alice/project, /workspace, file:///tmp/x; keep https://example.com/path",
+			authorization: "Bearer private",
+			privateKey: "PRIVATE",
+			accessKeyId: "AKIA-PRIVATE",
+			nested: {
+				apiKey: "do-not-export",
+				envVars: { HOME: "/Users/alice", TOKEN: "secret" },
+				image: { type: "image", mimeType: "image/png", data: "base64bytes" },
+				imageUrl: "data:image/png;base64,also-private",
+				attachment:
+					"data:application/octet-stream;base64,binary-attachment",
+				buffer: { type: "Buffer", data: [1, 2, 3] },
+				file: { data: "AAECAwQFBgcICQoLDA0ODw==" },
+				apiEnvelope: { data: "human-readable result" },
+			},
+		};
+		cyclic["self"] = cyclic;
+		const event = sanitizeEvent(
+			{
+				type: "model.request.started",
+				timestamp: "now",
+				sessionId: "s",
+				prompt: cyclic,
+			},
+			new Set(["prompts"]),
+		);
+		const payload = event["prompt"] as string;
+		expect(() => JSON.parse(payload)).not.toThrow();
+		expect(payload).toContain("[Path omitted]");
+		expect(payload).toContain("[Circular]");
+		expect(payload).toContain('"mimeType":"image/png"');
+		expect(payload).not.toContain("private");
+		expect(payload).not.toContain("do-not-export");
+		expect(payload).not.toContain("AKIA-PRIVATE");
+		expect(payload).not.toContain("base64bytes");
+		expect(payload).not.toContain("also-private");
+		expect(payload).not.toContain("binary-attachment");
+		expect(payload).not.toContain("AAECAwQFBgcICQoLDA0ODw==");
+		expect(payload).not.toContain("[1,2,3]");
+		expect(payload).toContain("human-readable result");
+		expect(payload).not.toContain('"envVars"');
+		expect(payload).not.toContain("/workspace");
+		expect(payload).not.toContain("file:///tmp/x");
+		expect(payload).toContain("https://example.com/path");
+
+		const withPaths = sanitizeEvent(
+			{
+				type: "model.request.started",
+				timestamp: "now",
+				sessionId: "s",
+				prompt: { path: "/Users/alice/project" },
+			},
+			new Set(["prompts", "paths"]),
+		);
+		expect(withPaths["prompt"]).toContain("/Users/alice/project");
+	});
+
+	test("bounds captured payload strings with a visible truncation marker", () => {
+		const event = sanitizeEvent(
+			{
+				type: "model.request.completed",
+				timestamp: "now",
+				sessionId: "s",
+				response: "x".repeat(200),
+			},
+			new Set(["responses"]),
+			64,
+		);
+		expect(String(event["response"]).length).toBeLessThanOrEqual(64);
+		expect(event["response"]).toContain("originalChars=200");
 	});
 
 	test("redacts sensitive fields for every lifecycle event kind", () => {
@@ -63,19 +160,24 @@ describe("telemetry configuration", () => {
 			forceFlush: async () => {},
 			shutdown: async () => {},
 		};
+		const previousCapture = process.env["HARNEZ_OTEL_CAPTURE_CONTENT"];
+		process.env["HARNEZ_OTEL_CAPTURE_CONTENT"] = "prompts,responses";
 		const telemetry = startOpenTelemetry({
 			enabled: true,
 			traceExporter,
 			metricExporter,
 		});
+		if (previousCapture === undefined)
+			delete process.env["HARNEZ_OTEL_CAPTURE_CONTENT"];
+		else process.env["HARNEZ_OTEL_CAPTURE_CONTENT"] = previousCapture;
 		const emit = telemetry.sink;
 		const timestamp = new Date().toISOString();
 		emit({ type: "session.started", sessionId: "s", timestamp });
 		emit({ type: "task.started", sessionId: "s", taskId: "t", timestamp });
 		emit({ type: "model.request.started", sessionId: "s", taskId: "t", requestId: 1, timestamp, provider: "p", model: "m", attempt: 1 });
 		emit({ type: "model.request.failed", sessionId: "s", taskId: "t", requestId: 1, timestamp, provider: "p", model: "m", attempt: 1, error: "retry" });
-		emit({ type: "model.request.started", sessionId: "s", taskId: "t", requestId: 2, timestamp, provider: "p", model: "m", attempt: 2 });
-		emit({ type: "model.request.completed", sessionId: "s", taskId: "t", requestId: 2, timestamp, provider: "p", model: "m", inputTokens: 10, outputTokens: 4, cacheReadTokens: 2, cacheWriteTokens: 1 });
+		emit({ type: "model.request.started", sessionId: "s", taskId: "t", requestId: 2, timestamp, provider: "p", model: "m", attempt: 2, prompt: [{ role: "user", content: "question" }] });
+		emit({ type: "model.request.completed", sessionId: "s", taskId: "t", requestId: 2, timestamp, provider: "p", model: "m", inputTokens: 10, outputTokens: 4, cacheReadTokens: 2, cacheWriteTokens: 1, response: { role: "assistant", content: "answer" } });
 		emit({ type: "tool.call.started", sessionId: "s", taskId: "t", callId: 1, timestamp, tool: "bash", source: "harnez" });
 		emit({ type: "tool.call.started", sessionId: "s", taskId: "t", callId: 2, timestamp, tool: "read", source: "harnez" });
 		emit({ type: "tool.call.completed", sessionId: "s", taskId: "t", callId: 1, timestamp, tool: "bash", source: "harnez", durationMs: 12 });
@@ -98,6 +200,16 @@ describe("telemetry configuration", () => {
 		const task = byName("invoke_agent")[0]!;
 		expect((task as { parentSpanContext?: { spanId: string } }).parentSpanContext?.spanId).toBe((session as { spanContext: () => { spanId: string } }).spanContext().spanId);
 		expect((byName("chat m")[0]!["status"] as { code?: number }).code).toBe(2);
+		const completedChat = byName("chat m")[1]! as {
+			attributes?: Record<string, unknown>;
+		};
+		expect(completedChat.attributes?.["gen_ai.input.messages"]).toContain(
+			"question",
+		);
+		expect(completedChat.attributes?.["gen_ai.output.messages"]).toContain(
+			"answer",
+		);
+		expect(completedChat.attributes?.["harnez.prompt"]).toBeUndefined();
 		expect(metricBatches.length).toBeGreaterThan(0);
 		const metricNames = metricBatches.flatMap((batch) => ((batch as { scopeMetrics?: Array<{ metrics?: Array<{ descriptor?: { name?: string } }> }> }).scopeMetrics ?? []).flatMap((scope) => (scope.metrics ?? []).map((metric) => metric.descriptor?.name)));
 		expect(metricNames).toEqual(expect.arrayContaining(["harnez.model.requests", "harnez.model.tokens", "harnez.tool.calls", "harnez.tool.duration", "harnez.context.assemblies", "harnez.context.compactions", "harnez.context.pressure_streak"]));

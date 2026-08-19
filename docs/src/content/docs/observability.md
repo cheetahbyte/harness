@@ -34,11 +34,60 @@ service:
 ```
 
 By default, events contain only IDs, status, durations, counts, model/tool
-names, and context pressure fields. Prompt, response, tool argument/result,
-MCP payload, and path fields are never captured unless explicitly listed in
-`HARNEZ_OTEL_CAPTURE_CONTENT` as a comma-separated list. Credentials, API
-keys, authorization headers, environment values, and image bytes are never
-captured. Unknown capture names fail startup.
+names, and context pressure fields. For local debugging, enable selected
+payloads with a comma-separated list:
+
+```text
+HARNEZ_OTEL_CAPTURE_CONTENT=prompts,responses,tool-arguments,tool-results,mcp-payloads,paths
+HARNEZ_OTEL_CAPTURE_MAX_CHARS=16384
+```
+
+`all` enables every category. `prompts` records the provider-facing system
+prompt and message history, while `responses` records terminal assistant
+messages. `tool-arguments` and `tool-results` cover built-in tools;
+`mcp-payloads` independently covers MCP arguments and results. `paths` permits
+path fields inside other enabled payloads.
+
+Captured payload attributes default to 16,384 characters each. Set
+`HARNEZ_OTEL_CAPTURE_MAX_CHARS` to a positive integer up to 1,000,000 to change
+the limit. Truncation is marked with the original character count. Unknown
+capture names and invalid limits fail startup.
+
+Credentials, API keys, authorization and cookie values, environment maps,
+private keys, image bytes, and arbitrary binary values are removed under every
+setting, including `all`. Other private user text can still appear in prompts,
+responses, and tool payloads, so use content capture only with a trusted local
+collector and disable it when the debugging session ends.
+
+## Local debugging in Grafana
+
+Start Harnez against your local OTLP endpoint with full capture and detailed
+lifecycle logging:
+
+```text
+HARNEZ_OTEL=1
+OTEL_SERVICE_NAME=harnez
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+HARNEZ_OTEL_CAPTURE_CONTENT=all
+HARNEZ_OTEL_CAPTURE_MAX_CHARS=16384
+HARNEZ_LOG_LEVEL=debug
+```
+
+In Grafana Explore, select the Tempo data source and run:
+
+```traceql
+{ resource.service.name = "harnez" }
+```
+
+Open a trace and inspect `chat` spans for `gen_ai.input.messages` and
+`gen_ai.output.messages`. Inspect `execute_tool` spans for `harnez.toolArguments`,
+`harnez.toolResults`, or `harnez.mcpPayload`. Prometheus contains aggregate
+counters and histograms rather than individual payloads.
+
+Debug logs remain metadata-only and do not duplicate captured content. A
+managed macOS server writes them to
+`~/Library/Application Support/harnez/server.log`; run
+`tail -f ~/Library/Application\ Support/harnez/server.log` to follow them.
 
 The useful context fields are `under_pressure`, `pressure_streak`, and
 `agent_continued`. A collector query for tasks that kept working through
@@ -54,5 +103,6 @@ compaction, live-token, history-token, and pressure-streak instruments.
 Model metrics are labeled by provider, model, and status; tool metrics by tool,
 source, and status; context metrics by trigger and outcome.
 
-Telemetry configuration is removed before bash and stdio MCP child processes
-start. Harnez does not create distributed child traces.
+Telemetry configuration, including both content-capture variables, is removed
+before bash and stdio MCP child processes start. Harnez does not create
+distributed child traces.
