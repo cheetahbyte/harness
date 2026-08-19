@@ -280,7 +280,7 @@ function handleAgentEnd(
 	);
 }
 
-export function recordAgentMessage({
+function recordAgentMessage({
 	sessionId,
 	entry,
 	message,

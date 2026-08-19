@@ -19,6 +19,7 @@ export type CapabilityCallOutcome =
 	| "cancelled_before_start"
 	| "cancelled_acknowledged"
 	| "outcome_unknown";
+export type TaskRecoveryReason = "owned_lane_terminal";
 export type ExecutionLedgerEntry =
 	| {
 			type: "capability_call_started";
@@ -42,7 +43,12 @@ export type ExecutionLedgerEntry =
 			after: CapabilityGrant;
 			at: Timestamp;
 	  }
-	| { type: "cancellation_requested"; at: Timestamp };
+	| { type: "cancellation_requested"; at: Timestamp }
+	| {
+			type: "task_recovery";
+			reason: TaskRecoveryReason;
+			at: Timestamp;
+	  };
 
 type SafeCapabilitySummary = {
 	id: string;

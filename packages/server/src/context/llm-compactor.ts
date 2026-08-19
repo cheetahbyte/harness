@@ -32,10 +32,6 @@ export type CompactionDraft = {
 	retries: number;
 };
 
-export type ContextCompactor = (
-	request: LlmCompactionRequest,
-) => Promise<CompactionDraft | undefined>;
-
 const SYSTEM =
 	"You are Harnez's context compactor. Return exactly one JSON object matching the requested schema. Do not use markdown fences, explanations, or tool calls. Preserve exact paths, identifiers, constraints, failures, and unresolved questions.";
 

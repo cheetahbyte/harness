@@ -15,7 +15,7 @@ import type {
 	NewContextItem,
 	NewEpisodeEvent,
 } from "../context/types";
-import type { ExecutionLedgerEntry } from "../task-ledger";
+import type { ExecutionLedgerEntry, TaskRecoveryReason } from "../task-ledger";
 import type { TaskTerminalStatus } from "../task-runtime";
 import { migrate } from "./migrations";
 
@@ -318,16 +318,25 @@ export class SessionStore {
 		})();
 	}
 
-	recoverLanes(): { repaired: number; abandoned: number; failed: number } {
+	recoverLanes(sessionId?: string): {
+		repaired: number;
+		abandoned: number;
+		failed: number;
+		episodes: number;
+	} {
 		return this.db.transaction(() => {
 			let repaired = 0,
 				abandoned = 0,
-				failed = 0;
+				failed = 0,
+				episodes = 0;
+			const where = sessionId
+				? " WHERE (name <> 'main' OR state = 'active') AND session_id = ?"
+				: " WHERE name <> 'main' OR state = 'active'";
 			const rows = this.db
 				.query(
-					"SELECT session_id, name, owner_task_id, state FROM context_lanes WHERE name <> 'main' OR state = 'active'",
+					`SELECT session_id, name, owner_task_id, state FROM context_lanes${where}`,
 				)
-				.all() as {
+				.all(...(sessionId ? [sessionId] : [])) as {
 				session_id: string;
 				name: string;
 				owner_task_id: string | null;
@@ -357,7 +366,7 @@ export class SessionStore {
 							"UPDATE context_lanes SET owner_task_id = NULL, state = 'abandoned', closed_at = ? WHERE session_id = ? AND name = ?",
 						)
 						.run(new Date().toISOString(), row.session_id, row.name);
-					this.abandonLaneEpisode(row.session_id, row.name);
+					episodes += this.abandonLaneEpisode(row.session_id, row.name) ? 1 : 0;
 					abandoned++;
 				} else if (
 					row.name !== "main" &&
@@ -369,14 +378,46 @@ export class SessionStore {
 							"UPDATE tasks SET state = 'terminal', status = 'failed', finished_at = ? WHERE id = ? AND session_id = ? AND state = 'running'",
 						)
 						.run(new Date().toISOString(), row.owner_task_id, row.session_id);
+					this.recordTaskRecovery(
+						row.session_id,
+						row.owner_task_id,
+						"owned_lane_terminal",
+					);
 					failed++;
 				}
 			}
-			return { repaired, abandoned, failed };
+			return { repaired, abandoned, failed, episodes };
 		})();
 	}
 
-	private abandonLaneEpisode(sessionId: string, laneName: string): void {
+	private recordTaskRecovery(
+		sessionId: string,
+		taskId: string | null,
+		reason: TaskRecoveryReason,
+	): void {
+		if (!taskId) return;
+		if (
+			this.taskLedger(sessionId, taskId).some(
+				(entry) => entry.type === "task_recovery" && entry.reason === reason,
+			)
+		)
+			return;
+		this.db
+			.query(
+				"INSERT INTO task_ledger (session_id, task_id, payload) VALUES (?, ?, ?)",
+			)
+			.run(
+				sessionId,
+				taskId,
+				JSON.stringify({
+					type: "task_recovery",
+					reason,
+					at: new Date().toISOString(),
+				}),
+			);
+	}
+
+	private abandonLaneEpisode(sessionId: string, laneName: string): boolean {
 		const episodeId = this.contextPath(sessionId, laneName)
 			.toReversed()
 			.find((item) => item.episodeId)?.episodeId;
@@ -391,14 +432,14 @@ export class SessionStore {
 							other.episodeId !== event.episodeId || other.action === "start",
 					),
 				);
-		if (!start) return;
+		if (!start) return false;
 		if (
 			this.episodeEvents(sessionId).some(
 				(event) =>
 					event.episodeId === start.episodeId && event.action !== "start",
 			)
 		)
-			return;
+			return false;
 		this.appendEpisodeEvent({
 			id: crypto.randomUUID(),
 			sessionId,
@@ -409,6 +450,7 @@ export class SessionStore {
 			dependencies: start.dependencies,
 			createdAt: new Date().toISOString(),
 		});
+		return true;
 	}
 
 	events(sessionId: string): ServerEvent[] {
