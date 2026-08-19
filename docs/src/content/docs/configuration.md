@@ -177,6 +177,9 @@ path in the error.
 | `HARNEZ_URL` | Server URL the TUI connects to. Default `http://localhost:7432`. |
 | `HARNEZ_CONTEXT_BUDGET` | Overrides the context token budget used for compaction. |
 | `HARNEZ_LOG_LEVEL` | Pino log level. Default `info`. |
+| `HARNEZ_OTEL` | Set to `1` to enable OpenTelemetry traces and metrics. |
+| `HARNEZ_OTEL_CAPTURE_CONTENT` | Comma-separated opt-in payload categories, or `all`. Default empty. |
+| `HARNEZ_OTEL_CAPTURE_MAX_CHARS` | Maximum characters per captured telemetry payload. Default `16384`; maximum `1000000`. |
 | `HARNEZ_SHOW_STATUS` | Set to `1` to show status and token-usage rows in the TUI transcript. |
 | `XDG_CONFIG_HOME` | Overrides the base config directory in place of `~/.config`. |
 | `HARNEZ_OPENAI_API_KEY` / `OPENAI_API_KEY` | API key for the `openai-compatible` provider, checked in that order. |

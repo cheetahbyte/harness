@@ -111,6 +111,8 @@ test("bash children keep ordinary environment but lose telemetry settings", asyn
 		OTEL_EXPORTER_OTLP_HEADERS: process.env["OTEL_EXPORTER_OTLP_HEADERS"],
 		HARNEZ_OTEL: process.env["HARNEZ_OTEL"],
 		HARNEZ_OTEL_CAPTURE_CONTENT: process.env["HARNEZ_OTEL_CAPTURE_CONTENT"],
+		HARNEZ_OTEL_CAPTURE_MAX_CHARS:
+			process.env["HARNEZ_OTEL_CAPTURE_MAX_CHARS"],
 		HARNEZ_TEST_ENV: process.env["HARNEZ_TEST_ENV"],
 	};
 	Object.assign(process.env, {
@@ -118,16 +120,17 @@ test("bash children keep ordinary environment but lose telemetry settings", asyn
 		OTEL_EXPORTER_OTLP_HEADERS: "authorization=secret",
 		HARNEZ_OTEL: "1",
 		HARNEZ_OTEL_CAPTURE_CONTENT: "prompts",
+		HARNEZ_OTEL_CAPTURE_MAX_CHARS: "64",
 		HARNEZ_TEST_ENV: "kept",
 	});
 	try {
 		const output = await execute(
 			new CoreTools(workspace),
 			"bash",
-			{ command: "printf '%s|%s|%s' \"$OTEL_EXPORTER_OTLP_ENDPOINT\" \"$HARNEZ_OTEL\" \"$HARNEZ_TEST_ENV\"" },
+			{ command: "printf '%s|%s|%s|%s' \"$OTEL_EXPORTER_OTLP_ENDPOINT\" \"$HARNEZ_OTEL\" \"$HARNEZ_OTEL_CAPTURE_MAX_CHARS\" \"$HARNEZ_TEST_ENV\"" },
 			new AbortController().signal,
 		);
-		expect(output).toBe("||kept");
+		expect(output).toBe("|||kept");
 	} finally {
 		for (const [key, value] of Object.entries(saved)) {
 			if (value === undefined) delete process.env[key];

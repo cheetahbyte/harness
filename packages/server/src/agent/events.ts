@@ -91,20 +91,24 @@ export function translateAgentEvent({
 		case "agent_end":
 			handleAgentEnd(sessionId, entry, context, shrink, emit);
 			return;
-		case "tool_execution_start":
+		case "tool_execution_start": {
+			const startSource = event.toolName.startsWith("mcp__") ? "mcp" : "harnez";
 			entry.callStarted.set(event.toolCallId, performance.now());
 			sink?.({
 				type: "tool.call.started",
 				timestamp: new Date().toISOString(),
 				sessionId,
 				taskId: entry.task.id,
-				source: event.toolName.startsWith("mcp__") ? "mcp" : "harnez",
+				source: startSource,
 				turnId: entry.turnId,
 				callId:
 					entry.callIds.get(event.toolCallId) ??
 					(entry.callIds.set(event.toolCallId, entry.callIds.size + 1),
 					entry.callIds.size),
 				tool: event.toolName,
+				...(startSource === "mcp"
+					? { mcpPayload: { arguments: event.args } }
+					: { toolArguments: event.args }),
 			});
 			if (!entry.timing.activeToolCalls.size)
 				entry.timing.toolWindowStartedAt = performance.now();
@@ -116,13 +120,15 @@ export function translateAgentEvent({
 				input: event.args,
 			});
 			return;
-		case "tool_execution_end":
+		}
+		case "tool_execution_end": {
+			const endSource = event.toolName.startsWith("mcp__") ? "mcp" : "harnez";
 			sink?.({
 				type: event.isError ? "tool.call.failed" : "tool.call.completed",
 				timestamp: new Date().toISOString(),
 				sessionId,
 				taskId: entry.task.id,
-				source: event.toolName.startsWith("mcp__") ? "mcp" : "harnez",
+				source: endSource,
 				turnId: entry.turnId,
 				callId: entry.callIds.get(event.toolCallId) ?? 0,
 				tool: event.toolName,
@@ -130,6 +136,9 @@ export function translateAgentEvent({
 					performance.now() -
 						(entry.callStarted.get(event.toolCallId) ?? performance.now()),
 				),
+				...(endSource === "mcp"
+					? { mcpPayload: { result: event.result } }
+					: { toolResults: event.result }),
 			});
 			entry.timing.activeToolCalls.delete(event.toolCallId);
 			entry.callIds.delete(event.toolCallId);
@@ -150,6 +159,7 @@ export function translateAgentEvent({
 				isError: event.isError,
 			});
 			return;
+		}
 		// Pi lifecycle events Harnez does not surface.
 		case "agent_start":
 		case "turn_start":

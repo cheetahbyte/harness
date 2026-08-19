@@ -60,6 +60,8 @@ server.setRequestHandler(CallToolRequestSchema, (request) => {
 						otelHeaders: process.env["OTEL_EXPORTER_OTLP_HEADERS"] ?? null,
 						harnezOtel: process.env["HARNEZ_OTEL"] ?? null,
 						captureContent: process.env["HARNEZ_OTEL_CAPTURE_CONTENT"] ?? null,
+						captureMaxChars:
+							process.env["HARNEZ_OTEL_CAPTURE_MAX_CHARS"] ?? null,
 						cwd: process.cwd(),
 					}),
 				},
