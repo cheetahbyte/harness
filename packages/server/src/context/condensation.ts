@@ -221,10 +221,17 @@ export function parseCondensationMemory(
 	payload: unknown,
 ): CondensationMemory | undefined {
 	if (!payload || typeof payload !== "object") return undefined;
-	const representation = (payload as { representation?: unknown }).representation;
-	if (representation && typeof representation === "object" && (representation as { kind?: unknown }).kind === "condensation") {
+	const representation = (payload as { representation?: unknown })
+		.representation;
+	if (
+		representation &&
+		typeof representation === "object" &&
+		(representation as { kind?: unknown }).kind === "condensation"
+	) {
 		try {
-			return validateCondensationInput((representation as { memory?: unknown }).memory);
+			return validateCondensationInput(
+				(representation as { memory?: unknown }).memory,
+			);
 		} catch {
 			return undefined;
 		}

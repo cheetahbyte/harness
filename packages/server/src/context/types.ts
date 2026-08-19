@@ -58,6 +58,14 @@ export type ContextCheckpointPayload = {
 	baseCheckpointId?: string;
 	baseRevision: number;
 	omittedDigest: string;
+	coverage: {
+		sourceCount: number;
+		condensedCount: number;
+		retainedCount: number;
+		omittedCount: number;
+		omittedDigest: string;
+		references: string[];
+	};
 	sourceDigest: string;
 	policyVersion: number;
 	representation: CheckpointRepresentation;
@@ -71,7 +79,7 @@ export type CompactionPlan = {
 	omittedDigest: string;
 	baseCheckpointId?: string;
 	baseRevision: number;
-	};
+};
 export type PreparedTurn = {
 	messages: unknown[];
 	estimatedTokens: number;

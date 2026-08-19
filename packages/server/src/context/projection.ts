@@ -1,11 +1,11 @@
 import { tokenCost } from "../token-cost";
+import { memoryPayload, validateCondensationInput } from "./condensation";
 import type {
 	ContextCheckpointPayload,
 	ContextEpisode,
 	ContextItem,
 	ContextProjection,
 } from "./types";
-import { memoryPayload, validateCondensationInput } from "./condensation";
 
 export function episodeConclusionPayloads(
 	items: ContextItem[],
@@ -80,7 +80,9 @@ export function projectedPathPayloads(
 	const valid = path
 		.map((item, index) => ({ item, index, checkpoint: validCheckpoint(item) }))
 		.filter(
-			(entry): entry is {
+			(
+				entry,
+			): entry is {
 				item: ContextItem;
 				index: number;
 				checkpoint: ContextCheckpointPayload;
@@ -116,11 +118,32 @@ export function validCheckpoint(
 		typeof payload.policyVersion !== "number" ||
 		typeof payload.baseRevision !== "number" ||
 		typeof payload.omittedDigest !== "string" ||
+		!payload.coverage ||
+		typeof payload.coverage.sourceCount !== "number" ||
+		typeof payload.coverage.condensedCount !== "number" ||
+		typeof payload.coverage.retainedCount !== "number" ||
+		typeof payload.coverage.omittedCount !== "number" ||
+		typeof payload.coverage.omittedDigest !== "string" ||
+		!Array.isArray(payload.coverage.references) ||
+		payload.coverage.references.some((ref) => typeof ref !== "string") ||
+		[
+			payload.coverage.sourceCount,
+			payload.coverage.condensedCount,
+			payload.coverage.retainedCount,
+			payload.coverage.omittedCount,
+		].some((count) => !Number.isInteger(count) || count < 0) ||
+		payload.coverage.sourceCount !==
+			payload.coverage.condensedCount +
+				payload.coverage.retainedCount +
+				payload.coverage.omittedCount ||
 		!Array.isArray(payload.retainedTail) ||
 		!payload.representation ||
-		(item.sourceDigest !== undefined && item.sourceDigest !== payload.sourceDigest) ||
-		(item.policyVersion !== undefined && item.policyVersion !== payload.policyVersion) ||
-		(payload.coveredThroughId !== undefined && payload.coveredThroughId !== item.parentId)
+		(item.sourceDigest !== undefined &&
+			item.sourceDigest !== payload.sourceDigest) ||
+		(item.policyVersion !== undefined &&
+			item.policyVersion !== payload.policyVersion) ||
+		(payload.coveredThroughId !== undefined &&
+			payload.coveredThroughId !== item.parentId)
 	)
 		return undefined;
 	if (payload.representation.kind === "condensation") {
@@ -141,7 +164,9 @@ export function validCheckpoint(
 
 function checkpointRepresentation(payload: ContextCheckpointPayload): unknown {
 	if (payload.representation.kind === "condensation")
-		return memoryPayload(payload.representation.memory as Parameters<typeof memoryPayload>[0]);
+		return memoryPayload(
+			payload.representation.memory as Parameters<typeof memoryPayload>[0],
+		);
 	const { summary, references } = payload.representation;
 	if (!summary && !references.length) return undefined;
 	return {

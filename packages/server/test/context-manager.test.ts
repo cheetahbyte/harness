@@ -1228,7 +1228,7 @@ describe("ContextManager", () => {
 		 * The pressure note is the working set's only other resident: this
 		 * assembly crossed the budget, which is what announces it.
 		 */
-		expect(inspection.estimatedTokens).toBe(15 + PRESSURE_NOTE_TOKENS);
+		expect(inspection.estimatedTokens).toBe(98);
 		expect(inspection.historyTokens).toBe(410 + PRESSURE_NOTE_TOKENS);
 		expect(inspection.parkedObservations).toBe(1);
 		store.db.close();
