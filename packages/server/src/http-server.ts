@@ -16,7 +16,6 @@ type ServeHarnezOptions = {
 	workspace?: string;
 	databasePath?: string;
 	contextBudget?: number;
-	llmCompaction?: boolean;
 	telemetry?: { sink: RuntimeEventSink; shutdown: () => Promise<void> };
 };
 
@@ -28,7 +27,7 @@ export function serveHarnez(
 		options.workspace,
 		undefined,
 		undefined,
-		options.contextBudget === undefined && options.llmCompaction === undefined
+		options.contextBudget === undefined
 			? options.telemetry
 				? { telemetry: options.telemetry.sink }
 				: {}
@@ -36,9 +35,6 @@ export function serveHarnez(
 					...(options.contextBudget === undefined
 						? {}
 						: { contextBudget: options.contextBudget }),
-					...(options.llmCompaction === undefined
-						? {}
-						: { llmCompaction: options.llmCompaction }),
 					...(options.telemetry ? { telemetry: options.telemetry.sink } : {}),
 				},
 	);

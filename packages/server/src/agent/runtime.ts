@@ -70,8 +70,8 @@ export type AgentRunTiming = {
 	toolDurationMs: number;
 };
 
-const DEFAULT_CONTEXT_BUDGET = 80_000;
-/** Floor for models that cannot be resolved, and the old fixed ceiling. */
+const DEFAULT_CONTEXT_BUDGET = Number.MAX_SAFE_INTEGER;
+/** Small fallback for capability admission when no model can be resolved. */
 const FALLBACK_CAPABILITY_BUDGET = 8_000;
 
 /** Pi is contained here: server code only sees Harnez events and model configuration. */
@@ -82,7 +82,9 @@ export class HarnezAgentRuntime {
 	private readonly store: SessionStore;
 	private readonly context: ContextManager;
 	private readonly contextBudget: number;
-	private readonly llmCompaction: boolean;
+	private readonly llmCompactionFor:
+		| ((sessionId: string) => boolean)
+		| undefined;
 	private readonly compactionModelConfigFor:
 		| ((sessionId: string) => string | undefined)
 		| undefined;
@@ -93,7 +95,7 @@ export class HarnezAgentRuntime {
 		store: SessionStore;
 		context: ContextManager;
 		contextBudget?: number;
-		llmCompaction?: boolean;
+		llmCompactionFor?: (sessionId: string) => boolean;
 		compactionModelConfigFor?: (sessionId: string) => string | undefined;
 		sink?: RuntimeEventSink;
 	}) {
@@ -102,8 +104,7 @@ export class HarnezAgentRuntime {
 		this.store = options.store;
 		this.context = options.context;
 		this.contextBudget = options.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
-		this.llmCompaction =
-			options.llmCompaction ?? process.env["HARNEZ_LLM_COMPACTION"] !== "0";
+		this.llmCompactionFor = options.llmCompactionFor;
 		this.compactionModelConfigFor = options.compactionModelConfigFor;
 		this.sink = options.sink;
 	}
@@ -353,7 +354,9 @@ export class HarnezAgentRuntime {
 			workspace: this.store.workspace(sessionId) ?? process.cwd(),
 		});
 		const entry = newAgentEntry(key, tools, task, this.sink);
-		const compactor: ContextCompactor | undefined = !this.llmCompaction
+		const compactor: ContextCompactor | undefined = !(
+			this.llmCompactionFor?.(sessionId) ?? true
+		)
 			? undefined
 			: (request) =>
 					compactWithLlm({

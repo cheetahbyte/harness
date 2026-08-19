@@ -88,7 +88,6 @@ export class HarnezServer {
 		),
 		options: {
 			contextBudget?: number;
-			llmCompaction?: boolean;
 			telemetry?: RuntimeEventSink;
 		} = {},
 	) {
@@ -122,9 +121,7 @@ export class HarnezServer {
 			...(options.contextBudget === undefined
 				? {}
 				: { contextBudget: options.contextBudget }),
-			...(options.llmCompaction === undefined
-				? {}
-				: { llmCompaction: options.llmCompaction }),
+			llmCompactionFor: (id) => this.settingsFor(id).compactionEnabled(),
 			compactionModelConfigFor: (id) => this.settingsFor(id).compactionModel(),
 			...(options.telemetry ? { sink: options.telemetry } : {}),
 		});

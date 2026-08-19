@@ -21,6 +21,11 @@ export type ProviderSettings = Record<string, OpenAICompatibleProviderSettings>;
 
 type Settings = {
 	model?: ModelConfig;
+	compaction?: {
+		enabled?: boolean;
+		model?: string;
+	};
+	/** Legacy spelling retained when reading older settings files. */
 	compactionModel?: string;
 	fastCycle?: FastCycleEntry[];
 	disableThinkingBlocks?: boolean;
@@ -69,7 +74,20 @@ export class SettingsStore {
 	}
 
 	compactionModel(): string | undefined {
-		return this.project.compactionModel ?? this.global.compactionModel;
+		return (
+			this.project.compaction?.model ??
+			this.global.compaction?.model ??
+			this.project.compactionModel ??
+			this.global.compactionModel
+		);
+	}
+
+	compactionEnabled(): boolean {
+		return (
+			this.project.compaction?.enabled ??
+			this.global.compaction?.enabled ??
+			true
+		);
 	}
 
 	setModelConfig(model: ModelConfig): void {

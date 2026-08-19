@@ -1230,7 +1230,7 @@ export class ContextManager {
 			: [];
 		const tailBudget = Math.min(
 			20_000,
-			Math.floor((options.budget ?? 80_000) * 0.25),
+			Math.floor((options.budget ?? Number.MAX_SAFE_INTEGER) * 0.25),
 		);
 		const episodeTail = episodeConclusionPayloads(
 			items,

@@ -49,7 +49,10 @@ token set or an API key. Harnez writes the file with `0o600` permissions, and
     "model": "qwen3-coder:30b",
     "thinkingLevel": "medium"
   },
-  "compactionModel": "ollama/gpt-oss:20b",
+  "compaction": {
+    "enabled": true,
+    "model": "ollama/gpt-oss:20b"
+  },
   "fastCycle": [
     { "provider": "openai-codex", "model": "gpt-5.1-codex", "thinkingLevel": "medium" },
     { "provider": "anthropic", "model": "claude-opus-4-5", "thinkingLevel": "high" }
@@ -83,8 +86,9 @@ placeholder key, so compatible local servers must tolerate an
 selected with `Shift+Tab`; supported levels depend on the model. `baseUrl`
 only applies to the `openai-compatible` provider.
 
-`compactionModel` optionally selects a separate model for LLM context
-compaction in `<provider>/<model>` form. It falls back to `model` when omitted.
+`compaction.enabled` defaults to `true`. `compaction.model` optionally selects a
+separate model for LLM context compaction in `<provider>/<model>` form. It falls
+back to `model` when omitted. Project settings override global settings.
 Project settings override global settings.
 
 `fastCycle` is the list `Ctrl+P` steps through, in the order `/fast-cycle`
@@ -181,7 +185,6 @@ path in the error.
 | `HARNEZ_PORT` | Server listen port. Default `7432`. |
 | `HARNEZ_URL` | Server URL the TUI connects to. Default `http://localhost:7432`. |
 | `HARNEZ_CONTEXT_BUDGET` | Overrides the context token budget used for compaction. |
-| `HARNEZ_LLM_COMPACTION` | Set to `0` to skip LLM condensation. Deterministic fallback remains available after the context budget is exceeded. |
 | `HARNEZ_LOG_LEVEL` | Pino log level. Default `info`. |
 | `HARNEZ_OTEL` | Set to `1` to enable OpenTelemetry traces and metrics. |
 | `HARNEZ_OTEL_CAPTURE_CONTENT` | Comma-separated opt-in payload categories, or `all`. Default empty. |
@@ -195,9 +198,9 @@ standard `OTEL_*` variables for endpoint, protocol, headers, service name,
 resource attributes, exporters, and sampling. Content capture is disabled by
 default; see [Observability](/docs/advanced/observability) before enabling it.
 
-Context admission triggers at 80% of the usable budget and targets 60%. The
-runtime makes one bounded LLM condensation operation when it can reserve enough
-space for the request and can retry invalid output once. A failed operation
-uses deterministic checkpoint compaction. With `HARNEZ_LLM_COMPACTION=0`, the
-fallback waits until the budget is exceeded. Provider context-length errors
-create a recovery checkpoint and retry once with the current turn preserved.
+Context admission triggers at 80% of the usable budget and targets 60%. When
+`compaction.enabled` is true, the runtime makes one bounded LLM condensation
+operation when it can reserve enough space for the request and can retry invalid
+output once. A failed operation uses deterministic checkpoint compaction.
+Provider context-length errors create a recovery checkpoint and retry once with
+the current turn preserved.

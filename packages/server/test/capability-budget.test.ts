@@ -52,13 +52,13 @@ test("the capability budget scales with the model's usable input window", () => 
 		contextWindow: 200_000,
 		maxTokens: 32_000,
 	});
-	// min(default 80k budget, 200k - 32k); final assembly shares it with the transcript.
+	// The model's usable input window is the ceiling; Harnez adds no smaller default.
 	expect(
 		agentRuntime.capabilityBudget(sessionId, {
 			provider: "fake",
 			model: "model-1",
 		}),
-	).toBe(80_000);
+	).toBe(168_000);
 });
 
 test("a small model narrows the budget rather than overcommitting it", () => {

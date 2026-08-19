@@ -134,6 +134,21 @@ test("compaction model uses project settings before global settings", () => {
 	expect(store.compactionModel()).toBe("company/summarizer");
 });
 
+test("compaction settings default on and project settings override global settings", () => {
+	const dir = workspace();
+	const global = settingsFile(dir, "global.json", {
+		compaction: { enabled: false, model: "ollama/qwen2.5:7b" },
+	});
+	const project = settingsFile(dir, "project.json", {
+		compaction: { enabled: true, model: "company/summarizer" },
+	});
+
+	const store = new SettingsStore(global, project);
+		expect(store.compactionEnabled()).toBe(true);
+		expect(store.compactionModel()).toBe("company/summarizer");
+		expect(new SettingsStore(settingsFile(dir, "empty.json", {}), settingsFile(dir, "empty-project.json", {})).compactionEnabled()).toBe(true);
+});
+
 test.each([
 	[[], "providers must be an object"],
 	[{ " ": {} }, 'provider " " ID must not be blank'],

@@ -17,7 +17,6 @@ export function runServer(): ReturnType<typeof Bun.serve> {
 		...(contextBudget === undefined
 			? {}
 			: { contextBudget: Number(contextBudget) }),
-		llmCompaction: process.env["HARNEZ_LLM_COMPACTION"] !== "0",
 		telemetry,
 	});
 	log.info({ url: server.url }, "server listening");
