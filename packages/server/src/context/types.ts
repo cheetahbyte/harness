@@ -49,6 +49,35 @@ export type ContextItem = {
 	createdAt: string;
 	updatedAt: string;
 };
+export type CheckpointRepresentation =
+	| { kind: "condensation"; memory: unknown }
+	| { kind: "fallback"; summary: string; references: string[] };
+export type ContextCheckpointPayload = {
+	schemaVersion: 1;
+	coveredThroughId?: string;
+	baseCheckpointId?: string;
+	baseRevision: number;
+	omittedDigest: string;
+	sourceDigest: string;
+	policyVersion: number;
+	representation: CheckpointRepresentation;
+	/** The exact provider-visible tail retained after the covered prefix. */
+	retainedTail: unknown[];
+};
+export type CompactionPlan = {
+	summarizedPrefix: ContextItem[];
+	retainedTail: ContextItem[];
+	coveredThroughId?: string;
+	omittedDigest: string;
+	baseCheckpointId?: string;
+	baseRevision: number;
+	};
+export type PreparedTurn = {
+	messages: unknown[];
+	estimatedTokens: number;
+	checkpointId?: string;
+	usedFallback: boolean;
+};
 export type NewContextItem = Omit<
 	ContextItem,
 	"sequence" | "updatedAt" | "originLane" | "nodeRole" | "contentHash"

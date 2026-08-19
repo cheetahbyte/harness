@@ -26,6 +26,19 @@ function storePath(): string {
 }
 
 describe("ContextManager", () => {
+	test("prepareTurn uses an empty fallback for oversized active history", async () => {
+		const store = new SessionStore(storePath());
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		const episode = manager.startEpisode(sessionId, { name: "explore", kind: "exploration" });
+		for (let index = 0; index < 20; index++)
+			manager.record({ sessionId, kind: "tool-result", payload: { role: "toolResult", content: "large" }, tokenCost: 4_000, lifecycle: "active", projection: "full", reason: "work", episodeId: episode.id, groupId: `g-${index}` });
+		const prepared = await manager.prepareTurn({ sessionId, taskId: "task", laneId: "main", fixedMessages: [], capabilityMessages: [], tools: [], budget: 80_000, signal: new AbortController().signal });
+		expect(prepared.usedFallback).toBe(true);
+		expect(prepared.estimatedTokens).toBeLessThanOrEqual(80_000);
+		expect(store.contextItems(sessionId).filter((item) => item.kind === "tool-result")).toHaveLength(20);
+	});
+
 	test("keeps context payloads immutable while lifecycle changes persist", () => {
 		const path = storePath();
 		const store = new SessionStore(path);
