@@ -627,7 +627,7 @@ export class ContextManager {
 				condensedCount,
 				retainedCount,
 				omittedCount,
-				omittedDigest: coverageDigest,
+				omittedDigest: coverageCounts.omittedDigest ?? coverageDigest,
 				references: (coverageCounts.references ?? []).slice(0, 8),
 			},
 			sourceDigest,
@@ -772,14 +772,25 @@ export class ContextManager {
 				),
 			),
 		);
+		const tailBudget = Math.min(
+			20_000,
+			Math.floor((options.budget ?? 80_000) * 0.25),
+		);
+		let tailTokens = 0;
+		const boundedTail = retainedTail.filter((value) => {
+			const cost = tokenCostOf(value);
+			if (tailTokens + cost > tailBudget) return false;
+			tailTokens += cost;
+			return true;
+		});
 		this.appendCheckpoint(
 			sessionId,
 			"main",
 			{ kind: "condensation", memory: merged },
-			retainedTail,
+			boundedTail,
 			{
 				condensedCount: eligible.length,
-				retainedCount: retainedItems.length,
+				retainedCount: Math.min(retainedItems.length, boundedTail.length),
 				omittedDigest,
 			},
 		);
@@ -789,6 +800,24 @@ export class ContextManager {
 				this.store.contextPath(sessionId, "main"),
 				this.episodes(sessionId),
 			).reduce<number>((sum, payload) => sum + tokenCostOf(payload), 0);
+		this.sink?.({
+			type: "context.assembly.completed",
+			timestamp: new Date().toISOString(),
+			sessionId,
+			...(options.taskId ? { taskId: options.taskId } : {}),
+			...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+			trigger: "explicit",
+			scope: options.taskId ? "task" : "session",
+			tokensBefore,
+			tokensAfter,
+			budget: options.budget ?? tokensAfter,
+			target: options.target ?? tokensAfter,
+			underPressure: false,
+			evictedItems: eligible.length,
+			archivedEpisodes: 0,
+			liveTokens: tokensAfter,
+			historyTokens: items.reduce((sum, item) => sum + item.tokenCost, 0),
+		});
 		this.sink?.({
 			type: "context.compaction.completed",
 			timestamp: new Date().toISOString(),
