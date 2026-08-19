@@ -266,12 +266,19 @@ export class SessionStore {
 		expectedRevision: number,
 	): ContextItem | { status: "stale" } {
 		const role = input.nodeRole ?? "message";
+		const payloadJson = JSON.stringify(input.payload);
+		if (payloadJson === undefined)
+			throw new Error("Context payload must be JSON serializable");
+		const compactPayloadJson =
+			input.compactPayload === undefined
+				? undefined
+				: JSON.stringify(input.compactPayload);
 		const contentHash =
 			input.contentHash ??
 			structuredHash({
 				kind: input.kind,
 				nodeRole: role,
-				payload: input.payload,
+				payload: JSON.parse(payloadJson) as unknown,
 			});
 		const createdAt = input.createdAt ?? new Date().toISOString();
 		const parentId = input.parentId;
@@ -312,10 +319,8 @@ export class SessionStore {
 						input.originLane ?? laneName,
 						role,
 						input.kind,
-						JSON.stringify(input.payload),
-						input.compactPayload === undefined
-							? null
-							: JSON.stringify(input.compactPayload),
+						payloadJson,
+						compactPayloadJson ?? null,
 						input.tokenCost,
 						input.compactTokenCost ?? null,
 						input.source === undefined ? null : JSON.stringify(input.source),

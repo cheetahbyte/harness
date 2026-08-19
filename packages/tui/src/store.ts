@@ -346,9 +346,12 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 					return append({
 						kind: "error",
 						error: true,
-						text: `Context budget exceeded: protected content alone needs ${formatTokens(
-							event.estimatedTokens,
-						)} but the budget is ${formatTokens(event.budget)}. Raise HARNEZ_CONTEXT_BUDGET or start a new session.`,
+						text:
+							event.code === "INPUT_TOO_LARGE"
+								? `This request needs ${formatTokens(event.estimatedTokens)} tokens but the input budget is ${formatTokens(event.budget)}. Shorten the request or raise HARNEZ_CONTEXT_BUDGET.`
+								: `Context budget exceeded: protected content alone needs ${formatTokens(
+										event.estimatedTokens,
+									)} but the budget is ${formatTokens(event.budget)}. Raise HARNEZ_CONTEXT_BUDGET.`,
 					});
 				}
 				if (event.type === "completed") {

@@ -9,7 +9,11 @@ import type {
 	ImageAttachment,
 	ServerEvent,
 } from "../../../shared/src/protocol";
-import type { ContextManager } from "../context/manager";
+import type {
+	ContextCompactor,
+	ContextManager,
+	PrepareTurnRequest,
+} from "../context/manager";
 import { ContextBudgetError, type ContextInspection } from "../context/types";
 import type { SessionStore } from "../sessions/store";
 import { resolveSystemPrompt } from "../system-prompt";
@@ -30,6 +34,7 @@ export type AgentEntry = {
 	agent: Agent;
 	tools: CoreTools;
 	contextError: Error | undefined;
+	compactor: ContextCompactor | undefined;
 	promptGroupId: string | undefined;
 	preRecorded: Set<string>;
 	toolGroups: Map<string, string>;
@@ -269,6 +274,7 @@ function handleAgentEnd(
 					type: "context-budget-error",
 					estimatedTokens: entry.contextError.estimatedTokens,
 					budget: entry.contextError.budget,
+					code: entry.contextError.code,
 				}
 			: { type: "error", message: entry.contextError.message },
 	);
@@ -437,6 +443,74 @@ export function managedMessages({
 					...messages.slice(lastUser),
 				],
 	);
+}
+
+/** Async admission path used at prompt boundaries; this is where LLM compaction runs. */
+export async function managedMessagesAsync({
+	sessionId,
+	model,
+	task,
+	context,
+	contextOptions,
+	signal,
+	compactor,
+	pendingInput,
+}: {
+	sessionId: string;
+	model: Model<Api>;
+	task: TaskRuntime;
+	context: ContextManager;
+	contextOptions: (model: Model<Api>) => {
+		budget: number;
+		target: number;
+		overheadTokens: number;
+	};
+	signal: AbortSignal;
+	compactor?: ContextCompactor;
+	pendingInput?: PrepareTurnRequest["pendingInput"];
+}): Promise<AgentMessage[]> {
+	const capabilityItems = task.context.items();
+	const dynamic: AgentMessage[] = [
+		...(task.predecessorDigest
+			? [
+					{
+						role: "user" as const,
+						content: [
+							{
+								type: "text" as const,
+								text: `Advisory predecessor control-plane digest:\n${JSON.stringify(task.predecessorDigest)}`,
+							},
+						],
+						timestamp: new Date(task.startedAt).getTime(),
+					},
+				]
+			: []),
+		...capabilityItems.map((item): AgentMessage => ({
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text: `Task capability context (${item.capability.id}):\n${typeof item.content === "string" ? item.content : JSON.stringify(item.content)}`,
+				},
+			],
+			timestamp: new Date(task.startedAt).getTime(),
+		})),
+	];
+	const options = contextOptions(model);
+	const prepared = await context.prepareTurn({
+		sessionId,
+		taskId: task.id,
+		laneId: "main",
+		capabilityMessages: [],
+		fixedMessages: dynamic,
+		tools: [],
+		budget: options.budget,
+		overheadTokens: options.overheadTokens,
+		...(pendingInput?.length ? { pendingInput } : {}),
+		...(compactor ? { compactor } : {}),
+		signal,
+	});
+	return dropOrphanToolResults(prepared.messages as AgentMessage[]);
 }
 
 function dropOrphanToolResults(messages: AgentMessage[]): AgentMessage[] {

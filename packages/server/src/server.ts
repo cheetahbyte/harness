@@ -86,7 +86,11 @@ export class HarnezServer {
 			globalHarnezPath("settings.json"),
 			projectHarnezPath("settings.json", resolve(workspace)),
 		),
-		options: { contextBudget?: number; telemetry?: RuntimeEventSink } = {},
+		options: {
+			contextBudget?: number;
+			llmCompaction?: boolean;
+			telemetry?: RuntimeEventSink;
+		} = {},
 	) {
 		this.telemetrySink = options.telemetry;
 		if (
@@ -117,6 +121,9 @@ export class HarnezServer {
 			...(options.contextBudget === undefined
 				? {}
 				: { contextBudget: options.contextBudget }),
+			...(options.llmCompaction === undefined
+				? {}
+				: { llmCompaction: options.llmCompaction }),
 			...(options.telemetry ? { sink: options.telemetry } : {}),
 		});
 		this.taskRunner = new SessionTaskRunner({
