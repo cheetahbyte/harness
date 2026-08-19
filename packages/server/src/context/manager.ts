@@ -1,3 +1,4 @@
+import { structuredHash } from "../capabilities/hash";
 import type { SessionStore } from "../sessions/store";
 import type { RuntimeEventSink } from "../telemetry/events";
 import { tokenCost as computeTokenCost } from "../token-cost";
@@ -5,11 +6,9 @@ import {
 	MEMORY_REASON,
 	MEMORY_MAX_TOKENS,
 	type CondensationInput,
-	memoryPayload,
 	memoryTokenCost,
 	mergeCondensationMemory,
 	parseCondensationMemory,
-	projectedSavings,
 	selectCondensationItems,
 	validateCondensationInput,
 } from "./condensation";
@@ -29,7 +28,9 @@ import {
 	evictionCandidates,
 	evictionGroup,
 	projectedPayload,
+	projectedPathPayloads,
 	projectionCost,
+	validCheckpoint,
 	userVisibleAssistant,
 } from "./projection";
 import {
@@ -39,6 +40,9 @@ import {
 } from "./recall";
 import {
 	ContextBudgetError,
+	type ContextCheckpointPayload,
+	type CheckpointRepresentation,
+	type PreparedTurn,
 	type ContextEpisode,
 	type ContextInspection,
 	type ContextItem,
@@ -86,6 +90,18 @@ export type CondensationOptions = {
 	predecessorTerminalIds?: readonly string[];
 	taskId?: string;
 	turnId?: number;
+};
+
+export type PrepareTurnRequest = {
+	sessionId: string;
+	taskId: string;
+	laneId: string;
+	pendingInput?: RecordInput[];
+	fixedMessages: unknown[];
+	capabilityMessages: unknown[];
+	tools: unknown[];
+	budget: number;
+	signal: AbortSignal;
 };
 
 export type CondensationResult = {
@@ -448,129 +464,405 @@ export class ContextManager {
 		});
 	}
 
+	/**
+	 * Prepares a provider turn and guarantees deterministic progress when the
+	 * fixed envelope plus pending input can fit. Remote condensation is added by
+	 * the runtime task; this method is intentionally synchronous internally so
+	 * existing callers remain compatible.
+	 */
+	async prepareTurn(request: PrepareTurnRequest): Promise<PreparedTurn> {
+		if (request.signal.aborted) throw new DOMException("Aborted", "AbortError");
+		const lane = this.store.lane(request.sessionId, request.laneId);
+		if (!lane) throw new Error(`Unknown context lane ${request.laneId}`);
+		const fixed = [...request.fixedMessages, ...request.capabilityMessages];
+		const pending = request.pendingInput ?? [];
+		const pendingMessages = pending.map((input) => input.payload);
+		const fixedCost = fixed.reduce<number>(
+			(sum, value) => sum + tokenCostOf(value),
+			tokenCostOf(request.tools),
+		);
+		const pendingCost = pending.reduce<number>(
+			(sum, input) => sum + input.tokenCost,
+			0,
+		);
+		const path = this.store.contextPath(request.sessionId, request.laneId);
+		let messages = [
+			...fixed,
+			...projectedPathPayloads(path, this.episodes(request.sessionId)),
+			...pendingMessages,
+		];
+		let estimatedTokens =
+			fixedCost + pendingCost + this.pathProjectedCost(path, request.sessionId);
+		if (estimatedTokens <= request.budget) {
+			for (const input of pending)
+				this.appendAtLaneHead(input, request.sessionId, request.laneId);
+			return { messages, estimatedTokens, usedFallback: false };
+		}
+		if (fixedCost + pendingCost > request.budget)
+			throw new ContextBudgetError(fixedCost + pendingCost, request.budget);
+
+		const checkpoint = this.appendCheckpoint(
+			request.sessionId,
+			request.laneId,
+			this.fallbackRepresentation(path),
+		);
+		for (const input of pending)
+			this.appendAtLaneHead(input, request.sessionId, request.laneId);
+		const after = this.store.contextPath(request.sessionId, request.laneId);
+		messages = [
+			...fixed,
+			...projectedPathPayloads(after, this.episodes(request.sessionId)),
+		];
+		estimatedTokens = fixedCost + pendingCost;
+		if (estimatedTokens > request.budget) {
+			// The fallback has no summary/tail; only fixed + pending can remain.
+			messages = [...fixed, ...pendingMessages];
+			estimatedTokens = fixedCost;
+		}
+		return {
+			messages,
+			estimatedTokens,
+			checkpointId: checkpoint.id,
+			usedFallback: true,
+		};
+	}
+
+	private pathProjectedCost(
+		path: readonly ContextItem[],
+		sessionId: string,
+	): number {
+		const payloads = projectedPathPayloads(path, this.episodes(sessionId));
+		if (!path.some((item) => item.nodeRole === "checkpoint"))
+			return path.reduce(
+				(sum, item) =>
+					sum + (item.kind === "observation" ? 0 : projectionCost(item)),
+				0,
+			);
+		return payloads.reduce<number>(
+			(sum, payload) => sum + tokenCostOf(payload),
+			0,
+		);
+	}
+
+	private appendAtLaneHead(
+		input: RecordInput,
+		sessionId: string,
+		laneName: string,
+	): ContextItem {
+		const lane = this.store.lane(sessionId, laneName);
+		if (!lane) throw new Error(`Unknown context lane ${laneName}`);
+		const result = this.store.appendContextAtHead(
+			{
+				...input,
+				id: input.id ?? crypto.randomUUID(),
+				createdAt: input.createdAt ?? new Date().toISOString(),
+				projection: input.projection ?? "full",
+				originLane: laneName,
+			},
+			laneName,
+			lane.revision,
+		);
+		if ("status" in result)
+			throw new Error("Context lane changed while appending");
+		return result;
+	}
+
+	private fallbackRepresentation(
+		path: readonly ContextItem[],
+	): CheckpointRepresentation {
+		void path;
+		return { kind: "fallback", summary: "", references: [] };
+	}
+
+	private appendCheckpoint(
+		sessionId: string,
+		laneName: string,
+		representation: CheckpointRepresentation,
+		retainedTail: unknown[] = [],
+		coverageCounts: {
+			condensedCount?: number;
+			retainedCount?: number;
+			references?: string[];
+			omittedDigest?: string;
+		} = {},
+	): ContextItem {
+		const lane = this.store.lane(sessionId, laneName);
+		if (!lane) throw new Error(`Unknown context lane ${laneName}`);
+		const path = this.store.contextPath(sessionId, laneName);
+		const coveredThroughId = path.at(-1)?.id;
+		const baseCheckpoint = path.findLast(
+			(item) => item.nodeRole === "checkpoint",
+		);
+		const baseIndex = baseCheckpoint ? path.lastIndexOf(baseCheckpoint) : -1;
+		const sourceItems = path
+			.slice(baseIndex + 1)
+			.filter((item) => item.nodeRole !== "checkpoint");
+		const condensedCount = Math.min(
+			coverageCounts.condensedCount ?? 0,
+			sourceItems.length,
+		);
+		const retainedCount = Math.min(
+			coverageCounts.retainedCount ?? 0,
+			sourceItems.length - condensedCount,
+		);
+		const omittedCount = sourceItems.length - condensedCount - retainedCount;
+		const coverageDigest = structuredHash(
+			sourceItems.map(({ id, contentHash }) => ({ id, contentHash })),
+		);
+		const sourceDigest = structuredHash({
+			policyVersion: 1,
+			...(baseCheckpoint?.sourceDigest
+				? { base: baseCheckpoint.sourceDigest }
+				: {}),
+			items: sourceItems.map(({ id, contentHash }) => ({ id, contentHash })),
+		});
+		const payload: ContextCheckpointPayload = {
+			schemaVersion: 1,
+			...(coveredThroughId === undefined ? {} : { coveredThroughId }),
+			...(baseCheckpoint?.id ? { baseCheckpointId: baseCheckpoint.id } : {}),
+			baseRevision: lane.revision,
+			omittedDigest: coverageCounts.omittedDigest ?? coverageDigest,
+			coverage: {
+				sourceCount: sourceItems.length,
+				condensedCount,
+				retainedCount,
+				omittedCount,
+				omittedDigest: coverageCounts.omittedDigest ?? coverageDigest,
+				references: (coverageCounts.references ?? []).slice(0, 8),
+			},
+			sourceDigest,
+			policyVersion: 1,
+			representation,
+			retainedTail,
+		};
+		const result = this.store.appendContextAtHead(
+			{
+				id: crypto.randomUUID(),
+				sessionId,
+				createdAt: new Date().toISOString(),
+				originLane: laneName,
+				nodeRole: "checkpoint",
+				kind: "long-term-memory",
+				payload,
+				sourceDigest,
+				policyVersion: 1,
+				tokenCost: computeTokenCost(payload),
+				lifecycle: "pinned",
+				projection: "full",
+				reason:
+					representation.kind === "fallback"
+						? "deterministic fallback"
+						: MEMORY_REASON,
+			},
+			laneName,
+			lane.revision,
+		);
+		if ("status" in result)
+			throw new Error("Context lane changed while checkpointing");
+		return result;
+	}
+
 	condense(
 		sessionId: string,
 		input: CondensationInput,
 		options: CondensationOptions = {},
 	): CondensationResult {
 		const next = validateCondensationInput(input);
-		if (this.activeEpisode(sessionId))
-			throw new Error("Cannot condense while an episode is active");
-		const overheadTokens = options.overheadTokens ?? 0;
-		return this.store.db.transaction(() => {
-			const scopeId = options.taskId ?? sessionId;
-			const assemblyId =
-				(this.assemblyIds.set(
-					scopeId,
-					(this.assemblyIds.get(scopeId) ?? 0) + 1,
-				),
-				this.assemblyIds.get(scopeId)!);
-			const items = this.store.contextItems(sessionId);
-			const priorItem = items
-				.toReversed()
-				.find(
-					(item) =>
-						item.reason === MEMORY_REASON && item.lifecycle !== "archived",
-				);
-			const prior = priorItem
-				? parseCondensationMemory(priorItem.payload)
-				: undefined;
-			const merged = mergeCondensationMemory(prior, next);
-			const memoryTokens = memoryTokenCost(merged);
-			if (memoryTokens > MEMORY_MAX_TOKENS)
-				throw new Error("Condensation memory exceeds 2,000 tokens");
-			const eligible = selectCondensationItems(items, options);
-			const replaced = priorItem ? [...eligible, priorItem] : eligible;
-			const tokensBefore = estimatedCost(
-				items,
-				overheadTokens,
-				this.episodes(sessionId),
+		const scopeId = options.taskId ?? sessionId;
+		const assemblyId =
+			(this.assemblyIds.set(scopeId, (this.assemblyIds.get(scopeId) ?? 0) + 1),
+			this.assemblyIds.get(scopeId)!);
+		const items = this.store.contextItems(sessionId);
+		const priorItem = items
+			.toReversed()
+			.find(
+				(item) =>
+					item.nodeRole === "checkpoint" && item.lifecycle !== "archived",
 			);
-			const savings = projectedSavings(replaced, memoryTokens);
-			if (!eligible.length || savings <= 0)
-				return {
-					noOp: true,
-					assemblyId,
-					milestone: next.milestone,
-					archivedItems: 0,
-					archivedEpisodes: 0,
-					tokensBefore,
-					tokensAfter: tokensBefore,
-					memoryTokens,
-				};
-			for (const item of replaced)
-				this.store.setContextLifecycle(
-					item.id,
-					"archived",
-					"omitted",
-					MEMORY_REASON,
+		const priorCheckpoint = priorItem ? validCheckpoint(priorItem) : undefined;
+		const prior =
+			priorCheckpoint?.representation.kind === "condensation"
+				? (
+						priorCheckpoint.representation as {
+							kind: "condensation";
+							memory: CondensationInput;
+						}
+					).memory
+				: priorItem
+					? parseCondensationMemory(priorItem.payload)
+					: undefined;
+		const merged = mergeCondensationMemory(prior, next);
+		const memoryTokens = memoryTokenCost(merged);
+		if (memoryTokens > MEMORY_MAX_TOKENS)
+			throw new Error("Condensation memory exceeds 2,000 tokens");
+		const latestCheckpoint = items
+			.map((item, index) => ({ item, index }))
+			.filter(({ item }) => validCheckpoint(item) !== undefined)
+			.at(-1);
+		const baseCheckpoint = latestCheckpoint?.item;
+		const sourceItems = latestCheckpoint
+			? items.slice(latestCheckpoint.index + 1)
+			: items;
+		const eligible = selectCondensationItems(sourceItems, options);
+		const tokensBefore = latestCheckpoint
+			? projectedEstimatedCost(
+					this.store.contextPath(sessionId, "main"),
+					options.overheadTokens ?? 0,
+					this.episodes(sessionId),
+				)
+			: estimatedCost(
+					items,
+					options.overheadTokens ?? 0,
+					this.episodes(sessionId),
 				);
-			this.store.appendContextItem({
-				id: crypto.randomUUID(),
-				sessionId,
-				kind: "long-term-memory",
-				payload: memoryPayload(merged),
-				tokenCost: memoryTokens,
-				lifecycle: "pinned",
-				projection: "full",
-				reason: MEMORY_REASON,
-				createdAt: new Date().toISOString(),
-			});
-			const archivedEpisodes = new Set(
-				eligible.flatMap((item) => (item.episodeId ? [item.episodeId] : [])),
-			).size;
-			const afterItems = this.store.contextItems(sessionId);
-			const tokensAfter = estimatedCost(
-				afterItems,
-				overheadTokens,
-				this.episodes(sessionId),
-			);
-			const timestamp = new Date().toISOString();
-			this.sink?.({
-				type: "context.assembly.completed",
-				timestamp,
-				sessionId,
-				...(options.taskId ? { taskId: options.taskId } : {}),
-				...(options.turnId === undefined ? {} : { turnId: options.turnId }),
-				trigger: "explicit",
-				scope: options.taskId ? "task" : "session",
-				tokensBefore,
-				tokensAfter,
-				budget: options.budget ?? tokensAfter,
-				target: options.target ?? tokensAfter,
-				underPressure: false,
-				evictedItems: replaced.length,
-				archivedEpisodes,
-				liveTokens: tokensAfter,
-				historyTokens: afterItems.reduce(
-					(sum, item) => sum + item.tokenCost,
-					0,
-				),
-			});
-			this.sink?.({
-				type: "context.compaction.completed",
-				timestamp,
-				sessionId,
-				...(options.taskId ? { taskId: options.taskId } : {}),
-				...(options.turnId === undefined ? {} : { turnId: options.turnId }),
-				trigger: "explicit",
-				milestone: next.milestone,
-				evictedItems: eligible.length,
-				archivedEpisodes,
-				tokensBefore,
-				tokensAfter,
-			});
+		if (!eligible.length)
 			return {
-				noOp: false,
+				noOp: true,
 				assemblyId,
 				milestone: next.milestone,
-				archivedItems: eligible.length,
-				archivedEpisodes,
+				archivedItems: 0,
+				archivedEpisodes: 0,
 				tokensBefore,
-				tokensAfter,
+				tokensAfter: tokensBefore,
 				memoryTokens,
 			};
-		})();
+		const tailGroups = new Set(
+			items
+				.toReversed()
+				.filter((item) => item.groupId)
+				.map((item) => item.groupId!)
+				.slice(0, 4),
+		);
+		const eligibleIds = new Set(eligible.map((item) => item.id));
+		const retentionCandidates = sourceItems.filter(
+			(item) =>
+				(item.kind === "user" ||
+					item.kind === "pinned-note" ||
+					(item.groupId !== undefined && tailGroups.has(item.groupId))) &&
+				item.nodeRole !== "checkpoint" &&
+				!eligibleIds.has(item.id),
+		);
+		const inheritedTail = baseCheckpoint
+			? (validCheckpoint(baseCheckpoint)?.retainedTail ?? [])
+			: [];
+		const tailBudget = Math.min(
+			20_000,
+			Math.floor((options.budget ?? 80_000) * 0.25),
+		);
+		const episodeTail = episodeConclusionPayloads(
+			items,
+			this.episodes(sessionId).map((episode) =>
+				episode.state === "completed"
+					? { ...episode, state: "archived" }
+					: episode,
+			),
+		);
+		const groups = new Map<string, ContextItem[]>();
+		for (const item of retentionCandidates) {
+			const key = item.groupId ?? item.id;
+			groups.set(key, [...(groups.get(key) ?? []), item]);
+		}
+		const stableKey = retentionCandidates.find(
+			(item) => item.kind === "user" || item.kind === "pinned-note",
+		);
+		const stableGroupKey = stableKey?.groupId ?? stableKey?.id;
+		const recentKeys = [...groups.keys()]
+			.toReversed()
+			.filter((key) => key !== stableGroupKey);
+		const retainedIds = new Set<string>();
+		let tailTokens = 0;
+		const retainGroup = (key: string): void => {
+			const group = groups.get(key) ?? [];
+			const cost = group.reduce((sum, item) => {
+				const payload = projectedPayload(item);
+				return sum + (payload === undefined ? 0 : tokenCostOf(payload));
+			}, 0);
+			if (tailTokens + cost > tailBudget) return;
+			for (const item of group) retainedIds.add(item.id);
+			tailTokens += cost;
+		};
+		if (stableGroupKey) retainGroup(stableGroupKey);
+		const anchorTail = boundedAnchorTail(
+			inheritedTail,
+			episodeTail,
+			tailBudget - tailTokens,
+		);
+		tailTokens += anchorTail.tokens;
+		for (const key of recentKeys) retainGroup(key);
+		const retainedItems = sourceItems.filter((item) =>
+			retainedIds.has(item.id),
+		);
+		const boundedTail = [
+			...anchorTail.messages,
+			...retainedItems.flatMap((item) => {
+				const payload = projectedPayload(item);
+				return payload === undefined ? [] : [payload];
+			}),
+		];
+		const omittedItems = sourceItems.filter(
+			(item) => !eligibleIds.has(item.id) && !retainedIds.has(item.id),
+		);
+		const omittedDigest = structuredHash(
+			omittedItems.map(({ id, contentHash }) => ({ id, contentHash })),
+		);
+		this.appendCheckpoint(
+			sessionId,
+			"main",
+			{ kind: "condensation", memory: merged },
+			boundedTail,
+			{
+				condensedCount: eligible.length,
+				retainedCount: retainedItems.length,
+				omittedDigest,
+			},
+		);
+		const tokensAfter =
+			(options.overheadTokens ?? 0) +
+			projectedPathPayloads(
+				this.store.contextPath(sessionId, "main"),
+				this.episodes(sessionId),
+			).reduce<number>((sum, payload) => sum + tokenCostOf(payload), 0);
+		this.sink?.({
+			type: "context.assembly.completed",
+			timestamp: new Date().toISOString(),
+			sessionId,
+			...(options.taskId ? { taskId: options.taskId } : {}),
+			...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+			trigger: "explicit",
+			scope: options.taskId ? "task" : "session",
+			tokensBefore,
+			tokensAfter,
+			budget: options.budget ?? tokensAfter,
+			target: options.target ?? tokensAfter,
+			underPressure: false,
+			evictedItems: eligible.length,
+			archivedEpisodes: 0,
+			liveTokens: tokensAfter,
+			historyTokens: items.reduce((sum, item) => sum + item.tokenCost, 0),
+		});
+		this.sink?.({
+			type: "context.compaction.completed",
+			timestamp: new Date().toISOString(),
+			sessionId,
+			...(options.taskId ? { taskId: options.taskId } : {}),
+			...(options.turnId === undefined ? {} : { turnId: options.turnId }),
+			trigger: "explicit",
+			milestone: next.milestone,
+			evictedItems: eligible.length,
+			archivedEpisodes: 0,
+			tokensBefore,
+			tokensAfter,
+		});
+		return {
+			noOp: false,
+			assemblyId,
+			milestone: next.milestone,
+			archivedItems: eligible.length,
+			archivedEpisodes: 0,
+			tokensBefore,
+			tokensAfter,
+			memoryTokens,
+		};
 	}
 
 	recall(
@@ -1118,7 +1410,11 @@ export class ContextManager {
 		}
 		return {
 			sessionId,
-			estimatedTokens: estimatedCost(items, overheadTokens, episodes),
+			estimatedTokens: projectedEstimatedCost(
+				this.store.contextPath(sessionId, "main"),
+				overheadTokens,
+				episodes,
+			),
 			historyTokens,
 			parkedObservations,
 			...(inspectOptions.budget === undefined
@@ -1165,10 +1461,60 @@ export class ContextManager {
 	}
 }
 
+function projectedEstimatedCost(
+	path: ContextItem[],
+	overheadTokens: number,
+	episodes: ContextEpisode[],
+): number {
+	return (
+		overheadTokens +
+		projectedPathPayloads(path, episodes).reduce<number>(
+			(sum, payload) => sum + tokenCostOf(payload),
+			0,
+		)
+	);
+}
+
+function boundedAnchorTail(
+	inherited: readonly unknown[],
+	conclusions: readonly unknown[],
+	budget: number,
+): { messages: unknown[]; tokens: number } {
+	const selectedInherited = new Set<number>();
+	const selectedConclusions = new Set<number>();
+	let tokens = 0;
+	const admit = (value: unknown): boolean => {
+		const cost = tokenCostOf(value);
+		if (tokens + cost > budget) return false;
+		tokens += cost;
+		return true;
+	};
+	for (let index = 0; index < conclusions.length; index++)
+		if (admit(conclusions[index])) selectedConclusions.add(index);
+	if (inherited.length && admit(inherited[0])) selectedInherited.add(0);
+	for (let index = inherited.length - 1; index > 0; index--)
+		if (admit(inherited[index])) selectedInherited.add(index);
+	return {
+		messages: [
+			...inherited.filter((_, index) => selectedInherited.has(index)),
+			...conclusions.filter((_, index) => selectedConclusions.has(index)),
+		],
+		tokens,
+	};
+}
+
+function tokenCostOf(value: unknown): number {
+	return Number(computeTokenCost(value as never));
+}
+
 function projectedPayloads(
 	items: ContextItem[],
 	episodes: ContextEpisode[] = [],
 ): NonNullable<ReturnType<typeof projectedPayload>>[] {
+	if (items.some((item) => item.nodeRole === "checkpoint"))
+		return projectedPathPayloads(items, episodes) as NonNullable<
+			ReturnType<typeof projectedPayload>
+		>[];
 	const ordered = items.toSorted(
 		(a, b) => assemblyRank(a) - assemblyRank(b) || a.sequence - b.sequence,
 	);

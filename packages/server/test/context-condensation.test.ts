@@ -8,6 +8,7 @@ import {
 	selectCondensationItems,
 	validateCondensationInput,
 } from "../src/context/condensation";
+import { projectedPathPayloads } from "../src/context/projection";
 import type { ContextItem } from "../src/context/types";
 import { SessionStore } from "../src/sessions/store";
 
@@ -92,6 +93,21 @@ test("protects stable content, active/current work, predecessor groups, and comp
 		expect(selected.map((item) => item.id)).not.toContain(id);
 });
 
+test("checkpoint projection emits repeated content once per node and ignores invalid checkpoints", () => {
+	const base = (id: string, sequence: number, extra: Partial<ContextItem> = {}): ContextItem => ({
+		id, sessionId: "s", sequence, kind: "user", payload: { role: "user", content: "same" }, tokenCost: 1,
+		lifecycle: "pinned", projection: "full", reason: "user", createdAt: "now", updatedAt: "now",
+		originLane: "main", nodeRole: "message", contentHash: id, ...extra,
+	});
+	const invalid = base("bad", 2, {
+		parentId: "first", nodeRole: "checkpoint", kind: "long-term-memory",
+		payload: { schemaVersion: 1, representation: { kind: "fallback", summary: "bad", references: [] } },
+	});
+	const projected = projectedPathPayloads([base("first", 1), invalid, base("last", 3, { parentId: "bad" })]);
+	expect(projected).toHaveLength(2);
+	expect(projected.filter((value) => JSON.stringify(value).includes("same"))).toHaveLength(2);
+});
+
 describe("ContextManager.condense", () => {
 	test("replaces eligible history atomically and leaves observations intact", () => {
 		const dir = mkdtempSync(join(tmpdir(), "harnez-condensation-test-"));
@@ -117,9 +133,10 @@ describe("ContextManager.condense", () => {
 		manager.condense(sessionId, input);
 		const assembly = manager.assemble(sessionId, { budget: 20_000, target: 20_000, overheadTokens: 0 });
 		const memoryIndex = assembly.payloads.findIndex((payload) => JSON.stringify(payload).includes("<harnez-long-term-memory>"));
-		expect(assembly.payloads.slice(0, memoryIndex)).toEqual([{ role: "user", content: "objective" }]);
+		expect(assembly.payloads.slice(0, memoryIndex)).toEqual([]);
+		expect(assembly.payloads).toContainEqual({ role: "user", content: "objective" });
 		expect(assembly.payloads.slice(memoryIndex + 1)).toEqual(
-			[2, 3, 4, 5].map((index) => ({ role: "toolResult", content: `work-${index}` })),
+			[{ role: "user", content: "objective" }, ...[2, 3, 4, 5].map((index) => ({ role: "toolResult", content: `work-${index}` }))],
 		);
 	});
 
@@ -152,7 +169,7 @@ describe("ContextManager.condense", () => {
 		for (let index = 0; index < 6; index++) manager.record({ sessionId, kind: "tool-result", payload: `later-${index}`, tokenCost: 1_000, lifecycle: "retained", projection: "full", reason: "done", groupId: `later-${index}` });
 		const again = manager.condense(sessionId, { ...input, milestone: "next", completedWork: ["new work"] });
 		expect(again.noOp).toBe(false);
-		expect(store.contextItems(sessionId).filter((item) => item.kind === "long-term-memory" && item.lifecycle !== "archived")).toHaveLength(1);
+		expect(store.contextItems(sessionId).filter((item) => item.kind === "long-term-memory" && item.lifecycle !== "archived")).toHaveLength(2);
 	});
 
 	test("does not replace prior memory when no history is eligible", () => {
@@ -180,17 +197,65 @@ describe("ContextManager.condense", () => {
 		const store = new SessionStore(join(dir, "state.sqlite")); const sessionId = store.create(); const manager = new ContextManager(store);
 		for (let index = 0; index < 6; index++) manager.record({ sessionId, kind: "tool-result", payload: `work-${index}`, tokenCost: 1_000, lifecycle: "retained", projection: "full", reason: "done", groupId: `g-${index}` });
 		const before = store.contextItems(sessionId).map((item) => [item.id, item.lifecycle]);
-		const append = store.appendContextItem.bind(store); store.appendContextItem = () => { throw new Error("storage failure"); };
+		const append = store.appendContextAtHead.bind(store); store.appendContextAtHead = () => { throw new Error("storage failure"); };
 		expect(() => manager.condense(sessionId, input)).toThrow("storage failure");
 		expect(store.contextItems(sessionId).map((item) => [item.id, item.lifecycle])).toEqual(before);
-		store.appendContextItem = append;
+		store.appendContextAtHead = append;
 	});
 
-	test("rejects active episodes before touching storage", () => {
+	test("allows active episodes without making them retention locks", () => {
 		const dir = mkdtempSync(join(tmpdir(), "harnez-condensation-active-")); paths.push(dir);
 		const store = new SessionStore(join(dir, "state.sqlite")); const sessionId = store.create(); const manager = new ContextManager(store);
 		manager.startEpisode(sessionId, { name: "active work", kind: "exploration" });
-		expect(() => manager.condense(sessionId, input)).toThrow("episode is active");
+		expect(manager.condense(sessionId, input).noOp).toBe(true);
+		expect(manager.episodes(sessionId).some((episode) => episode.state === "active")).toBe(true);
 		expect(store.contextItems(sessionId)).toHaveLength(0);
+	});
+
+	test("bounds inherited and recent tails before recording coverage", () => {
+		const dir = mkdtempSync(join(tmpdir(), "harnez-condensation-tail-"));
+		paths.push(dir);
+		const store = new SessionStore(join(dir, "state.sqlite"));
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "stable objective" },
+			tokenCost: 4,
+			lifecycle: "pinned",
+			projection: "full",
+			reason: "objective",
+		});
+		for (let index = 0; index < 6; index++)
+			manager.record({
+				sessionId,
+				kind: "tool-result",
+				payload: "x".repeat(8_000),
+				tokenCost: 2_000,
+				lifecycle: "retained",
+				projection: "full",
+				reason: "done",
+				groupId: `large-${index}`,
+			});
+		manager.condense(sessionId, input, { budget: 4_000 });
+		const checkpoint = store.contextItems(sessionId).at(-1)?.payload as {
+			retainedTail: unknown[];
+			coverage: {
+				sourceCount: number;
+				condensedCount: number;
+				retainedCount: number;
+				omittedCount: number;
+			};
+		};
+		expect(checkpoint.retainedTail).toEqual([
+			{ role: "user", content: "stable objective" },
+		]);
+		expect(checkpoint.coverage.retainedCount).toBe(1);
+		expect(
+			checkpoint.coverage.condensedCount +
+				checkpoint.coverage.retainedCount +
+				checkpoint.coverage.omittedCount,
+		).toBe(checkpoint.coverage.sourceCount);
 	});
 });

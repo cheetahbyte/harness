@@ -163,7 +163,7 @@ test("registers every context tool as a discoverable capability", () => {
 	});
 });
 
-test("condense_context reports mutation details, suppresses no-op events, and rejects active episodes", async () => {
+test("condense_context reports mutation details, suppresses no-op events, and allows active episodes", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "harnez-tool-condense-"));
 	const store = new SessionStore(join(dir, "state.sqlite"));
 	const sessionId = store.create();
@@ -187,9 +187,9 @@ test("condense_context reports mutation details, suppresses no-op events, and re
 	expect(JSON.stringify(result.details)).not.toContain("work");
 	const memory = store.contextItems(sessionId).find((item) => item.kind === "long-term-memory" && item.lifecycle !== "archived");
 	expect(memory).toMatchObject({ lifecycle: "pinned", projection: "full", reason: "agent context condensation" });
-	expect(memory?.payload).toMatchObject({ role: "user" });
-	expect(memory?.payload).toHaveProperty("content");
-	expect(String((memory?.payload as { content: string }).content)).toContain("<harnez-long-term-memory>\n{");
+	const checkpoint = memory?.payload as { representation?: { kind?: string; memory?: unknown } };
+	expect(checkpoint.representation?.kind).toBe("condensation");
+	expect(checkpoint.representation?.memory).toMatchObject({ milestone: "done", completedWork: ["work"] });
 	expect(events).toHaveLength(1);
 	const assembly = telemetry.find((event) => (event as { type?: string }).type === "context.assembly.completed") as Record<string, unknown>;
 	expect(assembly).toMatchObject({ budget: 20_000, target: 20_000, taskId: "task-1" });
@@ -197,6 +197,7 @@ test("condense_context reports mutation details, suppresses no-op events, and re
 	expect(noop.content[0]).toMatchObject({ text: "No context was condensed." });
 	expect(events).toHaveLength(1);
 	context.startEpisode(sessionId, { name: "active", kind: "exploration" });
-	await expect(tool.execute("call-3", { milestone: "blocked", completedWork: ["x"], strategies: [], environmentChanges: [], constraints: [], openQuestions: [], references: [] }, new AbortController().signal)).rejects.toThrow("episode is active");
+	const active = await tool.execute("call-3", { milestone: "blocked", completedWork: ["x"], strategies: [], environmentChanges: [], constraints: [], openQuestions: [], references: [] }, new AbortController().signal);
+	expect(active.content[0]).toMatchObject({ text: "No context was condensed." });
 	rmSync(dir, { recursive: true, force: true });
 });
