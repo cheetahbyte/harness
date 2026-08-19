@@ -510,12 +510,19 @@ export class ContextManager {
 			estimatedTokens >= Math.floor(request.budget * 0.8) &&
 			request.compactor !== undefined;
 		if (estimatedTokens <= request.budget && !shouldCompact) {
-			for (const input of pending)
-				this.appendAtLaneHead(input, request.sessionId, request.laneId);
+			request.signal.throwIfAborted();
+			this.store.db.transaction(() => {
+				for (const input of pending)
+					this.appendAtLaneHead(input, request.sessionId, request.laneId);
+			})();
 			return { messages, estimatedTokens, usedFallback: false };
 		}
 		if (fixedCost + pendingCost > request.budget)
-			throw new ContextBudgetError(fixedCost + pendingCost, request.budget);
+			throw new ContextBudgetError(
+				fixedCost + pendingCost,
+				request.budget,
+				"INPUT_TOO_LARGE",
+			);
 
 		let representation = this.fallbackRepresentation(path);
 		let retainedTail: unknown[] = [];
@@ -526,23 +533,47 @@ export class ContextManager {
 			);
 			const tailBudget = Math.min(
 				20_000,
-				Math.max(0, Math.floor(request.budget * 0.6) - fixedCost - 2_000),
+				Math.max(
+					0,
+					Math.floor(request.budget * 0.6) - fixedCost - pendingCost - 2_000,
+				),
 			);
-			let tailCost = 0;
-			for (let index = projected.length - 1; index >= 0; index--) {
+			const currentTurn = projected.findLastIndex(
+				(payload) =>
+					!!payload &&
+					typeof payload === "object" &&
+					(payload as { role?: unknown }).role === "user",
+			);
+			const tailStart = pending.length
+				? projected.length
+				: currentTurn < 0
+					? projected.length - 1
+					: currentTurn;
+			retainedTail =
+				tailStart >= projected.length ? [] : projected.slice(tailStart);
+			let tailCost = retainedTail.reduce<number>(
+				(sum, value) => sum + tokenCostOf(value),
+				0,
+			);
+			for (let index = tailStart - 1; index >= 0; index--) {
 				const cost = tokenCostOf(projected[index]);
-				if (retainedTail.length && tailCost + cost > tailBudget) break;
+				if (tailCost + cost > tailBudget) break;
 				retainedTail.unshift(projected[index]);
 				tailCost += cost;
 			}
 			const compactor = request.compactor;
-			if (compactor && projected.length > retainedTail.length) {
+			const source = projected.slice(0, projected.length - retainedTail.length);
+			const sourceFitsCompactor =
+				source.reduce<number>((sum, value) => sum + tokenCostOf(value), 0) +
+					4_096 <=
+				request.budget;
+			if (compactor && source.length && sourceFitsCompactor) {
 				const previous = path
 					.toReversed()
 					.map((item) => validCheckpoint(item))
 					.find((item) => item?.representation.kind === "condensation");
 				const draft = await compactor({
-					messages: projected.slice(0, projected.length - retainedTail.length),
+					messages: source,
 					...(previous?.representation.kind === "condensation"
 						? {
 								previousMemory: previous.representation
@@ -562,28 +593,37 @@ export class ContextManager {
 					representation = { kind: "condensation", memory: draft.memory };
 			}
 		}
-		const checkpoint = this.appendCheckpoint(
-			request.sessionId,
-			request.laneId,
-			representation,
-			retainedTail,
-			{
-				condensedCount: Math.max(0, path.length - retainedTail.length),
-				retainedCount: retainedTail.length,
-			},
-		);
-		for (const input of pending)
-			this.appendAtLaneHead(input, request.sessionId, request.laneId);
+		request.signal.throwIfAborted();
+		const checkpoint = this.store.db.transaction(() => {
+			const committed = this.appendCheckpoint(
+				request.sessionId,
+				request.laneId,
+				representation,
+				retainedTail,
+				{
+					condensedCount: Math.max(0, path.length - retainedTail.length),
+					retainedCount: retainedTail.length,
+				},
+			);
+			for (const input of pending)
+				this.appendAtLaneHead(input, request.sessionId, request.laneId);
+			return committed;
+		})();
 		const after = this.store.contextPath(request.sessionId, request.laneId);
 		messages = [
 			...fixed,
 			...projectedPathPayloads(after, this.episodes(request.sessionId)),
 		];
-		estimatedTokens = fixedCost + pendingCost;
+		estimatedTokens =
+			fixedCost +
+			projectedPathPayloads(
+				after,
+				this.episodes(request.sessionId),
+			).reduce<number>((sum, payload) => sum + tokenCostOf(payload), 0);
 		if (estimatedTokens > request.budget) {
 			// The fallback has no summary/tail; only fixed + pending can remain.
 			messages = [...fixed, ...pendingMessages];
-			estimatedTokens = fixedCost;
+			estimatedTokens = fixedCost + pendingCost;
 		}
 		return {
 			messages,
@@ -591,6 +631,30 @@ export class ContextManager {
 			checkpointId: checkpoint.id,
 			usedFallback: representation.kind === "fallback",
 		};
+	}
+
+	checkpointProviderOverflow(sessionId: string, laneName = "main"): void {
+		const path = this.store.contextPath(sessionId, laneName);
+		const projected = projectedPathPayloads(path, this.episodes(sessionId));
+		const currentTurn = projected.findLastIndex(
+			(payload) =>
+				!!payload &&
+				typeof payload === "object" &&
+				(payload as { role?: unknown }).role === "user",
+		);
+		const retainedTail = currentTurn < 0 ? [] : projected.slice(currentTurn);
+		this.store.db.transaction(() => {
+			this.appendCheckpoint(
+				sessionId,
+				laneName,
+				this.fallbackRepresentation(path),
+				retainedTail,
+				{
+					condensedCount: Math.max(0, path.length - retainedTail.length),
+					retainedCount: retainedTail.length,
+				},
+			);
+		})();
 	}
 
 	private pathProjectedCost(

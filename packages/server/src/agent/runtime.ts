@@ -22,7 +22,11 @@ import type {
 	ServerEvent,
 } from "../../../shared/src/protocol";
 import { compactWithLlm } from "../context/llm-compactor";
-import type { ContextCompactor, ContextManager } from "../context/manager";
+import {
+	ContextBudgetError,
+	type ContextCompactor,
+	type ContextManager,
+} from "../context/manager";
 import { log } from "../logger";
 import type { McpRegistry, McpToolDescriptor } from "../mcp/registry";
 import { HarnezProviderError, providerModels } from "../provider";
@@ -30,6 +34,7 @@ import type { SessionStore } from "../sessions/store";
 import type { SkillSnapshotEntry } from "../skills";
 import type { TaskRuntime } from "../task-runtime";
 import type { RuntimeEventSink } from "../telemetry/events";
+import { tokenCost } from "../token-cost";
 import type { CoreTools } from "../tools";
 import {
 	type AgentEntry,
@@ -38,7 +43,6 @@ import {
 	managedMessagesAsync,
 	type QueueCallbacks,
 	queueMessage,
-	recordAgentMessage,
 	translateAgentEvent,
 } from "./events";
 export { SYSTEM_PROMPT } from "../system-prompt";
@@ -78,6 +82,7 @@ export class HarnezAgentRuntime {
 	private readonly store: SessionStore;
 	private readonly context: ContextManager;
 	private readonly contextBudget: number;
+	private readonly llmCompaction: boolean;
 
 	constructor(options: {
 		credentials: CredentialStore;
@@ -85,6 +90,7 @@ export class HarnezAgentRuntime {
 		store: SessionStore;
 		context: ContextManager;
 		contextBudget?: number;
+		llmCompaction?: boolean;
 		sink?: RuntimeEventSink;
 	}) {
 		this.credentials = options.credentials;
@@ -92,6 +98,8 @@ export class HarnezAgentRuntime {
 		this.store = options.store;
 		this.context = options.context;
 		this.contextBudget = options.contextBudget ?? DEFAULT_CONTEXT_BUDGET;
+		this.llmCompaction =
+			options.llmCompaction ?? process.env["HARNEZ_LLM_COMPACTION"] !== "0";
 		this.sink = options.sink;
 	}
 	private readonly sink: RuntimeEventSink | undefined;
@@ -149,7 +157,7 @@ export class HarnezAgentRuntime {
 				mcpTools,
 				mcp,
 			});
-			created.agent.subscribe((event) =>
+			created.agent.subscribe((event) => {
 				translateAgentEvent({
 					sessionId,
 					entry: created,
@@ -159,8 +167,8 @@ export class HarnezAgentRuntime {
 					shrink: () => this.shrink(sessionId, created),
 					inspect: () => this.inspect(sessionId),
 					...(this.sink ? { sink: this.sink } : {}),
-				}),
-			);
+				});
+			});
 			this.agents.set(sessionId, created);
 			entry = created;
 		}
@@ -179,34 +187,37 @@ export class HarnezAgentRuntime {
 			timestamp: Date.now(),
 		};
 		entry.promptGroupId = crypto.randomUUID();
-		let baselineMessages: AgentMessage[];
 		try {
 			/**
 			 * The first assembly of a turn is usually the one that crosses the
 			 * budget, so it has to carry the emitter too — otherwise the cleanup it
 			 * performs is silent and every later assembly finds nothing to report.
 			 */
-			entry.agent.state.messages = await this.messagesAsync(
+			await this.messagesAsync(
 				sessionId,
 				entry.agent.state.model,
 				entry.task,
 				signal,
 				entry.compactor,
-			);
-			baselineMessages = this.messages(
-				sessionId,
-				entry.agent.state.model,
-				entry.task,
 				emit,
 				turnId,
+				[
+					{
+						sessionId,
+						kind: "user",
+						payload: message,
+						tokenCost: tokenCost(message, 1),
+						lifecycle: "pinned",
+						reason: "user-authored message",
+						groupId: entry.promptGroupId,
+					},
+				],
 			);
 		} catch (error) {
 			this.context.completeGroup(sessionId, entry.promptGroupId);
 			entry.promptGroupId = undefined;
 			throw error;
 		}
-		recordAgentMessage({ sessionId, entry, message, context: this.context });
-		entry.agent.state.messages = baselineMessages!;
 		entry.preRecorded.add(messageKey(message));
 		this.context.markAgentProgress(task.id);
 		const abort = () => entry?.agent.abort();
@@ -318,10 +329,9 @@ export class HarnezAgentRuntime {
 			workspace: this.store.workspace(sessionId) ?? process.cwd(),
 		});
 		const entry = newAgentEntry(key, tools, task, this.sink);
-		const compactor: ContextCompactor | undefined =
-			process.env["HARNEZ_LLM_COMPACTION"] === "0"
-				? undefined
-				: (request) => compactWithLlm({ ...request, model, models });
+		const compactor: ContextCompactor | undefined = !this.llmCompaction
+			? undefined
+			: (request) => compactWithLlm({ ...request, model, models });
 		/**
 		 * Publishes a tool mid-task. `entry.agent` is assigned before any tool can
 		 * run, so the deferred read is always resolved by the time this fires.
@@ -331,6 +341,23 @@ export class HarnezAgentRuntime {
 			const current = entry.agent.state.tools;
 			if (current.some((existing) => existing.name === tool.name)) return;
 			entry.agent.state.tools = [...current, tool];
+		};
+		const managed = async (signal?: AbortSignal): Promise<AgentMessage[]> => {
+			try {
+				entry.contextError = undefined;
+				return await this.messagesAsync(
+					sessionId,
+					model,
+					task,
+					signal ?? new AbortController().signal,
+					compactor,
+					entry.emit,
+					entry.turnId,
+				);
+			} catch (error) {
+				entry.contextError = asError(error);
+				return [];
+			}
 		};
 		const agent = new Agent({
 			sessionId,
@@ -355,17 +382,10 @@ export class HarnezAgentRuntime {
 					previewLimit: this.previewLimit.bind(this),
 					...(entry.emit ? { emit: entry.emit } : {}),
 				}),
-				messages: this.messages(sessionId, model, task),
+				messages: [],
 			},
 			transformContext: async (_messages, signal) => {
-				await this.messagesAsync(
-					sessionId,
-					model,
-					task,
-					signal ?? new AbortController().signal,
-					compactor,
-				);
-				const messages = this.messages(sessionId, model, task);
+				const messages = await managed(signal);
 				task.context.completeStep();
 				return messages;
 			},
@@ -374,14 +394,7 @@ export class HarnezAgentRuntime {
 					sessionId,
 					turn.toolResults.map((result) => result.toolCallId),
 				);
-				await this.messagesAsync(
-					sessionId,
-					model,
-					task,
-					signal ?? new AbortController().signal,
-					compactor,
-				);
-				const messages = this.messages(sessionId, model, task);
+				const messages = await managed(signal);
 				agent.state.messages = messages;
 				/**
 				 * Pi snapshots the tool list once when a prompt starts and then reuses
@@ -398,8 +411,9 @@ export class HarnezAgentRuntime {
 			streamFn: (_unused, requestContext, options) => {
 				if (entry.contextError) throw entry.contextError;
 				const requestIds = new Map<number, number>();
+				let retryContext = requestContext;
 				return streamWithRetry(
-					() => models.streamSimple(model, requestContext, options),
+					() => models.streamSimple(model, retryContext, options),
 					options?.signal,
 					{ sessionId, provider: config.provider, model: config.model },
 					(durationMs) => (entry.timing.modelDurationMs += durationMs),
@@ -425,11 +439,23 @@ export class HarnezAgentRuntime {
 							...(durationMs === undefined ? {} : { durationMs }),
 							...(error ? { error } : {}),
 							...(phase === "started"
-								? { prompt: requestContext }
+								? { prompt: retryContext }
 								: response
 									? { response }
 									: {}),
 						});
+					},
+					() => {
+						this.context.checkpointProviderOverflow(sessionId);
+						retryContext = {
+							...requestContext,
+							messages: this.messages(
+								sessionId,
+								model,
+								task,
+								entry.emit,
+							) as typeof requestContext.messages,
+						};
 					},
 				);
 			},
@@ -445,12 +471,33 @@ export class HarnezAgentRuntime {
 		task: TaskRuntime,
 		signal: AbortSignal,
 		compactor?: ContextCompactor,
+		emit?: ((event: ServerEvent) => void) | undefined,
+		turnId?: number,
+		pendingInput?: Parameters<typeof managedMessagesAsync>[0]["pendingInput"],
 	): Promise<AgentMessage[]> {
+		if (pendingInput?.length) {
+			await managedMessagesAsync({
+				sessionId,
+				model,
+				task,
+				context: this.context,
+				contextOptions: this.contextOptions.bind(this),
+				signal,
+				pendingInput,
+				...(compactor ? { compactor } : {}),
+			});
+			return this.messages(sessionId, model, task, emit, turnId);
+		}
 		const options = this.contextOptions(model);
-		const inspection = this.context.inspect(sessionId, options);
-		if (inspection.estimatedTokens < Math.floor(options.budget * 0.8))
-			return this.messages(sessionId, model, task);
-		return managedMessagesAsync({
+		try {
+			const messages = this.messages(sessionId, model, task, emit, turnId);
+			const inspection = this.context.inspect(sessionId, options);
+			if (inspection.estimatedTokens < Math.floor(options.budget * 0.8))
+				return messages;
+		} catch (error) {
+			if (!(error instanceof ContextBudgetError)) throw error;
+		}
+		await managedMessagesAsync({
 			sessionId,
 			model,
 			task,
@@ -459,6 +506,7 @@ export class HarnezAgentRuntime {
 			signal,
 			...(compactor ? { compactor } : {}),
 		});
+		return this.messages(sessionId, model, task, emit, turnId);
 	}
 	private messages(
 		sessionId: string,
@@ -541,9 +589,11 @@ function streamWithRetry(
 		error?: string,
 		response?: unknown,
 	) => void,
+	onContextLength?: () => void,
 ): AssistantMessageEventStream {
 	const out = createAssistantMessageEventStream();
 	void (async () => {
+		let retriedContextLength = false;
 		for (let attempt = 0; ; attempt++) {
 			log.debug(
 				{ ...context, attempt: attempt + 1 },
@@ -577,9 +627,27 @@ function streamWithRetry(
 				return;
 			}
 			const retryError = terminal.type === "error" ? terminal.error : undefined;
+			const contextLength =
+				terminal.type === "error" &&
+				terminal.reason === "error" &&
+				isContextLengthError(terminal.error.errorMessage);
+			if (contextLength && !retriedContextLength) {
+				retriedContextLength = true;
+				try {
+					onContextLength?.();
+					continue;
+				} catch (error) {
+					log.warn(
+						{ ...context, err: error },
+						"context-length recovery could not prepare a retry",
+					);
+					return out.push(terminal);
+				}
+			}
 			const retryable =
 				terminal.type === "error" &&
 				terminal.reason === "error" &&
+				!contextLength &&
 				attempt < MAX_STREAM_RETRIES &&
 				isRetryableAssistantError(terminal.error);
 			if (!retryable) {
@@ -619,6 +687,11 @@ function streamWithRetry(
 		}
 	})();
 	return out;
+}
+function isContextLengthError(message: string | undefined): boolean {
+	return /context(?: window| length)|maximum context|too many tokens/i.test(
+		message ?? "",
+	);
 }
 function asError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));

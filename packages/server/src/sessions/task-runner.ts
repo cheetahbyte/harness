@@ -312,6 +312,7 @@ export class SessionTaskRunner {
 						type: "context-budget-error",
 						estimatedTokens: error.estimatedTokens,
 						budget: error.budget,
+						code: error.code,
 					}
 				: { type: "error", message },
 		);

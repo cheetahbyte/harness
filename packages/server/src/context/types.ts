@@ -203,6 +203,7 @@ export class ContextBudgetError extends Error {
 	constructor(
 		readonly estimatedTokens: number,
 		readonly budget: number,
+		readonly code: "CONTEXT_BUDGET" | "INPUT_TOO_LARGE" = "CONTEXT_BUDGET",
 	) {
 		super(
 			`Context budget cannot be satisfied (${estimatedTokens} > ${budget})`,

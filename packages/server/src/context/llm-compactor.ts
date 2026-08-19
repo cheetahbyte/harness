@@ -1,4 +1,10 @@
-import type { Api, Context, Model, Models } from "@earendil-works/pi-ai";
+import {
+	type Api,
+	type Context,
+	type Model,
+	type Models,
+	uuidv7,
+} from "@earendil-works/pi-ai";
 
 import {
 	validateCondensationInput,
@@ -64,7 +70,12 @@ export async function compactWithLlm(
 						},
 					],
 				} satisfies Context,
-				{ maxTokens: 2_500, cacheRetention: "none", signal: request.signal },
+				{
+					maxTokens: 2_500,
+					cacheRetention: "none",
+					sessionId: uuidv7(),
+					signal: request.signal,
+				},
 			);
 			if (response.stopReason === "aborted")
 				throw new DOMException("Aborted", "AbortError");
@@ -72,6 +83,8 @@ export async function compactWithLlm(
 				throw new Error(
 					response.errorMessage ?? "compactor did not stop cleanly",
 				);
+			if (response.content.some((part) => part.type !== "text"))
+				throw new Error("compactor returned non-text content");
 			const text = response.content
 				.filter(
 					(part): part is { type: "text"; text: string } =>

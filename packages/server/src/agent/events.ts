@@ -9,7 +9,11 @@ import type {
 	ImageAttachment,
 	ServerEvent,
 } from "../../../shared/src/protocol";
-import type { ContextCompactor, ContextManager } from "../context/manager";
+import type {
+	ContextCompactor,
+	ContextManager,
+	PrepareTurnRequest,
+} from "../context/manager";
 import { ContextBudgetError, type ContextInspection } from "../context/types";
 import type { SessionStore } from "../sessions/store";
 import { resolveSystemPrompt } from "../system-prompt";
@@ -270,6 +274,7 @@ function handleAgentEnd(
 					type: "context-budget-error",
 					estimatedTokens: entry.contextError.estimatedTokens,
 					budget: entry.contextError.budget,
+					code: entry.contextError.code,
 				}
 			: { type: "error", message: entry.contextError.message },
 	);
@@ -449,6 +454,7 @@ export async function managedMessagesAsync({
 	contextOptions,
 	signal,
 	compactor,
+	pendingInput,
 }: {
 	sessionId: string;
 	model: Model<Api>;
@@ -461,6 +467,7 @@ export async function managedMessagesAsync({
 	};
 	signal: AbortSignal;
 	compactor?: ContextCompactor;
+	pendingInput?: PrepareTurnRequest["pendingInput"];
 }): Promise<AgentMessage[]> {
 	const capabilityItems = task.context.items();
 	const dynamic: AgentMessage[] = [
@@ -499,6 +506,7 @@ export async function managedMessagesAsync({
 		tools: [],
 		budget: options.budget,
 		overheadTokens: options.overheadTokens,
+		...(pendingInput?.length ? { pendingInput } : {}),
 		...(compactor ? { compactor } : {}),
 		signal,
 	});

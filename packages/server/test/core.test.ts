@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -20,11 +20,18 @@ import { BashTool } from "../src/tools/bash";
 
 const paths: string[] = [];
 const originalConfigHome = process.env["XDG_CONFIG_HOME"];
+const originalLlmCompaction = process.env["HARNEZ_LLM_COMPACTION"];
+beforeEach(() => {
+	process.env["HARNEZ_LLM_COMPACTION"] = "0";
+});
 afterEach(() => {
 	for (const path of paths.splice(0))
 		rmSync(path, { recursive: true, force: true });
 	if (originalConfigHome === undefined) delete process.env["XDG_CONFIG_HOME"];
 	else process.env["XDG_CONFIG_HOME"] = originalConfigHome;
+	if (originalLlmCompaction === undefined)
+		delete process.env["HARNEZ_LLM_COMPACTION"];
+	else process.env["HARNEZ_LLM_COMPACTION"] = originalLlmCompaction;
 });
 function harnez(contextBudget?: number) {
 	const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
@@ -2186,7 +2193,7 @@ function episodeId(
 		}
 	});
 
-	test("summarizes an over-budget prompt before calling the provider", async () => {
+	test("rejects an individually impossible prompt before persistence", async () => {
 		process.env["HARNESS_OPENAI_API_KEY"] = "test";
 		let calls = 0;
 		const provider = Bun.serve({
@@ -2209,17 +2216,60 @@ function episodeId(
 				type: "prompt",
 				text: "too much context ".repeat(500),
 			});
-			expect(calls).toBe(1);
+			expect(calls).toBe(0);
 			expect(
 				server.store
 					.contextItems(id)
-					.some((item) => item.reason === "rolling summary"),
-			).toBe(true);
+					.some((item) => item.kind === "user"),
+			).toBe(false);
 			expect(
 				server.store
 					.events(id)
 					.some((event) => event.type === "context-budget-error"),
-			).toBe(false);
+			).toBe(true);
+		} finally {
+			provider.stop(true);
+			delete process.env["HARNESS_OPENAI_API_KEY"];
+		}
+	});
+
+	test("retries one provider context-length rejection with bounded history", async () => {
+		process.env["HARNESS_OPENAI_API_KEY"] = "test";
+		let calls = 0;
+		const provider = Bun.serve({
+			port: 0,
+			fetch: () => {
+				calls++;
+				if (calls === 1)
+					return Response.json(
+						{
+							error: {
+								message: "maximum context length exceeded",
+								type: "invalid_request_error",
+								code: "context_length_exceeded",
+							},
+						},
+						{ status: 400 },
+					);
+				return sseResponse(doneChunks());
+			},
+		});
+		try {
+			const { server } = harnez();
+			const id = server.createSession();
+			await server.command(id, {
+				type: "configure",
+				provider: "openai-compatible",
+				model: "test-model",
+				baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+			});
+			await server.command(id, { type: "prompt", text: "keep this turn" });
+			expect(calls).toBe(2);
+			expect(
+				server.store
+					.contextItems(id)
+					.some((item) => item.nodeRole === "checkpoint"),
+			).toBe(true);
 		} finally {
 			provider.stop(true);
 			delete process.env["HARNESS_OPENAI_API_KEY"];

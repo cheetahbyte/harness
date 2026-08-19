@@ -162,7 +162,12 @@ export type ServerEvent =
 			trigger?: "automatic" | "explicit";
 			milestone?: string;
 	  }
-	| { type: "context-budget-error"; estimatedTokens: number; budget: number }
+	| {
+			type: "context-budget-error";
+			estimatedTokens: number;
+			budget: number;
+			code?: "CONTEXT_BUDGET" | "INPUT_TOO_LARGE";
+	  }
 	| {
 			type: "command";
 			id: string;
