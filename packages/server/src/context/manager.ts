@@ -555,6 +555,12 @@ export class ContextManager {
 				(sum, value) => sum + tokenCostOf(value),
 				0,
 			);
+			if (tailCost > tailBudget)
+				throw new ContextBudgetError(
+					fixedCost + pendingCost + tailCost,
+					request.budget,
+					"INPUT_TOO_LARGE",
+				);
 			for (let index = tailStart - 1; index >= 0; index--) {
 				const cost = tokenCostOf(projected[index]);
 				if (tailCost + cost > tailBudget) break;

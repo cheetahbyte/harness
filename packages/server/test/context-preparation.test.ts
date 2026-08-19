@@ -144,3 +144,39 @@ test("pending append failure rolls back the checkpoint", async () => {
 	).rejects.toThrow("pending write failed");
 	expect(store.contextItems(sessionId)).toHaveLength(before);
 });
+
+test("an oversized active turn is rejected before checkpointing", async () => {
+	const { store, sessionId, manager } = setup();
+	manager.record({
+		sessionId,
+		kind: "user",
+		payload: { role: "user", content: "active turn" },
+		tokenCost: 3,
+		lifecycle: "pinned",
+		reason: "active turn",
+	});
+	manager.record({
+		sessionId,
+		kind: "tool-result",
+		payload: { role: "toolResult", content: [{ type: "text", text: "x".repeat(40_000) }] },
+		tokenCost: 20_000,
+		lifecycle: "retained",
+		reason: "active tool result",
+	});
+	const before = store.contextItems(sessionId).length;
+
+	await expect(
+		manager.prepareTurn({
+			sessionId,
+			taskId: "task-1",
+			laneId: "main",
+			fixedMessages: [],
+			capabilityMessages: [],
+			tools: [],
+			budget: 12_000,
+			signal: new AbortController().signal,
+			compactor: async () => ({ memory }),
+		}),
+	).rejects.toMatchObject({ code: "INPUT_TOO_LARGE" });
+	expect(store.contextItems(sessionId)).toHaveLength(before);
+});
