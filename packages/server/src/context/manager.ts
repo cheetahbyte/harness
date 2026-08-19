@@ -734,55 +734,77 @@ export class ContextManager {
 				.slice(0, 4),
 		);
 		const eligibleIds = new Set(eligible.map((item) => item.id));
-		const retainedItems = sourceItems
-			.filter(
-				(item) =>
-					(item.kind === "user" ||
-						item.kind === "pinned-note" ||
-						(item.groupId !== undefined && tailGroups.has(item.groupId))) &&
-					item.nodeRole !== "checkpoint" &&
-					!eligibleIds.has(item.id),
-			)
-			.slice(-24);
+		const retentionCandidates = sourceItems.filter(
+			(item) =>
+				(item.kind === "user" ||
+					item.kind === "pinned-note" ||
+					(item.groupId !== undefined && tailGroups.has(item.groupId))) &&
+				item.nodeRole !== "checkpoint" &&
+				!eligibleIds.has(item.id),
+		);
 		const inheritedTail = baseCheckpoint
 			? (validCheckpoint(baseCheckpoint)?.retainedTail ?? [])
 			: [];
-		const retainedTail = [
-			...inheritedTail,
+		const tailBudget = Math.min(
+			20_000,
+			Math.floor((options.budget ?? 80_000) * 0.25),
+		);
+		const episodeTail = episodeConclusionPayloads(
+			items,
+			this.episodes(sessionId).map((episode) =>
+				episode.state === "completed"
+					? { ...episode, state: "archived" }
+					: episode,
+			),
+		);
+		const groups = new Map<string, ContextItem[]>();
+		for (const item of retentionCandidates) {
+			const key = item.groupId ?? item.id;
+			groups.set(key, [...(groups.get(key) ?? []), item]);
+		}
+		const stableKey = retentionCandidates.find(
+			(item) => item.kind === "user" || item.kind === "pinned-note",
+		);
+		const stableGroupKey = stableKey?.groupId ?? stableKey?.id;
+		const recentKeys = [...groups.keys()]
+			.toReversed()
+			.filter((key) => key !== stableGroupKey);
+		const retainedIds = new Set<string>();
+		let tailTokens = 0;
+		const retainGroup = (key: string): void => {
+			const group = groups.get(key) ?? [];
+			const cost = group.reduce((sum, item) => {
+				const payload = projectedPayload(item);
+				return sum + (payload === undefined ? 0 : tokenCostOf(payload));
+			}, 0);
+			if (tailTokens + cost > tailBudget) return;
+			for (const item of group) retainedIds.add(item.id);
+			tailTokens += cost;
+		};
+		if (stableGroupKey) retainGroup(stableGroupKey);
+		const anchorTail = boundedAnchorTail(
+			inheritedTail,
+			episodeTail,
+			tailBudget - tailTokens,
+		);
+		tailTokens += anchorTail.tokens;
+		for (const key of recentKeys) retainGroup(key);
+		const retainedItems = sourceItems.filter((item) =>
+			retainedIds.has(item.id),
+		);
+		const boundedTail = [
+			...anchorTail.messages,
 			...retainedItems.flatMap((item) => {
 				const payload = projectedPayload(item);
 				return payload === undefined ? [] : [payload];
 			}),
 		];
 		const omittedItems = sourceItems.filter(
-			(item) =>
-				!eligibleIds.has(item.id) &&
-				!retainedItems.some((retained) => retained.id === item.id),
+			(item) => !eligibleIds.has(item.id) && !retainedIds.has(item.id),
 		);
 		const omittedDigest = structuredHash(
 			omittedItems.map(({ id, contentHash }) => ({ id, contentHash })),
 		);
-		retainedTail.push(
-			...episodeConclusionPayloads(
-				items,
-				this.episodes(sessionId).map((episode) =>
-					episode.state === "completed"
-						? { ...episode, state: "archived" }
-						: episode,
-				),
-			),
-		);
-		const tailBudget = Math.min(
-			20_000,
-			Math.floor((options.budget ?? 80_000) * 0.25),
-		);
-		let tailTokens = 0;
-		const boundedTail = retainedTail.filter((value) => {
-			const cost = tokenCostOf(value);
-			if (tailTokens + cost > tailBudget) return false;
-			tailTokens += cost;
-			return true;
-		});
 		this.appendCheckpoint(
 			sessionId,
 			"main",
@@ -790,7 +812,7 @@ export class ContextManager {
 			boundedTail,
 			{
 				condensedCount: eligible.length,
-				retainedCount: Math.min(retainedItems.length, boundedTail.length),
+				retainedCount: retainedItems.length,
 				omittedDigest,
 			},
 		);
@@ -1451,6 +1473,34 @@ function projectedEstimatedCost(
 			0,
 		)
 	);
+}
+
+function boundedAnchorTail(
+	inherited: readonly unknown[],
+	conclusions: readonly unknown[],
+	budget: number,
+): { messages: unknown[]; tokens: number } {
+	const selectedInherited = new Set<number>();
+	const selectedConclusions = new Set<number>();
+	let tokens = 0;
+	const admit = (value: unknown): boolean => {
+		const cost = tokenCostOf(value);
+		if (tokens + cost > budget) return false;
+		tokens += cost;
+		return true;
+	};
+	for (let index = 0; index < conclusions.length; index++)
+		if (admit(conclusions[index])) selectedConclusions.add(index);
+	if (inherited.length && admit(inherited[0])) selectedInherited.add(0);
+	for (let index = inherited.length - 1; index > 0; index--)
+		if (admit(inherited[index])) selectedInherited.add(index);
+	return {
+		messages: [
+			...inherited.filter((_, index) => selectedInherited.has(index)),
+			...conclusions.filter((_, index) => selectedConclusions.has(index)),
+		],
+		tokens,
+	};
 }
 
 function tokenCostOf(value: unknown): number {

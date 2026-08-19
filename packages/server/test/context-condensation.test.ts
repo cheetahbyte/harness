@@ -211,4 +211,51 @@ describe("ContextManager.condense", () => {
 		expect(manager.episodes(sessionId).some((episode) => episode.state === "active")).toBe(true);
 		expect(store.contextItems(sessionId)).toHaveLength(0);
 	});
+
+	test("bounds inherited and recent tails before recording coverage", () => {
+		const dir = mkdtempSync(join(tmpdir(), "harnez-condensation-tail-"));
+		paths.push(dir);
+		const store = new SessionStore(join(dir, "state.sqlite"));
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		manager.record({
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: "stable objective" },
+			tokenCost: 4,
+			lifecycle: "pinned",
+			projection: "full",
+			reason: "objective",
+		});
+		for (let index = 0; index < 6; index++)
+			manager.record({
+				sessionId,
+				kind: "tool-result",
+				payload: "x".repeat(8_000),
+				tokenCost: 2_000,
+				lifecycle: "retained",
+				projection: "full",
+				reason: "done",
+				groupId: `large-${index}`,
+			});
+		manager.condense(sessionId, input, { budget: 4_000 });
+		const checkpoint = store.contextItems(sessionId).at(-1)?.payload as {
+			retainedTail: unknown[];
+			coverage: {
+				sourceCount: number;
+				condensedCount: number;
+				retainedCount: number;
+				omittedCount: number;
+			};
+		};
+		expect(checkpoint.retainedTail).toEqual([
+			{ role: "user", content: "stable objective" },
+		]);
+		expect(checkpoint.coverage.retainedCount).toBe(1);
+		expect(
+			checkpoint.coverage.condensedCount +
+				checkpoint.coverage.retainedCount +
+				checkpoint.coverage.omittedCount,
+		).toBe(checkpoint.coverage.sourceCount);
+	});
 });
