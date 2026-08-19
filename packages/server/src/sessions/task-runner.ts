@@ -502,6 +502,8 @@ export class SessionTaskRunner {
 			context,
 			accountant,
 		);
+		this.options.context.recover();
+		this.options.store.startContextTask(id, task.id, task.startedAt);
 		return {
 			controller,
 			task,
@@ -675,8 +677,13 @@ export class SessionTaskRunner {
 	): void {
 		this.options.context.clearPressure(task.id);
 		this.options.runtime.forget(id);
-		this.options.store.appendTaskLedger(id, task.id, task.ledger());
-		this.options.store.recordTaskTerminal(id, task.id, status, task.startedAt);
+		this.options.context.finishTask({
+			sessionId: id,
+			taskId: task.id,
+			status: status === "superseded" ? "cancelled" : status,
+			startedAt: task.startedAt,
+			ledger: task.ledger(),
+		});
 		this.options.emit(id, {
 			type: "task-state",
 			taskId: task.id,
