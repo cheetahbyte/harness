@@ -34,6 +34,20 @@ harnez server run
 `start`, `status`, `stop`, and `restart` manage the local server. `run` runs it
 in the foreground.
 
+## Releases
+
+Create tags through the version-checked command:
+
+```sh
+bun run tag -- vx.y.z
+```
+
+Put the tag name first when passing additional `git tag` options.
+
+The command refuses to tag unless the tag (with or without a `v` prefix)
+matches `package.json`'s version. The pre-push hook also checks tags created
+with plain `git tag` before allowing them to be pushed.
+
 ## Updating
 
 ```sh

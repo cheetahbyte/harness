@@ -44,6 +44,7 @@
 		"typecheck": "tsc --noEmit",
 		"check": "bun run lint && bun run format:check && bun run typecheck",
 		"fix": "oxfmt && oxlint --fix",
+		"tag": "bun scripts/tag.ts",
 		"prepare": "git config core.hooksPath .githooks",
 		"knip": "knip-bun"
 	},
