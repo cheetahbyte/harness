@@ -571,7 +571,7 @@ describe("OpenTUI app", () => {
 		}
 	});
 
-	test("shows the leverage readout and sheds detail as the footer narrows", async () => {
+	test("keeps context accounting out of the footer", async () => {
 		const store = createTuiStore("session-1", `${homedir()}/project`);
 		store.getState().apply({
 			type: "model-config",
@@ -603,18 +603,18 @@ describe("OpenTUI app", () => {
 		try {
 			await view.flush();
 			const wide = footerLine(view.captureCharFrame());
-			expect(wide.indexOf("opus-5")).toBeLessThan(wide.indexOf("≡ 120k"));
-			expect(wide.indexOf("≡ 120k")).toBeLessThan(wide.indexOf("Σ 0.0042$"));
+			expect(wide).toContain("Σ 0.0042$");
+			expect(wide).not.toContain("120k");
+			expect(wide).not.toContain("↦");
 			view.resize(46, 20);
 			await view.flush();
 			const narrow = footerLine(view.captureCharFrame());
 			expect(narrow).toContain("Σ 0.0042$");
-			expect(narrow).not.toContain("recallable");
 			expect(narrow).toContain("opus-5 (anthropic)");
 			view.resize(34, 20);
 			await view.flush();
 			const narrowest = footerLine(view.captureCharFrame());
-			expect(narrowest).not.toContain("↦");
+			expect(narrowest).not.toContain("120k");
 			expect(narrowest).toContain("opus-5 (anthropic)");
 		} finally {
 			app.destroy();

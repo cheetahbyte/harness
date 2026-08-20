@@ -163,12 +163,6 @@ export type ServerEvent =
 			milestone?: string;
 	  }
 	| {
-			type: "context-budget-error";
-			estimatedTokens: number;
-			budget: number;
-			code?: "CONTEXT_BUDGET" | "INPUT_TOO_LARGE";
-	  }
-	| {
 			type: "command";
 			id: string;
 			command: "steer" | "follow-up" | "supersede";

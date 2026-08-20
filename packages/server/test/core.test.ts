@@ -1934,15 +1934,11 @@ function episodeId(
 			});
 
 			expect(calls).toBe(3);
-			const status = restarted.store
-				.events(id)
-				.findLast((event) => event.type === "context-status");
-			expect(status).toMatchObject({ type: "context-status", budget: 3_000 });
-			if (status?.type === "context-status") {
-				/** The externalized read output is history the prompt no longer pays for. */
-				expect(status.historyTokens).toBeGreaterThan(status.liveTokens);
-				expect(status.parkedObservations).toBeGreaterThan(0);
-			}
+			expect(
+				restarted.store
+					.events(id)
+					.some((event) => event.type === "context-status"),
+			).toBe(false);
 			expect(JSON.stringify(bodies[2])).not.toContain(output);
 			expect(JSON.stringify(bodies[2])).not.toContain(
 				"Earlier read output was compacted",
@@ -2026,9 +2022,7 @@ function episodeId(
 				bodies[3]?.messages.find(
 					(message) => message.tool_call_id === "call-recall",
 				)?.content,
-			).toBe(
-				"56789\n\n[showing characters 5-10 of 20015; continue with offset=10]",
-			);
+			).toContain("unread_ranges:");
 		} finally {
 			provider.stop(true);
 			delete process.env["HARNESS_OPENAI_API_KEY"];
@@ -2088,9 +2082,7 @@ function episodeId(
 			bodies[3]!.messages.find(
 				(message) => message.tool_call_id === "call-recall",
 			)?.content,
-		).toBe(
-			"ABCDE\n\n[showing characters 10-15 of 20015; continue with offset=15]",
-		);
+		).toContain("read_ranges:");
 			expect(
 			server.store.contextItems(id).some(
 				(item) =>
@@ -2198,7 +2190,7 @@ function episodeId(
 		}
 	});
 
-	test("rejects an individually impossible prompt before persistence", async () => {
+	test("externalizes an individually oversized prompt before streaming", async () => {
 		process.env["HARNESS_OPENAI_API_KEY"] = "test";
 		let calls = 0;
 		const provider = Bun.serve({
@@ -2221,17 +2213,15 @@ function episodeId(
 				type: "prompt",
 				text: "too much context ".repeat(500),
 			});
-			expect(calls).toBe(0);
+			expect(calls).toBe(1);
 			expect(
 				server.store
 					.contextItems(id)
 					.some((item) => item.kind === "user"),
-			).toBe(false);
-			expect(
-				server.store
-					.events(id)
-					.some((event) => event.type === "context-budget-error"),
 			).toBe(true);
+			const user = server.store.contextItems(id).find((item) => item.kind === "user");
+			expect(user?.source?.observationId).toBe(user?.id);
+			expect(JSON.stringify(user?.payload)).toContain("too much context");
 		} finally {
 			provider.stop(true);
 			delete process.env["HARNESS_OPENAI_API_KEY"];

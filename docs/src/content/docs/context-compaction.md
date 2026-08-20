@@ -60,9 +60,10 @@ Each stored conversation item moves through one of four states:
 Harnez pins unknown item types rather than guessing that they are safe to
 remove. When a top-level task ends, its user-visible assistant prose becomes
 `retained` and therefore reclaimable; predecessor tool traffic is omitted.
-Before reporting a budget error, Harnez collapses pinned user history and notes
-into one bounded rolling summary. An error remains possible only when the fixed
-overhead and smallest valid protected projection cannot fit.
+Oversized textual user input remains exact in session storage and reaches the
+model as a bounded authoritative source reference. Recall coverage is
+task-dependent: targeted tasks may read selected ranges, while exhaustive tasks
+traverse all unread ranges before completion.
 
 ## Tool output and observations
 
@@ -179,11 +180,9 @@ Pinned-history rolling summary remains the final emergency budget fallback.
 
 For each stored conversation item, the context manager records its state,
 projection, token cost, and the reason it was evicted. This information is
-available from `GET /sessions/:id/context`. A provider context-length error
-creates a fallback checkpoint that retains the current turn, then retries the
-same request once. If the protected fixed envelope itself cannot fit, Harnez
-reports an actionable input-size error instead of asking you to start a new
-session.
+available from `GET /sessions/:id/context`. Provider overflow recovery moves
+through `full -> reference -> minimal-reference`; after those two retries, the
+provider error remains terminal.
 
 ## Task capability context
 

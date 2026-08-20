@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+# git has no pre-tag hook. This catches tags made with `git tag` directly
+# before they can be pushed.
+while read -r local_ref local_sha remote_ref remote_sha
+do
+	case "$local_ref" in
+		refs/tags/*)
+			# Deleting a tag does not create a new release to validate.
+			[ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+			tag=${local_ref#refs/tags/}
+			bun scripts/tag.ts --commit "$local_sha^{commit}" "$tag"
+			;;
+	esac
+done

@@ -7,6 +7,7 @@ import type {
 	InspectedCapability,
 	ToolGrant,
 } from "./capabilities/types";
+import type { SourceRange } from "./context/types";
 import {
 	buildTaskEvidence,
 	buildTaskLedgerDigest,
@@ -28,6 +29,12 @@ export type TaskTerminalStatus =
 	| "cancelled"
 	| "superseded";
 export type TaskState = "running" | "cancelling" | "quiescing" | "terminal";
+export type SourceCoverage = {
+	sourceId: string;
+	totalCharacters: number;
+	readRanges: SourceRange[];
+	unreadRanges: SourceRange[];
+};
 
 type TaskFailure = { code: string; message: string };
 export type TaskTerminalResult =
@@ -72,6 +79,7 @@ export class TaskRuntime {
 	readonly startedAt: Timestamp;
 	state: TaskState = "running";
 	private readonly events: ExecutionLedgerEntry[] = [];
+	private readonly sourceReads = new Map<string, SourceRange[]>();
 	private readonly inFlight = new Map<CallId, InFlight>();
 	private readonly pendingConfirmations = new Map<string, string>();
 	private readonly approvalIds = new Map<string, number>();
@@ -204,6 +212,33 @@ export class TaskRuntime {
 		this.snapshot.require(ref, "load");
 		this.snapshot.verifyCurrent(ref);
 		this.loadedCapabilities.set(ref.id, structuredClone(ref));
+	}
+
+	recordSourceRead(
+		sourceId: string,
+		totalCharacters: number,
+		initialRanges: readonly SourceRange[],
+		readRange: SourceRange,
+	): SourceCoverage {
+		const total = Math.max(0, totalCharacters);
+		const before = this.sourceReads.get(sourceId) ?? [];
+		const baseline = mergeRanges([...before, ...initialRanges], total);
+		const ranges = mergeRanges([...baseline, readRange], total);
+		const requested = mergeRanges([readRange], total)[0];
+		if (requested && !sameRanges(baseline, ranges))
+			this.events.push({
+				type: "source_range_read",
+				sourceId,
+				range: requested,
+				at: this.timestamp(),
+			});
+		this.sourceReads.set(sourceId, ranges);
+		return {
+			sourceId,
+			totalCharacters: total,
+			readRanges: [...ranges],
+			unreadRanges: unreadRanges(ranges, total),
+		};
 	}
 
 	reduceGrant(capabilityId: string, after: CapabilityGrant): void {
@@ -373,4 +408,55 @@ function toolEffect(inspected: InspectedCapability): EffectClass {
 async function delay(milliseconds: number): Promise<void> {
 	if (milliseconds <= 0) return;
 	await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function mergeRanges(
+	ranges: readonly SourceRange[],
+	total: number,
+): SourceRange[] {
+	const normalized = ranges
+		.map(
+			([start, end]) =>
+				[
+					Math.max(0, Math.min(total, start)),
+					Math.max(0, Math.min(total, end)),
+				] as SourceRange,
+		)
+		.filter(([start, end]) => end > start)
+		.toSorted(([left], [right]) => left - right);
+	const merged: SourceRange[] = [];
+	for (const [start, end] of normalized) {
+		const prior = merged.at(-1);
+		if (prior && start <= prior[1])
+			merged[merged.length - 1] = [prior[0], Math.max(prior[1], end)];
+		else merged.push([start, end]);
+	}
+	return merged;
+}
+
+function unreadRanges(
+	read: readonly SourceRange[],
+	total: number,
+): SourceRange[] {
+	const unread: SourceRange[] = [];
+	let cursor = 0;
+	for (const [start, end] of read) {
+		if (cursor < start) unread.push([cursor, start]);
+		cursor = end;
+	}
+	if (cursor < total) unread.push([cursor, total]);
+	return unread;
+}
+
+function sameRanges(
+	left: readonly SourceRange[],
+	right: readonly SourceRange[],
+): boolean {
+	return (
+		left.length === right.length &&
+		left.every(
+			([start, end], index) =>
+				start === right[index]?.[0] && end === right[index]?.[1],
+		)
+	);
 }

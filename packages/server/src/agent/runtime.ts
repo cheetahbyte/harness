@@ -184,7 +184,6 @@ export class HarnezAgentRuntime {
 					emit,
 					context: this.context,
 					shrink: () => this.shrink(sessionId, created),
-					inspect: () => this.inspect(sessionId),
 					...(this.sink ? { sink: this.sink } : {}),
 				});
 			});
@@ -480,8 +479,8 @@ export class HarnezAgentRuntime {
 									: {}),
 						});
 					},
-					() => {
-						this.context.checkpointProviderOverflow(sessionId);
+					(stage) => {
+						this.context.recoverProviderOverflow(sessionId, "main", stage);
 						retryContext = {
 							...requestContext,
 							messages: this.messages(
@@ -643,11 +642,11 @@ function streamWithRetry(
 		error?: string,
 		response?: unknown,
 	) => void,
-	onContextLength?: () => void,
+	onContextLength?: (stage: "reference" | "minimal-reference") => void,
 ): AssistantMessageEventStream {
 	const out = createAssistantMessageEventStream();
 	void (async () => {
-		let retriedContextLength = false;
+		let contextRecovery: 0 | 1 | 2 = 0;
 		for (let attempt = 0; ; attempt++) {
 			log.debug(
 				{ ...context, attempt: attempt + 1 },
@@ -685,10 +684,11 @@ function streamWithRetry(
 				terminal.type === "error" &&
 				terminal.reason === "error" &&
 				isContextLengthError(terminal.error.errorMessage);
-			if (contextLength && !retriedContextLength) {
-				retriedContextLength = true;
+			if (contextLength && contextRecovery < 2) {
 				try {
-					onContextLength?.();
+					onContextLength?.(
+						contextRecovery++ === 0 ? "reference" : "minimal-reference",
+					);
 					continue;
 				} catch (error) {
 					log.warn(

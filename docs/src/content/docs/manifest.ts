@@ -66,7 +66,7 @@ export const docPages: DocPage[] = [
 		slug: getFrontmatterSlug(configuration),
 		title: "Configuration",
 		description:
-			"Configure Harnez credentials, models, project overrides, environment variables, context budgets, and logging.",
+			"Configure Harnez credentials, models, project overrides, environment variables, and logging.",
 		section: "Guide",
 		source: configuration,
 	},

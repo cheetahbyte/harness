@@ -1013,6 +1013,34 @@ describe("ContextManager", () => {
 		store.db.close();
 	});
 
+	test("recalls referenced user text after reopen", () => {
+		const path = storePath();
+		const store = new SessionStore(path);
+		const sessionId = store.create();
+		const manager = new ContextManager(store);
+		const text = `BEGIN${"x".repeat(100)}MIDDLE${"y".repeat(100)}END`;
+		const user = manager.record({
+			id: "user-source",
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: text },
+			compactPayload: { role: "user", content: "reference" },
+			tokenCost: 100,
+			compactTokenCost: 2,
+			lifecycle: "pinned",
+			projection: "reference",
+			reason: "large input",
+			source: { observationId: "user-source" },
+		});
+		const middle = text.indexOf("MIDDLE");
+		expect(manager.recall(sessionId, `observation://${user.id}?offset=${middle}&limit=6`).text).toBe("MIDDLE");
+		store.db.close();
+		const reopened = new SessionStore(path);
+		expect(new ContextManager(reopened).recall(sessionId, `observation://${user.id}?offset=${middle}&limit=6`).text).toBe("MIDDLE");
+		expect(() => new ContextManager(reopened).recall(reopened.create(), `observation://${user.id}`)).toThrow("Observation not found");
+		reopened.db.close();
+	});
+
 	test("rejects cross-session and invalid observation recalls", () => {
 		const store = new SessionStore(storePath());
 		const sessionId = store.create();

@@ -11,13 +11,13 @@ afterEach(() => {
 	for (const path of paths.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
-function setup() {
+function setup(historyItems = 12) {
 	const dir = mkdtempSync(join(tmpdir(), "harnez-prepare-"));
 	paths.push(dir);
 	const store = new SessionStore(join(dir, "state.sqlite"));
 	const sessionId = store.create();
 	const manager = new ContextManager(store);
-	for (let index = 0; index < 12; index++)
+	for (let index = 0; index < historyItems; index++)
 		manager.record({
 			sessionId,
 			kind: "assistant",
@@ -243,7 +243,7 @@ test("an oversized active turn is rejected before checkpointing", async () => {
 	manager.record({
 		sessionId,
 		kind: "tool-result",
-		payload: { role: "toolResult", content: [{ type: "text", text: "x".repeat(40_000) }] },
+		payload: { role: "toolResult", content: [{ type: "text", text: "x".repeat(80_000) }] },
 		tokenCost: 20_000,
 		lifecycle: "retained",
 		reason: "active tool result",
@@ -264,4 +264,65 @@ test("an oversized active turn is rejected before checkpointing", async () => {
 		}),
 	).rejects.toMatchObject({ code: "INPUT_TOO_LARGE" });
 	expect(store.contextItems(sessionId)).toHaveLength(before);
+});
+
+test("a large active turn that fits the model budget is accepted", async () => {
+	const { sessionId, manager } = setup(0);
+	manager.record({
+		sessionId,
+		kind: "user",
+		payload: { role: "user", content: "x".repeat(488_000) },
+		tokenCost: 122_000,
+		lifecycle: "pinned",
+		reason: "active turn",
+	});
+
+	const prepared = await manager.prepareTurn({
+		sessionId,
+		taskId: "task-1",
+		laneId: "main",
+		fixedMessages: [],
+		capabilityMessages: [],
+		tools: [],
+		budget: 144_000,
+		overheadTokens: 12_000,
+		signal: new AbortController().signal,
+		compactor: async () => ({ memory }),
+	});
+
+	expect(prepared.estimatedTokens).toBeLessThanOrEqual(144_000);
+	expect(prepared.messages).toContainEqual({
+		role: "user",
+		content: "x".repeat(488_000),
+	});
+});
+
+test("externalizes a user turn larger than the model window", async () => {
+	const { store, sessionId, manager } = setup(0);
+	const text = `BEGIN\n${"x".repeat(80_000)}\nMIDDLE\n${"y".repeat(80_000)}\nEND`;
+	const prepared = await manager.prepareTurn({
+		sessionId,
+		taskId: "task-1",
+		laneId: "main",
+		fixedMessages: [],
+		capabilityMessages: [],
+		tools: [],
+		budget: 12_000,
+		signal: new AbortController().signal,
+		pendingInput: [{
+			sessionId,
+			kind: "user",
+			payload: { role: "user", content: text },
+			tokenCost: Math.ceil(text.length / 4),
+			lifecycle: "pinned",
+			reason: "user-authored message",
+		}],
+	});
+	const user = store.contextItems(sessionId).find((item) => item.kind === "user");
+	expect(user?.payload).toEqual({ role: "user", content: text });
+	expect(user).toMatchObject({ projection: "reference" });
+	expect(user?.source?.observationId).toBe(user?.id);
+	expect(prepared.estimatedTokens).toBeLessThanOrEqual(12_000);
+	expect(JSON.stringify(prepared.messages)).toContain("authoritative_source:");
+	expect(JSON.stringify(prepared.messages)).toContain("unread_ranges:");
 });

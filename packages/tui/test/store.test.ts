@@ -266,41 +266,16 @@ describe("TUI protocol store", () => {
 		store.getState().clearWizard();
 		expect(store.getState().wizard).toEqual({ kind: "idle" });
 	});
-	test("keeps the leverage readout current and explains it exactly once", () => {
+	test("keeps context maintenance out of the transcript", () => {
 		const store = createTuiStore("session");
-		const status = {
-			type: "context-status" as const,
-			liveTokens: 26_000,
-			historyTokens: 26_000,
-			parkedObservations: 0,
-			budget: 160_000,
-			target: 120_000,
-		};
-		store.getState().apply(status);
-		expect(store.getState().contextStatus).toEqual({
-			liveTokens: 26_000,
-			historyTokens: 26_000,
-			parkedObservations: 0,
-		});
-		expect(store.getState().entries).toEqual([]);
-		store
-			.getState()
-			.apply({ ...status, historyTokens: 120_000, parkedObservations: 95 });
-		store
-			.getState()
-			.apply({ ...status, historyTokens: 180_000, parkedObservations: 140 });
-		expect(store.getState().contextStatus).toEqual({
+		store.getState().apply({
+			type: "context-status",
 			liveTokens: 26_000,
 			historyTokens: 180_000,
 			parkedObservations: 140,
+			budget: 160_000,
+			target: 120_000,
 		});
-		expect(
-			store.getState().entries.filter((entry) => entry.kind === "compaction"),
-		).toHaveLength(1);
-	});
-
-	test("reports compaction as a transcript line and the budget cliff as an error", () => {
-		const store = createTuiStore("session");
 		store.getState().apply({
 			type: "context-compaction",
 			evictedCount: 12,
@@ -308,12 +283,6 @@ describe("TUI protocol store", () => {
 			tokensAfter: 4_100,
 			episodesArchived: 1,
 		});
-		expect(store.getState().entries).toEqual([
-			{
-				kind: "compaction",
-				text: "retired 12 items and 1 episode · 38k ↦ 4.1k · all recallable",
-			},
-		]);
 		store.getState().apply({
 			type: "context-compaction",
 			trigger: "explicit",
@@ -323,21 +292,19 @@ describe("TUI protocol store", () => {
 			tokensAfter: 500,
 			episodesArchived: 0,
 		});
-		expect(store.getState().entries.at(-1)).toEqual({
-			kind: "compaction",
-			text: "⋯ condensed context at tests complete: 2k → 500 tokens",
-		});
-		store.getState().apply({ type: "status", text: "running" });
-		expect(store.getState().running).toBe(true);
+		expect(store.getState().entries).toEqual([]);
+	});
+
+	test("shows an oversized request without exposing context accounting", () => {
+		const store = createTuiStore("session");
 		store.getState().apply({
-			type: "context-budget-error",
-			estimatedTokens: 12_000,
-			budget: 4_000,
+			type: "error",
+			message:
+				"This request is too large for the selected model. Try a smaller request or another model.",
 		});
 		expect(store.getState().running).toBe(false);
 		const last = store.getState().entries.at(-1);
 		expect(last?.kind).toBe("error");
-		expect(last?.text).toContain("12k");
-		expect(last?.text).toContain("4k");
+		expect(last?.text).not.toMatch(/token|budget/i);
 	});
 });

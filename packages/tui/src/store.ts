@@ -23,7 +23,6 @@ type TranscriptKind =
 	| "error"
 	| "status"
 	| "usage"
-	| "compaction"
 	| "completed"
 	| "aborted";
 export type TranscriptEntry = {
@@ -47,15 +46,6 @@ export type FollowUp = {
 	sending: boolean;
 	blocked?: boolean;
 };
-/**
- * Leverage readout: how much recorded history the session commands
- * (`historyTokens`) against what it costs to carry it (`liveTokens`).
- */
-type ContextStatus = {
-	liveTokens: number;
-	historyTokens: number;
-	parkedObservations: number;
-};
 export type WizardState =
 	| { kind: "idle" }
 	| { kind: "providers"; providers: ProviderOption[] }
@@ -72,7 +62,6 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 		(process.env["HARNEZ_SHOW_STATUS"] ??
 			process.env["HARNESS_SHOW_STATUS"]) === "1";
 	return createStore<TuiState>((set, get) => {
-		let legendShown = false;
 		const append = (entry: TranscriptEntry) =>
 			set((state) => ({ entries: [...finishActive(state.entries), entry] }));
 		const delta = (kind: "assistant" | "reasoning", text: string) =>
@@ -307,53 +296,11 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 						});
 					return;
 				}
-				if (event.type === "context-status") {
-					set({
-						contextStatus: {
-							liveTokens: event.liveTokens,
-							historyTokens: event.historyTokens,
-							parkedObservations: event.parkedObservations,
-						},
-					});
-					/**
-					 * `↦` does not explain itself, so the readout gets one sentence the
-					 * first time it has something to show — after that the footer speaks
-					 * for itself and repeating this would just be noise.
-					 */
-					if (!legendShown && event.historyTokens > event.liveTokens) {
-						legendShown = true;
-						append({
-							kind: "compaction",
-							text: "context: ≡ history recorded ↦ tokens carried per turn · the difference stays recallable",
-						});
-					}
+				if (
+					event.type === "context-status" ||
+					event.type === "context-compaction"
+				)
 					return;
-				}
-				if (event.type === "context-compaction")
-					return append({
-						kind: "compaction",
-						text:
-							event.trigger === "explicit" && event.milestone
-								? `⋯ condensed context at ${event.milestone}: ${formatTokens(event.tokensBefore)} → ${formatTokens(event.tokensAfter)} tokens`
-								: `retired ${event.evictedCount} ${event.evictedCount === 1 ? "item" : "items"}${
-										event.episodesArchived
-											? ` and ${event.episodesArchived} ${event.episodesArchived === 1 ? "episode" : "episodes"}`
-											: ""
-									} · ${formatTokens(event.tokensBefore)} ↦ ${formatTokens(event.tokensAfter)} · all recallable`,
-					});
-				if (event.type === "context-budget-error") {
-					set({ running: false });
-					return append({
-						kind: "error",
-						error: true,
-						text:
-							event.code === "INPUT_TOO_LARGE"
-								? `This request needs ${formatTokens(event.estimatedTokens)} tokens but the input budget is ${formatTokens(event.budget)}. Shorten the request or raise HARNEZ_CONTEXT_BUDGET.`
-								: `Context budget exceeded: protected content alone needs ${formatTokens(
-										event.estimatedTokens,
-									)} but the budget is ${formatTokens(event.budget)}. Raise HARNEZ_CONTEXT_BUDGET.`,
-					});
-				}
 				if (event.type === "completed") {
 					const turnCostUsd = get().turnCostUsd;
 					set({ running: false, turnCostUsd: undefined });
@@ -424,7 +371,6 @@ export type TuiState = {
 	disableThinkingBlocks: boolean;
 	sessionCostUsd: number | undefined;
 	turnCostUsd: number | undefined;
-	contextStatus?: ContextStatus;
 	wizard: WizardState;
 	apply: (event: ServerEvent) => void;
 	addUser: (text: string) => void;
@@ -518,12 +464,6 @@ function toolSubject(name: string, input: unknown): string | undefined {
 	if (["tools_load", "skills_activate", "capabilities_inspect"].includes(name))
 		return capabilityName(text("id"));
 	return text("path") ?? text("command") ?? text("reference");
-}
-
-export function formatTokens(tokens: number): string {
-	if (tokens < 1000) return String(tokens);
-	const thousands = tokens / 1000;
-	return `${thousands < 10 ? thousands.toFixed(1).replace(/\.0$/, "") : Math.round(thousands)}k`;
 }
 
 export function formatUsd(cost: number): string {

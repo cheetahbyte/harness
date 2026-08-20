@@ -57,6 +57,7 @@ import {
 	type PinKind,
 	type PinOptions,
 	type RecordInput,
+	type SourceRange,
 	type SubagentResult,
 } from "./types";
 
@@ -620,14 +621,16 @@ export class ContextManager {
 		const lane = this.store.lane(request.sessionId, request.laneId);
 		if (!lane) throw new Error(`Unknown context lane ${request.laneId}`);
 		const fixed = [...request.fixedMessages, ...request.capabilityMessages];
-		const pending = request.pendingInput ?? [];
-		const pendingMessages = pending.map((input) => input.payload);
 		const fixedCost = fixed.reduce<number>(
 			(sum, value) => sum + tokenCostOf(value),
 			tokenCostOf(request.tools) + (request.overheadTokens ?? 0),
 		);
+		const pending = (request.pendingInput ?? []).map((input) =>
+			this.projectPendingUser(input, request.budget - fixedCost),
+		);
+		const pendingMessages = pending.map(projectedPendingPayload);
 		const pendingCost = pending.reduce<number>(
-			(sum, input) => sum + input.tokenCost,
+			(sum, input) => sum + projectedPendingCost(input),
 			0,
 		);
 		const path = this.store.contextPath(request.sessionId, request.laneId);
@@ -738,7 +741,7 @@ export class ContextManager {
 				(sum, value) => sum + tokenCostOf(value),
 				0,
 			);
-			if (tailCost > tailBudget)
+			if (tailCost > request.budget - fixedCost - pendingCost)
 				throw new ContextBudgetError(
 					fixedCost + pendingCost + tailCost,
 					request.budget,
@@ -933,16 +936,57 @@ export class ContextManager {
 		};
 	}
 
-	checkpointProviderOverflow(sessionId: string, laneName = "main"): void {
+	private projectPendingUser(
+		input: RecordInput,
+		maxTokens: number,
+	): RecordInput {
+		if (input.kind !== "user") return input;
+		const id = input.id ?? crypto.randomUUID();
+		const text = userText(input.payload);
+		const source = { ...input.source, observationId: id };
+		if (tokenCostOf(input.payload) <= maxTokens)
+			return { ...input, id, source };
+		const reference = referencedUserProjection(input.payload, id, maxTokens);
+		return {
+			...input,
+			id,
+			source: {
+				...source,
+				totalCharacters: text.length,
+				previewedRanges: reference.previewedRanges,
+			},
+			compactPayload: reference.payload,
+			compactTokenCost: tokenCostOf(reference.payload),
+			projection: "reference",
+		};
+	}
+
+	recoverProviderOverflow(
+		sessionId: string,
+		laneName = "main",
+		stage: "reference" | "minimal-reference" = "reference",
+	): void {
 		const path = this.store.contextPath(sessionId, laneName);
-		const projected = projectedPathPayloads(path, this.episodes(sessionId));
-		const currentTurn = projected.findLastIndex(
-			(payload) =>
-				!!payload &&
-				typeof payload === "object" &&
-				(payload as { role?: unknown }).role === "user",
-		);
-		const retainedTail = currentTurn < 0 ? [] : projected.slice(currentTurn);
+		const currentTurn = path.findLastIndex((item) => item.kind === "user");
+		const user = currentTurn < 0 ? undefined : path[currentTurn];
+		const reference = user
+			? stage === "reference" && user.compactPayload !== undefined
+				? user.compactPayload
+				: referencedUserProjection(
+						user.payload,
+						user.source?.observationId ?? user.id,
+						stage === "reference" ? 2_048 : 0,
+					).payload
+			: undefined;
+		const retainedTail = user
+			? [
+					reference,
+					...path.slice(currentTurn + 1).flatMap((item) => {
+						const payload = projectedPayload(item);
+						return payload === undefined ? [] : [payload];
+					}),
+				]
+			: [];
 		const checkpoint = this.store.db.transaction(() => {
 			return this.appendCheckpoint(
 				sessionId,
@@ -967,7 +1011,7 @@ export class ContextManager {
 			repairedItems: path.length,
 			retainedItems: retainedTail.length,
 			repairedEpisodes: this.episodes(sessionId).length,
-			retries: 1,
+			retries: stage === "reference" ? 1 : 2,
 			stalePlan: false,
 		});
 	}
@@ -1360,20 +1404,27 @@ export class ContextManager {
 			: reference;
 		validateRecallBounds(offset, limit);
 		const item = this.store.contextItem(observationId);
+		const text =
+			item?.kind === "observation" && typeof item.payload === "string"
+				? item.payload
+				: item?.kind === "user" &&
+					  item.source?.observationId === item.id &&
+					  typeof userText(item.payload) === "string"
+					? userText(item.payload)
+					: undefined;
 		if (
 			!item ||
 			item.sessionId !== sessionId ||
-			item.kind !== "observation" ||
 			item.source?.observationId !== observationId ||
-			typeof item.payload !== "string"
+			text === undefined
 		)
 			throw new Error("Observation not found");
 		return {
 			observationId,
-			text: item.payload.slice(offset, offset + limit),
+			text: text.slice(offset, offset + limit),
 			offset,
 			limit,
-			totalLength: item.payload.length,
+			totalLength: text.length,
 			source: item.source,
 		};
 	}
@@ -1987,6 +2038,70 @@ function boundedAnchorTail(
 
 function tokenCostOf(value: unknown): number {
 	return Number(computeTokenCost(value as never));
+}
+
+function projectedPendingPayload(input: RecordInput): unknown {
+	return input.projection === "reference" || input.projection === "compact"
+		? (input.compactPayload ?? input.payload)
+		: input.payload;
+}
+
+function projectedPendingCost(input: RecordInput): number {
+	return input.projection === "reference" || input.projection === "compact"
+		? (input.compactTokenCost ?? tokenCostOf(projectedPendingPayload(input)))
+		: input.tokenCost;
+}
+
+function referencedUserProjection(
+	payload: unknown,
+	id: string,
+	maxTokens: number,
+): {
+	payload: { role: "user"; content: string };
+	previewedRanges: SourceRange[];
+} {
+	const text = userText(payload);
+	const maxChars = Math.max(0, Math.floor(maxTokens * 4));
+	let previewChars = Math.min(text.length, maxChars);
+	for (;;) {
+		const headLength = Math.ceil(previewChars / 2);
+		const tailLength = previewChars - headLength;
+		const overlaps = headLength + tailLength >= text.length;
+		const ranges: SourceRange[] = overlaps
+			? previewChars
+				? [[0, text.length]]
+				: []
+			: [
+					[0, headLength],
+					[text.length - tailLength, text.length],
+				];
+		const unread = overlaps
+			? []
+			: [[headLength, text.length - tailLength] as SourceRange];
+		const content = [
+			"[authoritative user source; inspect according to task coverage]",
+			`authoritative_source: observation://${id}`,
+			`characters: ${text.length}`,
+			"previewed_ranges:",
+			...ranges.map(([start, end]) => `  - [${start}, ${end})`),
+			"unread_ranges:",
+			...unread.map(([start, end]) => `  - [${start}, ${end})`),
+			...(previewChars
+				? [
+						"",
+						text.slice(0, headLength),
+						...(overlaps ? [] : [text.slice(-tailLength)]),
+					]
+				: []),
+		].join("\n");
+		const result = { role: "user" as const, content };
+		if (tokenCostOf(result) <= maxTokens || previewChars === 0)
+			return { payload: result, previewedRanges: ranges };
+		previewChars = Math.max(
+			0,
+			previewChars - (tokenCostOf(result) - maxTokens) * 4,
+		);
+	}
 }
 
 function boundedText(value: unknown, limit: number): string {

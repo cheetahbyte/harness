@@ -43,6 +43,12 @@ export type ExecutionLedgerEntry =
 			after: CapabilityGrant;
 			at: Timestamp;
 	  }
+	| {
+			type: "source_range_read";
+			sourceId: string;
+			range: readonly [start: number, end: number];
+			at: Timestamp;
+	  }
 	| { type: "cancellation_requested"; at: Timestamp }
 	| {
 			type: "task_recovery";
