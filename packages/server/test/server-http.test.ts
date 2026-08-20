@@ -390,6 +390,7 @@ describe("HTTP event stream", () => {
 			port: 0,
 			workspace: dir,
 			databasePath: join(dir, "state.sqlite"),
+			contextBudget: 80_000,
 		});
 		try {
 			const base = server.url.toString().replace(/\/$/, "");

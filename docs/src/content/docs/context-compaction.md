@@ -119,14 +119,14 @@ investigation around until the action that used it has also been archived.
 
 Before each model request, Harnez recalculates the conversation working set and
 includes the fixed cost of the permanent tool definitions. The default
-conversation budget is whichever is smaller: 80,000 tokens or the model's
-usable input window. At 80% pressure, Harnez aims for 60% of the usable budget.
+conversation budget defaults to the model's usable input window. At 80%
+pressure, Harnez aims for 60% of the usable budget.
 When LLM compaction is enabled, Harnez attempts a bounded condensation when the
 source prefix and a 4,096-token reserve fit. The LLM has no tools and must
 return validated memory JSON. Invalid output can be retried once. An
 unavailable, failed, or oversized attempt uses the deterministic checkpoint
-fallback. Set `HARNEZ_LLM_COMPACTION=0` to disable the LLM attempt; the fallback
-then runs only when the working set exceeds its budget.
+fallback. Set `compaction.enabled` to `false` to disable the LLM attempt; the
+fallback then runs only when the working set exceeds its budget.
 
 The fallback keeps bounded active episode goals, recent anchors, completed
 episode conclusions, and observation references. If the lane changes while an

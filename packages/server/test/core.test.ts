@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -20,20 +21,13 @@ import { BashTool } from "../src/tools/bash";
 
 const paths: string[] = [];
 const originalConfigHome = process.env["XDG_CONFIG_HOME"];
-const originalLlmCompaction = process.env["HARNEZ_LLM_COMPACTION"];
-beforeEach(() => {
-	process.env["HARNEZ_LLM_COMPACTION"] = "0";
-});
 afterEach(() => {
 	for (const path of paths.splice(0))
 		rmSync(path, { recursive: true, force: true });
 	if (originalConfigHome === undefined) delete process.env["XDG_CONFIG_HOME"];
 	else process.env["XDG_CONFIG_HOME"] = originalConfigHome;
-	if (originalLlmCompaction === undefined)
-		delete process.env["HARNEZ_LLM_COMPACTION"];
-	else process.env["HARNEZ_LLM_COMPACTION"] = originalLlmCompaction;
 });
-function harnez(contextBudget?: number) {
+function harnez(contextBudget?: number, compactionEnabled?: boolean) {
 	const dir = mkdtempSync(join(tmpdir(), "harnez-test-"));
 	paths.push(dir);
 	return {
@@ -42,15 +36,26 @@ function harnez(contextBudget?: number) {
 			new SessionStore(join(dir, "state.sqlite")),
 			dir,
 			undefined,
-			settings(dir),
+			settings(dir, compactionEnabled),
 			contextBudget === undefined ? {} : { contextBudget },
 		),
 	};
 }
 
-function settings(dir: string) {
+function settings(dir: string, compactionEnabled?: boolean) {
+	const path = join(dir, "config/settings.json");
+	if (compactionEnabled !== undefined) {
+		mkdirSync(join(dir, "config"), { recursive: true });
+		const current = existsSync(path)
+			? (JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>)
+			: {};
+		writeFileSync(path, JSON.stringify({
+			...current,
+			compaction: { enabled: compactionEnabled },
+		}));
+	}
 	return new SettingsStore(
-		join(dir, "config/settings.json"),
+		path,
 		join(dir, ".harnez/settings.json"),
 	);
 }
@@ -1894,7 +1899,7 @@ function episodeId(
 		});
 		try {
 			const output = "x".repeat(10_000);
-			const { dir, server } = harnez(3_000);
+			const { dir, server } = harnez(3_000, false);
 			writeFileSync(join(dir, "note.txt"), output);
 			const id = server.createSession();
 			await server.command(id, {
@@ -1920,7 +1925,7 @@ function episodeId(
 				new SessionStore(join(dir, "state.sqlite")),
 				dir,
 				undefined,
-				undefined,
+				settings(dir, false),
 				{ contextBudget: 3_000 },
 			);
 			await restarted.command(id, {
@@ -2151,7 +2156,7 @@ function episodeId(
 			},
 		});
 		try {
-			const { dir, server } = harnez(3_200);
+			const { dir, server } = harnez(3_200, false);
 			writeFileSync(join(dir, "note.txt"), "auth uses JWT");
 			const id = server.createSession();
 			await server.command(id, {
@@ -2289,7 +2294,7 @@ function episodeId(
 			},
 		});
 		try {
-			const { server } = harnez(3_000);
+			const { server } = harnez(3_000, false);
 			const id = server.createSession();
 			await server.command(id, {
 				type: "configure",

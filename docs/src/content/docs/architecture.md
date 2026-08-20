@@ -32,9 +32,9 @@ flowchart LR
 At 80% of the usable input budget, admission targets 60%. When LLM compaction
 is enabled, Harnez starts one bounded condensation operation and can retry
 invalid output once. An unavailable or failed operation uses the deterministic
-checkpoint fallback. With `HARNEZ_LLM_COMPACTION=0`, fallback waits until the
-working set exceeds its budget. A provider context-length response creates a
-recovery checkpoint retaining the current turn and retries once.
+checkpoint fallback. With `compaction.enabled` set to `false`, fallback waits
+until the working set exceeds its budget. A provider context-length response
+creates a recovery checkpoint retaining the current turn and retries once.
 
 ## Agent loop
 
