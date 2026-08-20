@@ -19,6 +19,7 @@ import type {
 	ImageAttachment,
 } from "../../shared/src/protocol";
 import { displayUserInput } from "../../shared/src/protocol";
+import { AgentsView } from "./components/agents";
 import { type CommandHint, ComposerView } from "./components/composer";
 import { FooterView } from "./components/footer";
 import { HeaderView } from "./components/header";
@@ -42,6 +43,7 @@ export class TuiApp {
 	private readonly root: BoxRenderable;
 	private readonly header: HeaderView;
 	private readonly transcript: TranscriptView;
+	private readonly agents: AgentsView;
 	private readonly composer: ComposerView;
 	private readonly wizard: WizardView;
 	private readonly footer: FooterView;
@@ -70,6 +72,7 @@ export class TuiApp {
 		});
 		this.header = new HeaderView(renderer);
 		this.transcript = new TranscriptView(renderer);
+		this.agents = new AgentsView(renderer);
 		this.commands = [
 			{
 				name: "/clear",
@@ -189,6 +192,7 @@ export class TuiApp {
 		this.footer = new FooterView(renderer);
 		this.transcript.root.add(this.header.root);
 		this.root.add(this.transcript.root);
+		this.root.add(this.agents.root);
 		this.root.add(this.composer.root);
 		this.root.add(this.wizard.root);
 		this.root.add(this.footer.root);
@@ -298,6 +302,7 @@ export class TuiApp {
 		this.transcript.setPrompts(state.prompts.map((prompt) => prompt.name));
 		this.transcript.setDisableThinkingBlocks(state.disableThinkingBlocks);
 		this.transcript.update(state.entries);
+		this.agents.update(state.agents);
 		this.composer.update(state.followUps);
 		this.composer.setRunning(state.running);
 		this.composer.setThinkingLevel(state.modelConfig?.thinkingLevel);

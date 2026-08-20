@@ -14,6 +14,7 @@ import type {
 	ContextProjection,
 	NewContextItem,
 	NewEpisodeEvent,
+	SubagentResult,
 } from "../context/types";
 import type { ExecutionLedgerEntry, TaskRecoveryReason } from "../task-ledger";
 import type { TaskTerminalStatus } from "../task-runtime";
@@ -25,6 +26,14 @@ export interface SessionSummary {
 	workspace: string | null;
 	title: string | null;
 }
+
+export type SubagentSpawnMetadata = {
+	schemaVersion: 1;
+	id: string;
+	profile: string;
+	description: string;
+	task: string;
+};
 
 const DATABASE_PATH = ".harnez/harnez.sqlite";
 const LEGACY_DATABASE_PATH = ".harness/harness.sqlite";
@@ -499,6 +508,58 @@ export class SessionStore {
 				.query(`${laneQuery} WHERE session_id = ? ORDER BY name`)
 				.all(sessionId) as ContextLaneRow[]
 		).map(laneFromRow);
+	}
+
+	subagentMetadata(sessionId?: string): Array<{
+		sessionId: string;
+		laneId: string;
+		taskId: string;
+		payload: SubagentSpawnMetadata;
+	}> {
+		const items = sessionId
+			? this.contextItems(sessionId)
+			: (
+					this.db
+						.query("SELECT * FROM context_items ORDER BY sequence")
+						.all() as ContextItemRow[]
+				).map(contextItemFromRow);
+		return items.flatMap((item) => {
+			if (
+				item.kind !== "pinned-note" ||
+				item.reason !== "subagent spawn metadata"
+			)
+				return [];
+			const payload = item.payload as Partial<SubagentSpawnMetadata>;
+			if (
+				payload?.schemaVersion !== 1 ||
+				typeof payload.id !== "string" ||
+				typeof payload.profile !== "string" ||
+				typeof payload.description !== "string" ||
+				typeof payload.task !== "string"
+			)
+				return [];
+			const lane = this.lane(item.sessionId, item.originLane);
+			if (!lane?.ownerTaskId && item.originLane === "main") return [];
+			return [
+				{
+					sessionId: item.sessionId,
+					laneId: item.originLane,
+					taskId: lane?.ownerTaskId ?? item.originLane,
+					payload: payload as SubagentSpawnMetadata,
+				},
+			];
+		});
+	}
+
+	subagentHandoff(
+		sessionId: string,
+		subagentId: string,
+	): SubagentResult | undefined {
+		return this.contextItems(sessionId).find(
+			(item) =>
+				item.kind === "subagent-handoff" &&
+				item.source?.subagentId === subagentId,
+		)?.payload as SubagentResult | undefined;
 	}
 
 	claimMainLane(sessionId: string, taskId: string): boolean {

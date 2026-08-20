@@ -11,7 +11,7 @@ slug: cli-reference
 harnez
 ```
 
-Starts the server if one isn't already running and opens the TUI against it.
+Starts the server if it is not already running, then opens the TUI.
 
 ## Resuming a session
 
@@ -43,13 +43,12 @@ harnez server run
 | `harnez server run` | Runs the local server in the foreground. |
 
 `restart` waits for the old process to release the port before starting the
-replacement, so it never leaves two servers behind. It reports an error instead
-of starting one when no server is running, and refuses outright when
-`HARNEZ_URL` points at a server it did not spawn — that server is not Harnez's
-to restart.
+replacement, so it does not leave two servers running. It reports an error
+instead of starting a server when none is running. It also refuses to restart
+a server that `HARNEZ_URL` points to if Harnez did not spawn that server.
 
-A running server keeps serving the build it started with, so restart it after
-an update to pick up new code.
+A running server continues to serve the build it started with. Restart it after
+an update to use the new code.
 
 ## Updating
 
@@ -58,43 +57,41 @@ harnez update
 harnez --version
 ```
 
-`harnez update` compares the installed version against the `latest` release on
-the npm registry. When a newer one exists it installs it with the package
-manager that owns the running binary (npm, bun, pnpm, or yarn), then restarts
-the local server so the new build is the one serving sessions. An already
-current installation reports so and changes nothing.
+`harnez update` compares the installed version with the `latest` release on
+the npm registry. When a newer release exists, it installs the release with
+the package manager that owns the running binary, such as npm, bun, pnpm, or
+yarn. It then restarts the local server so the new build serves sessions. An
+up-to-date installation reports that it is current and makes no changes.
 
-The server is only restarted once the install has succeeded and the version on
-disk matches what was requested, so a failed download never leaves a server
-running against a half-updated installation. If the restart itself fails, the
-update still stands — finish it with `harnez server restart`.
+Harnez restarts the server only after the installation succeeds and the version
+on disk matches the requested version. A failed download therefore does not
+leave a server running against a partial installation. If the restart fails,
+the update remains installed. Run `harnez server restart` to finish.
 
-Updating requires an installation a package manager owns. Running from a source
-checkout, or from a binary pointed at by `HARNEZ_BINARY`, reports the available
-version and leaves the installation alone.
+Updating requires an installation that a package manager owns. If you run from
+a source checkout or from a binary specified by `HARNEZ_BINARY`, Harnez reports
+the available version and leaves the installation unchanged.
 
 ### Update notifications
 
-The TUI checks for a newer release in the background at startup and shows it in
-the top-right corner of the header:
+At startup, the TUI checks for a newer release in the background and shows it
+in the header:
 
 ```text
 update available: 0.1.8 → 0.2.0 · run `harnez update`
 ```
 
-The check never blocks startup and a registry that cannot be reached is
-ignored. The answer is cached in the data directory for 24 hours, so the notice
-appears at most once a day rather than on every launch. Set
-`HARNEZ_DISABLE_UPDATE_CHECK=1` to turn it off.
+The check does not block startup. Harnez ignores an unreachable registry. It
+caches the result in the data directory for 24 hours, so the notice appears at
+most once a day. Set `HARNEZ_DISABLE_UPDATE_CHECK=1` to disable the check.
 
-Because the client and server are separate processes, the server can be running
-an older build than the client that just launched — after an update where the
-restart was skipped, for instance. The header reports that case too, pointing at
-`harnez server restart`.
+The client and server are separate processes, so the server can run an older
+build than the client that just launched. This can happen when an update skips
+the restart. The header reports this case and points to `harnez server restart`.
 
 ## Slash commands
 
-Typed directly into the TUI composer.
+Type these commands directly into the TUI composer.
 
 | Command | Description |
 | --- | --- |
@@ -121,10 +118,10 @@ Typed directly into the TUI composer.
 | `Ctrl+C` | Quit. |
 | `↑` / `↓` / `Tab` | Navigate and accept command, prompt-template, or skill autocomplete suggestions. |
 
-Changing the thinking level or the model while a task is running applies it to
+Changing the thinking level or model while a task runs applies the change to
 the next prompt without interrupting the active task. Each fast-cycle model
 keeps its own thinking level, so `Ctrl+P` restores the level that model last
-used. Entries whose model is no longer available are skipped.
+used. Harnez skips entries whose models are no longer available.
 
 > [!TIP] Steering vs. aborting
 > These map directly onto the three ways to interrupt the [agent

@@ -12,6 +12,7 @@ import type {
 	ProviderOption,
 	ServerEvent,
 	SkillOption,
+	SubagentStateEvent,
 } from "../../shared/src/protocol";
 
 type TranscriptKind =
@@ -93,12 +94,52 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 			activeTaskId: undefined,
 			blockedQueueId: undefined,
 			fastCycle: [],
+			agents: [],
 			disableThinkingBlocks: false,
 			sessionCostUsd: undefined,
 			turnCostUsd: undefined,
 			wizard: { kind: "idle" },
 			apply(event) {
 				if (event.type === "session") return;
+				if (event.type === "subagent-state") {
+					const terminal = !["running", "cancelling"].includes(
+						event.agent.state,
+					);
+					return set((state) => {
+						const previous = state.agents.find(
+							(agent) => agent.id === event.agent.id,
+						);
+						const agents = terminal
+							? state.agents.filter((agent) => agent.id !== event.agent.id)
+							: [
+									...state.agents.filter(
+										(agent) => agent.id !== event.agent.id,
+									),
+									event.agent,
+								].toSorted(
+									(a, b) =>
+										Date.parse(a.startedAt ?? "") -
+										Date.parse(b.startedAt ?? ""),
+								);
+						const notice =
+							terminal &&
+							previous &&
+							!["completed", "blocked", "failed", "cancelled"].includes(
+								previous.state,
+							)
+								? {
+										kind: "status" as const,
+										text: `${event.agent.profile}: ${event.agent.summary ?? event.agent.state}`,
+									}
+								: undefined;
+						return {
+							agents,
+							...(notice
+								? { entries: [...finishActive(state.entries), notice] }
+								: {}),
+						};
+					});
+				}
 				if (event.type === "user")
 					return set((state) => {
 						const existing = event.id
@@ -368,6 +409,7 @@ export type TuiState = {
 	blockedQueueId: string | undefined;
 	modelConfig?: ModelConfig;
 	fastCycle: FastCycleEntry[];
+	agents: SubagentStateEvent["agent"][];
 	disableThinkingBlocks: boolean;
 	sessionCostUsd: number | undefined;
 	turnCostUsd: number | undefined;

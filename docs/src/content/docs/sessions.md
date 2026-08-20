@@ -7,7 +7,7 @@ slug: advanced/sessions
 
 A session stores a Harnez conversation so you can close the TUI and continue
 later. It records the workspace, selected model, event history, context, task
-results, and display title.
+results, and title.
 
 A session can contain many tasks. Each top-level prompt starts a new
 [task runtime](/docs/architecture/task-runtime), but later tasks continue the
@@ -21,9 +21,9 @@ Running Harnez without arguments creates a session for the current directory:
 harnez
 ```
 
-The session appears in the resume picker after you submit a user message. If you
-only open and close the TUI, change the model, or run setup commands, Harnez does
-not leave an empty entry in the picker.
+The session appears in the resume picker after you submit a message. Opening
+and closing the TUI, changing the model, and running setup commands do not add
+an empty session to the picker.
 
 Search for a saved session or open one directly by ID:
 
@@ -35,9 +35,9 @@ harnez --resume <session-id>
 The picker lists each session's title, workspace, creation time, and ID. If a
 session has no title, the picker shows its workspace instead.
 
-Harnez records the workspace when it creates the session. Resuming from another
-directory does not change that workspace. Project settings, tools, and skills
-still come from the original directory.
+Harnez records the workspace when it creates the session. Resuming from a
+different directory does not change it. Project settings, tools, and skills
+continue to come from the original workspace.
 
 ## Session titles
 
@@ -67,10 +67,9 @@ The default title source is local YAKE keyword extraction:
 }
 ```
 
-YAKE runs locally and does not call a provider. It selects up to two
-non-overlapping phrases from the first prompt and currently uses English
-stopwords. If it finds no title, Harnez stores a cleaned, 80-character excerpt
-of the prompt.
+YAKE runs locally and does not call a provider. It selects up to two phrases
+from the first prompt and uses English stopwords. If it cannot make a title,
+Harnez stores a cleaned 80-character excerpt of the prompt.
 
 Disable automatic titles with:
 
@@ -116,15 +115,14 @@ the model supports. Model IDs may contain `/`.
 
 Harnez sends the naming model a fixed title instruction and the first user
 prompt. It does not send session history, tools, skills, or the agent system
-prompt. The request runs in the background, so the task does not wait for it.
-Before starting the request, Harnez saves an excerpt of the prompt as a fallback.
-It replaces that excerpt only when the model returns a usable title.
+prompt. The request runs in the background, so the task continues without
+waiting. Before sending the request, Harnez saves an excerpt of the prompt as a
+fallback. It replaces the excerpt only when the model returns a usable title.
 
-Harnez also keeps the fallback when the provider fails, credentials are missing,
-the source is invalid, the response is empty, or the model is unsupported. It
-tries to generate a title only once. An `openai-compatible` naming model can
-reuse a base URL only when the session's active model is also
-`openai-compatible`.
+Harnez keeps the fallback if the provider fails, credentials are missing, the
+source is invalid, the response is empty, or the model is unsupported. It tries
+to generate a title once. An `openai-compatible` naming model can reuse a base
+URL only when the session's active model is also `openai-compatible`.
 
 ## Settings precedence
 
@@ -142,12 +140,12 @@ By default, the server stores sessions in `.harnez/harnez.sqlite`. Set
 
 The SQLite database stores session metadata, events, model selections, context
 records, task state, and execution ledgers. When the server opens the database,
-Harnez applies ordered schema migrations in transactions. New nullable fields
-are added to existing sessions without rewriting their history.
+Harnez applies schema migrations in transactions. New nullable fields do not
+rewrite existing session history.
 
 The event stream stores sequence numbers as resume cursors. When a client
 reconnects, it replays events after its last cursor before receiving live events.
-Closing the TUI therefore does not discard completed conversation history.
+Closing the TUI does not discard completed conversation history.
 
 Back up the database before moving it between Harnez versions. A binary refuses
 to open a database whose schema is newer than it supports.
@@ -164,6 +162,6 @@ editing are not supported.
 
 ## Current limits
 
-You cannot yet regenerate or delete a session title manually. Title changes are
-saved for future listings, but the open TUI does not receive them as live
+You cannot regenerate or delete a session title manually. Harnez saves title
+changes for future listings, but the open TUI does not receive them as live
 events. Reopen the resume picker to see a renamed or generated title.

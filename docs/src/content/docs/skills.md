@@ -5,9 +5,9 @@ slug: advanced/skills
 
 # Skills
 
-Skills are reusable instructions stored in `SKILL.md` files. Harnez reads their
-names and descriptions when a task starts, then adds the full instructions to
-task context only when the model or user activates one.
+Skills are reusable instructions in `SKILL.md` files. Harnez reads each skill's
+name and description when a task starts. It adds the full instructions to task
+context only after the model or user activates the skill.
 
 > Review a skill before using it. Its instructions can ask the model to run
 > commands or modify files with the tools available to the task.
@@ -52,9 +52,9 @@ Read the commits since the previous tag. Group user-facing changes by area and
 write a short upgrade note for any breaking change.
 ```
 
-Write the description as a selection hint. It should say what the skill does
-and when it applies. The body can be longer because Harnez does not add it to
-context until activation.
+Use the description to tell the model what the skill does and when to use it.
+The body can be longer because Harnez does not add it to context until
+activation.
 
 ## Frontmatter
 
@@ -98,10 +98,9 @@ activation that does not fit is rejected without evicting another skill. A
 manually requested `/name` skill is skipped with a status message so the task
 can continue without it.
 
-Skills activated by the model are available for the next model step and then
-leave context. Manually requested skills are task-scoped and remain until the
-task ends. In final request assembly, skill bodies and conversation history
-share the same model input budget.
+Model-activated skills remain available for the next model step, then leave
+context. Manually requested skills remain until the task ends. Skill bodies and
+conversation history share the model input budget for each request.
 
 Only the `SKILL.md` body is admitted automatically. Other files in the skill
 directory are not loaded with it.

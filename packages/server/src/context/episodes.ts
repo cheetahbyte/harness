@@ -118,7 +118,11 @@ function allEvictableItemsArchived(items: ContextItem[]): boolean {
 	const evictableItems = items.filter(isEpisodeItemEvictable);
 	return (
 		evictableItems.length > 0 &&
-		evictableItems.every((item) => item.lifecycle === "archived")
+		evictableItems.every(
+			(item) =>
+				item.lifecycle === "archived" ||
+				(item.kind === "assistant" && item.lifecycle === "retained"),
+		)
 	);
 }
 export function structuralEvictionCandidates(

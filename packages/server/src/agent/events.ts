@@ -30,6 +30,7 @@ export type QueueCallbacks = {
 export type QueuedMessage = QueueCallbacks & { message: object };
 export type AgentEntry = {
 	key: string;
+	laneId: string;
 	agent: Agent;
 	tools: CoreTools;
 	contextError: Error | undefined;
@@ -57,6 +58,7 @@ export type AgentEntry = {
 
 export function translateAgentEvent({
 	sessionId,
+	laneId,
 	entry,
 	event,
 	emit,
@@ -65,6 +67,7 @@ export function translateAgentEvent({
 	sink,
 }: {
 	sessionId: string;
+	laneId: string;
 	entry: AgentEntry;
 	event: AgentEvent;
 	emit: (event: ServerEvent) => void;
@@ -76,6 +79,7 @@ export function translateAgentEvent({
 		case "message_start":
 			handleMessageStart(
 				sessionId,
+				laneId,
 				entry,
 				event.message as AgentMessage,
 				context,
@@ -88,10 +92,10 @@ export function translateAgentEvent({
 			emitMessageUpdate(event, emit);
 			return;
 		case "message_end":
-			handleMessageEnd(sessionId, entry, event.message, context, emit);
+			handleMessageEnd(sessionId, laneId, entry, event.message, context, emit);
 			return;
 		case "agent_end":
-			handleAgentEnd(sessionId, entry, context, shrink, emit);
+			handleAgentEnd(sessionId, laneId, entry, context, shrink, emit);
 			return;
 		case "tool_execution_start": {
 			const startSource = event.toolName.startsWith("mcp__") ? "mcp" : "harnez";
@@ -175,6 +179,7 @@ export function translateAgentEvent({
 
 function handleMessageStart(
 	sessionId: string,
+	laneId: string,
 	entry: AgentEntry,
 	message: AgentMessage,
 	context: ContextManager,
@@ -185,7 +190,7 @@ function handleMessageStart(
 	if (entry.steering === queued) entry.steering = undefined;
 	entry.active.push(queued);
 	entry.promptGroupId = crypto.randomUUID();
-	recordAgentMessage({ sessionId, entry, message, context });
+	recordAgentMessage({ sessionId, laneId, entry, message, context });
 	entry.preRecorded.add(messageKey(message));
 	queued.onStarted();
 }
@@ -209,13 +214,14 @@ function emitMessageUpdate(
 }
 function handleMessageEnd(
 	sessionId: string,
+	laneId: string,
 	entry: AgentEntry,
 	message: AgentMessage,
 	context: ContextManager,
 	emit: (event: ServerEvent) => void,
 ): void {
 	if (!entry.preRecorded.delete(messageKey(message)))
-		recordAgentMessage({ sessionId, entry, message, context });
+		recordAgentMessage({ sessionId, laneId, entry, message, context });
 	if (message.role !== "assistant") return;
 	emit({
 		type: "usage",
@@ -232,13 +238,14 @@ function handleMessageEnd(
 
 function handleAgentEnd(
 	sessionId: string,
+	laneId: string,
 	entry: AgentEntry,
 	context: ContextManager,
 	shrink: () => void,
 	emit: (event: ServerEvent) => void,
 ): void {
 	if (entry.promptGroupId)
-		context.completeGroup(sessionId, entry.promptGroupId);
+		context.completeGroup(sessionId, laneId, entry.promptGroupId);
 	shrink();
 	entry.promptGroupId = undefined;
 	if (!entry.contextError) return;
@@ -250,11 +257,13 @@ function handleAgentEnd(
 
 function recordAgentMessage({
 	sessionId,
+	laneId,
 	entry,
 	message,
 	context,
 }: {
 	sessionId: string;
+	laneId: string;
 	entry: AgentEntry;
 	message: AgentMessage;
 	context: ContextManager;
@@ -269,6 +278,7 @@ function recordAgentMessage({
 		for (const call of calls) entry.toolGroups.set(call.id, groupId as string);
 		context.record({
 			sessionId,
+			originLane: laneId,
 			kind: "assistant",
 			payload: message,
 			tokenCost: messageTokenCost,
@@ -283,6 +293,7 @@ function recordAgentMessage({
 		entry.toolGroups.delete(message.toolCallId);
 		const payload = externalizeToolResult({
 			sessionId,
+			laneId,
 			message,
 			tools: entry.tools,
 			context,
@@ -291,6 +302,7 @@ function recordAgentMessage({
 		const compactPayload = compactToolResult(payload);
 		context.record({
 			sessionId,
+			originLane: laneId,
 			kind: "tool-result",
 			payload,
 			compactPayload,
@@ -312,6 +324,7 @@ function recordAgentMessage({
 	}
 	context.record({
 		sessionId,
+		originLane: laneId,
 		kind: "user",
 		payload: message,
 		tokenCost: messageTokenCost,
@@ -323,6 +336,7 @@ function recordAgentMessage({
 
 export function managedMessages({
 	sessionId,
+	laneId = "main",
 	model,
 	task,
 	store,
@@ -332,6 +346,7 @@ export function managedMessages({
 	turnId,
 }: {
 	sessionId: string;
+	laneId?: string;
 	model: Model<Api>;
 	task?: TaskRuntime;
 	store: SessionStore;
@@ -345,7 +360,10 @@ export function managedMessages({
 	turnId?: number;
 }): AgentMessage[] {
 	const capabilityItems = task?.context.items() ?? [];
-	if (store.contextItems(sessionId).length === 0 && !capabilityItems.length)
+	if (
+		store.contextPath(sessionId, laneId).length === 0 &&
+		!capabilityItems.length
+	)
 		return [];
 	const dynamic: AgentMessage[] = [
 		...(task?.predecessorDigest
@@ -416,6 +434,7 @@ export function managedMessages({
 /** Async admission path used at prompt boundaries; this is where LLM compaction runs. */
 export async function managedMessagesAsync({
 	sessionId,
+	laneId = "main",
 	model,
 	task,
 	context,
@@ -427,6 +446,7 @@ export async function managedMessagesAsync({
 	systemPrompt,
 }: {
 	sessionId: string;
+	laneId?: string;
 	model: Model<Api>;
 	task: TaskRuntime;
 	context: ContextManager;
@@ -472,7 +492,7 @@ export async function managedMessagesAsync({
 	const prepared = await context.prepareTurn({
 		sessionId,
 		taskId: task.id,
-		laneId: "main",
+		laneId,
 		capabilityMessages: [],
 		fixedMessages: dynamic,
 		tools: [],
@@ -509,17 +529,19 @@ function dropOrphanToolResults(messages: AgentMessage[]): AgentMessage[] {
 
 export function ensureSystem({
 	sessionId,
+	laneId = "main",
 	store,
 	context,
 	workspace,
 }: {
 	sessionId: string;
+	laneId?: string;
 	store: SessionStore;
 	context: ContextManager;
 	workspace: string;
 }): string {
 	const existing = store
-		.contextItems(sessionId)
+		.contextPath(sessionId, laneId)
 		.find((item) => item.kind === "system");
 	if (existing) {
 		if (typeof existing.payload !== "string")
@@ -529,6 +551,7 @@ export function ensureSystem({
 	const systemPrompt = resolveSystemPrompt(workspace);
 	context.record({
 		sessionId,
+		originLane: laneId,
 		kind: "system",
 		payload: systemPrompt,
 		tokenCost: tokenCost(systemPrompt, 1),
@@ -561,11 +584,13 @@ export function queueMessage(
 }
 function externalizeToolResult({
 	sessionId,
+	laneId: _laneId,
 	message,
 	tools,
 	context,
 }: {
 	sessionId: string;
+	laneId: string;
 	message: Extract<AgentMessage, { role: "toolResult" }>;
 	tools: CoreTools;
 	context: ContextManager;

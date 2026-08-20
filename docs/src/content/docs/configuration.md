@@ -5,7 +5,8 @@ slug: configuration
 
 # Configuration
 
-Harnez keeps credentials and global settings in your user config directory.
+Harnez stores credentials and global settings in your user configuration
+directory.
 
 ```text
 ~/.config/harnez/auth.json
@@ -15,16 +16,16 @@ Harnez keeps credentials and global settings in your user config directory.
 `$XDG_CONFIG_HOME/harnez` is used instead when that variable is set.
 
 These directories were named `harness` before the project was renamed. An
-install that still has the old name keeps working: each location is read from
-its pre-rename spelling whenever the new one is absent, and writes go back to
-whichever file was found. Nothing needs to be moved by hand, though renaming
-`harness` to `harnez` yourself is harmless.
+installation that still uses the old name continues to work. Harnez reads
+from the old path when the new path is absent and writes to whichever file it
+finds. You do not need to move anything. Renaming `harness` to `harnez` is
+also safe.
 
 ## `auth.json`
 
-This file maps provider IDs to credentials. A credential is either an OAuth
-token set or an API key. Harnez writes the file with `0o600` permissions, and
-`/login` updates it. Never commit this file.
+This file maps provider IDs to credentials. A credential is an OAuth token set
+or an API key. Harnez writes the file with `0o600` permissions, and `/login`
+updates it. Never commit this file.
 
 ## `settings.json`
 
@@ -69,48 +70,49 @@ token set or an API key. Harnez writes the file with `0o600` permissions, and
 ```
 
 `providers` defines named OpenAI-compatible endpoints. Provider IDs appear in
-`/login`, `/model`, and the model header. Each provider requires an absolute
+`/login`, `/model`, and the model header. Each provider needs an absolute
 HTTP(S) `baseUrl`, `auth` set to `none` or `api-key`, and a non-empty list of
 unique, non-empty model IDs. IDs cannot collide with built-in providers or the
-legacy `openai-compatible` provider. Invalid definitions report the settings
-file and provider ID before a model request starts.
+legacy `openai-compatible` provider. Invalid definitions identify the settings file
+and provider ID before a model request starts.
 
-Use `/login company-llm` to store an API key for an `api-key` provider. Keys
-are stored only in `auth.json` under that provider ID, with its existing
-`0o600` permissions; do not put keys in `settings.json`. An `auth: "none"`
-provider is immediately available. Harnez supplies its OpenAI client a fixed
-placeholder key, so compatible local servers must tolerate an
+Use `/login company-llm` to store an API key for an `api-key` provider. Harnez
+stores keys only in `auth.json` under that provider ID, using the file's
+existing `0o600` permissions. Do not put keys in `settings.json`. An
+`auth: "none"` provider is available immediately. Harnez gives its OpenAI
+client a fixed placeholder key, so compatible local servers must accept an
 `Authorization: Bearer unused` header.
 
-`model` is whatever `/model` last set. `thinkingLevel` is the last level
-selected with `Shift+Tab`; supported levels depend on the model. `baseUrl`
-only applies to the `openai-compatible` provider.
+`model` is the value most recently set by `/model`. `thinkingLevel` is the
+level most recently selected with `Shift+Tab`; supported levels depend on the
+model. `baseUrl` applies only to the `openai-compatible` provider.
 
-`compaction.enabled` defaults to `true`. `compaction.model` optionally selects a
-separate model for LLM context compaction in `<provider>/<model>` form. It falls
-back to `model` when omitted. Project settings override global settings.
-Project settings override global settings.
+`compaction.enabled` defaults to `true`. `compaction.model` optionally selects
+a separate model for context compaction in `<provider>/<model>` form. Harnez
+uses `model` when this value is omitted. Project settings override global
+settings.
 
-`fastCycle` is the list `Ctrl+P` steps through, in the order `/fast-cycle`
-listed the models. Each entry carries its own `thinkingLevel`, so `Shift+Tab`
-changes the level of the active model only, and selecting that model again
-restores it. Entries whose model is unavailable are skipped while cycling.
+`fastCycle` is the list that `Ctrl+P` cycles through, in the order that
+`/fast-cycle` lists the models. Each entry has its own `thinkingLevel`.
+`Shift+Tab` changes the active model's level, and selecting that model again
+restores it. Harnez skips unavailable models while cycling.
 
-The picker writes the whole list, so an entry whose model is missing from it —
-for example while that provider is signed out — is dropped when you save.
-Cycling never drops entries; it only skips the ones it cannot resolve.
+The picker writes the whole list. When a model is missing from the list, for
+example because its provider is signed out, Harnez drops that entry when you
+save. Cycling does not drop entries. It skips models that it cannot resolve.
 
-`disabledMcpServers` is what [`/mcp`](/docs/advanced/mcp#switching-servers-on-and-off)
-switched off, by server name. It lists exclusions rather than inclusions, so a
-server added to `mcp.json` later starts out connected. It follows the same
-layering as every other setting: the list lands in the project's
-`.harnez/settings.json` when that file exists, and in the global file
-otherwise — where, because the entries are plain server names, it applies to
-every workspace that has a server by that name.
+`disabledMcpServers` lists the servers that
+[`/mcp`](/docs/advanced/mcp#switching-servers-on-and-off) switched off, by
+server name. The list contains exclusions, so a server added to `mcp.json`
+later starts connected. The setting follows the same layering as other
+settings. Harnez writes it to the project's `.harnez/settings.json` when that
+file exists, or to the global file otherwise. Because entries are plain server
+names, the setting applies to every workspace that has a server with that
+name.
 
-New sessions are titled from their first prompt by default. Set
-`session.title.generated` to `false` to disable this. `session.title.source`
-supports:
+Harnez titles new sessions from their first prompt by default. Set
+`session.title.generated` to `false` to disable generated titles.
+`session.title.source` supports:
 
 - `keywords/yake`: local, deterministic keyword extraction
 - `model/<provider>/<model>:<thinking-level>`: a configured model, for example
@@ -124,8 +126,8 @@ persistence.
 ## Project overrides
 
 A project-local `.harnez/settings.json` takes precedence over the corresponding
-global values for that project. Nested session-title fields are merged
-independently, so a project may override only `generated` or only `source`:
+global values for that project. Harnez merges nested session-title fields
+independently, so a project can override only `generated` or only `source`:
 
 ```text
 <repo>/
@@ -136,24 +138,24 @@ independently, so a project may override only `generated` or only `source`:
     prompts/             # project-local prompt templates, alongside .agents/prompts
 ```
 
-Provider maps merge by provider ID. A project provider with the same ID
-replaces that complete global definition. Restart the server after editing
-either settings file; settings are not reloaded while it runs.
+Harnez merges provider maps by provider ID. A project provider with the same ID
+replaces the complete global definition. Restart the server after editing
+either settings file. Harnez does not reload settings while the server runs.
 
-The legacy one-off endpoint command remains available:
+The legacy one-off endpoint command is still available:
 
 ```text
 /model openai-compatible <model> <base-url>
 ```
 
-User-level skills live in `~/.harnez/skills` and `~/.agents/skills`, and
-user-level prompt templates in `~/.harnez/prompts` and `~/.agents/prompts`. The
-pre-rename `.harness` directories are still scanned, ranking just below their
-`.harnez` counterparts.
+User-level skills live in `~/.harnez/skills` and `~/.agents/skills`. User-level
+prompt templates live in `~/.harnez/prompts` and `~/.agents/prompts`. Harnez
+also scans the pre-rename `.harness` directories, after their `.harnez`
+counterparts.
 
 ## System prompt files
 
-The built-in operator prompt can be replaced or extended with Markdown files:
+You can replace or extend the built-in operator prompt with Markdown files:
 
 ```text
 $XDG_CONFIG_HOME/harnez/SYSTEM.md             # replace the built-in prompt
@@ -161,22 +163,22 @@ $XDG_CONFIG_HOME/harnez/APPEND_SYSTEM.md      # append global rules
 <repo>/.harnez/APPEND_SYSTEM.md                # append project rules
 ```
 
-When `$XDG_CONFIG_HOME` is unset, `~/.config` is used. Existing files under
+When `$XDG_CONFIG_HOME` is unset, Harnez uses `~/.config`. Existing files under
 `harness` are accepted as a legacy fallback for each corresponding `harnez`
-path. If both names exist, the `harnez` file wins. The files are resolved in
-the order shown: `SYSTEM.md` (or the built-in prompt), global append, then
-project append. A project cannot replace the operator prompt because
-project-local `SYSTEM.md` is not supported.
+path. If both names exist, the `harnez` file takes precedence. Harnez resolves
+the files in the order shown: `SYSTEM.md` or the built-in prompt, global
+append, then project append. A project cannot replace the operator prompt
+because project-local `SYSTEM.md` is not supported.
 
-The resolved prompt is fixed when a new session first runs an agent task.
-Editing these files affects new sessions only; existing sessions retain their
+Harnez fixes the resolved prompt when a new session first runs an agent task.
+Editing these files affects new sessions only. Existing sessions retain their
 prompt, including after a server restart. `SYSTEM.md` replaces the built-in
-capability and compaction guidance, so use `APPEND_SYSTEM.md` when you want to
-keep those instructions. Leading and trailing whitespace is removed from each
-body, and non-empty bodies are separated by two newlines. Empty append files
-are ignored; an empty `SYSTEM.md` is a valid replacement. Invalid UTF-8,
-directories, and other read failures stop task startup and identify the file
-path in the error.
+capability and compaction guidance, so use `APPEND_SYSTEM.md` to keep those
+instructions. Harnez removes leading and trailing whitespace from each body
+and separates non-empty bodies with two newlines. It ignores empty append
+files. An empty `SYSTEM.md` is a valid replacement. Invalid UTF-8, directories,
+and other read failures stop task startup and identify the file path in the
+error.
 
 ## Environment variables
 
@@ -193,11 +195,11 @@ path in the error.
 | `HARNEZ_OPENAI_API_KEY` / `OPENAI_API_KEY` | API key for the `openai-compatible` provider, checked in that order. |
 
 Set `HARNEZ_OTEL=1` to enable OpenTelemetry export. Harnez then uses the
-standard `OTEL_*` variables for endpoint, protocol, headers, service name,
+standard `OTEL_*` variables for the endpoint, protocol, headers, service name,
 resource attributes, exporters, and sampling. Content capture is disabled by
-default; see [Observability](/docs/advanced/observability) before enabling it.
+default. Read [Observability](/docs/advanced/observability) before enabling it.
 
 Harnez manages model context automatically. When `compaction.enabled` is true,
-the runtime can condense older history before using deterministic checkpoint
-compaction. Provider context-length errors create a recovery checkpoint and
-retry once with the current turn preserved.
+the runtime can condense older history before it uses deterministic checkpoint
+compaction. A provider context-length error creates a recovery checkpoint, and
+Harnez retries once with the current turn preserved.

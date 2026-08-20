@@ -116,6 +116,7 @@ export function contextCapabilities(
 
 type AgentToolsOptions = {
 	sessionId: string;
+	laneId?: string;
 	model: Model<Api>;
 	tools: CoreTools;
 	task: TaskRuntime;
@@ -242,6 +243,7 @@ function mcpAgentTool(
 
 function contextTools({
 	sessionId,
+	laneId,
 	model,
 	context,
 	contextOptions,
@@ -249,10 +251,18 @@ function contextTools({
 	task,
 }: AgentToolsOptions): AgentTool[] {
 	return [
-		recallTool(sessionId, context, task),
-		pinTool(sessionId, model, context, contextOptions),
-		episodeTool(sessionId, context),
-		condenseTool(sessionId, model, context, contextOptions, task, emit),
+		recallTool(sessionId, laneId ?? "main", context, task),
+		pinTool(sessionId, laneId ?? "main", model, context, contextOptions),
+		episodeTool(sessionId, laneId ?? "main", context),
+		condenseTool(
+			sessionId,
+			laneId ?? "main",
+			model,
+			context,
+			contextOptions,
+			task,
+			emit,
+		),
 	];
 }
 
@@ -426,6 +436,7 @@ function combinedSignal(
 }
 function recallTool(
 	sessionId: string,
+	_laneId: string = "main",
 	context: ContextManager,
 	task: TaskRuntime,
 ): AgentTool {
@@ -495,6 +506,7 @@ function extent({ text, offset, totalLength }: ObservationRecall): string {
 }
 function pinTool(
 	sessionId: string,
+	_laneId: string = "main",
 	model: Model<Api>,
 	context: ContextManager,
 	contextOptions: AgentToolsOptions["contextOptions"],
@@ -517,7 +529,11 @@ function pinTool(
 		},
 	};
 }
-function episodeTool(sessionId: string, context: ContextManager): AgentTool {
+function episodeTool(
+	sessionId: string,
+	laneId: string,
+	context: ContextManager,
+): AgentTool {
 	return {
 		name: "episode",
 		label: "episode",
@@ -529,14 +545,15 @@ function episodeTool(sessionId: string, context: ContextManager): AgentTool {
 			if (request.action === "start") {
 				if (request.name === undefined || request.kind === undefined)
 					throw new Error("Starting an episode requires name and kind");
-				episode = context.startEpisode(sessionId, {
+				episode = context.startEpisode(sessionId, laneId, {
 					name: request.name,
 					kind: request.kind,
 					...(request.dependencies === undefined
 						? {}
 						: { dependencies: request.dependencies }),
 				});
-			} else episode = context.endEpisode(sessionId, request.conclusion);
+			} else
+				episode = context.endEpisode(sessionId, laneId, request.conclusion);
 			return {
 				content: [
 					{
@@ -551,6 +568,7 @@ function episodeTool(sessionId: string, context: ContextManager): AgentTool {
 }
 function condenseTool(
 	sessionId: string,
+	_laneId: string = "main",
 	model: Model<Api>,
 	context: ContextManager,
 	contextOptions: AgentToolsOptions["contextOptions"],

@@ -51,6 +51,8 @@ import { agentTools, TOOL_OVERHEAD_TOKENS } from "./tools";
 
 export type AgentRunInput = {
 	sessionId: string;
+	agentId?: string;
+	laneId?: string;
 	text: string;
 	images?: ImageAttachment[];
 	config: ModelConfig | undefined;
@@ -60,6 +62,7 @@ export type AgentRunInput = {
 	mcpTools: readonly McpToolDescriptor[];
 	/** The workspace's registry: MCP is per workspace, not per process. */
 	mcp: Pick<McpRegistry, "call">;
+	extraTools?: readonly AgentTool[];
 	signal: AbortSignal;
 	emit: (event: ServerEvent) => void;
 	turnId?: number;
@@ -126,6 +129,8 @@ export class HarnezAgentRuntime {
 
 	async run({
 		sessionId,
+		agentId = sessionId,
+		laneId = "main",
 		text,
 		images = [],
 		config,
@@ -134,6 +139,7 @@ export class HarnezAgentRuntime {
 		skills,
 		mcpTools,
 		mcp,
+		extraTools = [],
 		signal,
 		emit,
 		turnId,
@@ -144,7 +150,7 @@ export class HarnezAgentRuntime {
 				"configuration",
 			);
 		const key = `${JSON.stringify(config)}:${task.id}`;
-		let entry = this.agents.get(sessionId);
+		let entry = this.agents.get(agentId);
 		if (!entry || entry.key !== key) {
 			const { models, model } = providerModels(
 				config,
@@ -164,6 +170,7 @@ export class HarnezAgentRuntime {
 				: { models, model };
 			const created = this.createAgent({
 				sessionId,
+				laneId,
 				key,
 				model,
 				models,
@@ -175,10 +182,12 @@ export class HarnezAgentRuntime {
 				skills,
 				mcpTools,
 				mcp,
+				extraTools,
 			});
 			created.agent.subscribe((event) => {
 				translateAgentEvent({
 					sessionId,
+					laneId,
 					entry: created,
 					event,
 					emit,
@@ -187,7 +196,7 @@ export class HarnezAgentRuntime {
 					...(this.sink ? { sink: this.sink } : {}),
 				});
 			});
-			this.agents.set(sessionId, created);
+			this.agents.set(agentId, created);
 			entry = created;
 		}
 		entry.emit = emit;
@@ -213,6 +222,7 @@ export class HarnezAgentRuntime {
 			 */
 			await this.messagesAsync(
 				sessionId,
+				laneId,
 				entry.agent.state.model,
 				entry.task,
 				signal,
@@ -234,7 +244,7 @@ export class HarnezAgentRuntime {
 				entry.agent.state.systemPrompt,
 			);
 		} catch (error) {
-			this.context.completeGroup(sessionId, entry.promptGroupId);
+			this.context.completeGroup(sessionId, laneId, entry.promptGroupId);
 			entry.promptGroupId = undefined;
 			throw error;
 		}
@@ -283,12 +293,12 @@ export class HarnezAgentRuntime {
 	}
 
 	steer(
-		sessionId: string,
+		agentId: string,
 		text: string,
 		callbacks: QueueCallbacks,
 		images: readonly ImageAttachment[] = [],
 	): boolean {
-		const entry = this.agents.get(sessionId);
+		const entry = this.agents.get(agentId);
 		if (
 			!entry?.agent.state.isStreaming ||
 			entry.agent.state.pendingToolCalls.size
@@ -302,11 +312,15 @@ export class HarnezAgentRuntime {
 		entry.agent.steer(queued.message as never);
 		return true;
 	}
-	forget(sessionId: string): void {
-		this.agents.delete(sessionId);
+	forget(agentId: string): void {
+		this.agents.delete(agentId);
 	}
-	inspect(sessionId: string): ReturnType<ContextManager["inspect"]> {
-		const model = this.agents.get(sessionId)?.agent.state.model;
+	inspect(
+		agentId: string,
+		sessionId: string,
+		_laneId = "main",
+	): ReturnType<ContextManager["inspect"]> {
+		const model = this.agents.get(agentId)?.agent.state.model;
 		return this.context.inspect(
 			sessionId,
 			model
@@ -321,6 +335,7 @@ export class HarnezAgentRuntime {
 
 	private createAgent({
 		sessionId,
+		laneId = "main",
 		key,
 		model,
 		models,
@@ -332,8 +347,10 @@ export class HarnezAgentRuntime {
 		skills,
 		mcpTools,
 		mcp,
+		extraTools = [],
 	}: {
 		sessionId: string;
+		laneId: string;
 		key: string;
 		model: Model<Api>;
 		models: ReturnType<typeof providerModels>["models"];
@@ -345,14 +362,16 @@ export class HarnezAgentRuntime {
 		skills: readonly SkillSnapshotEntry[];
 		mcpTools: readonly McpToolDescriptor[];
 		mcp: Pick<McpRegistry, "call">;
+		extraTools?: readonly AgentTool[];
 	}): AgentEntry {
 		const systemPrompt = ensureSystem({
 			sessionId,
+			laneId,
 			store: this.store,
 			context: this.context,
 			workspace: this.store.workspace(sessionId) ?? process.cwd(),
 		});
-		const entry = newAgentEntry(key, tools, task, this.sink);
+		const entry = newAgentEntry(key, laneId, tools, task, this.sink);
 		const compactor: ContextCompactor | undefined = !(
 			this.llmCompactionFor?.(sessionId) ?? true
 		)
@@ -378,6 +397,7 @@ export class HarnezAgentRuntime {
 				entry.contextError = undefined;
 				return await this.messagesAsync(
 					sessionId,
+					laneId,
 					model,
 					task,
 					signal ?? new AbortController().signal,
@@ -402,20 +422,24 @@ export class HarnezAgentRuntime {
 					config.thinkingLevel ?? "medium",
 				),
 				...(systemPrompt === undefined ? {} : { systemPrompt }),
-				tools: agentTools({
-					sessionId,
-					model,
-					tools,
-					task,
-					skills,
-					mcpTools,
-					mcp,
-					admit,
-					context: this.context,
-					contextOptions: this.contextOptions.bind(this),
-					previewLimit: this.previewLimit.bind(this),
-					...(entry.emit ? { emit: entry.emit } : {}),
-				}),
+				tools: [
+					...agentTools({
+						sessionId,
+						laneId,
+						model,
+						tools,
+						task,
+						skills,
+						mcpTools,
+						mcp,
+						admit,
+						context: this.context,
+						contextOptions: this.contextOptions.bind(this),
+						previewLimit: this.previewLimit.bind(this),
+						...(entry.emit ? { emit: entry.emit } : {}),
+					}),
+					...extraTools,
+				],
 				messages: [],
 			},
 			transformContext: async (_messages, signal) => {
@@ -426,6 +450,7 @@ export class HarnezAgentRuntime {
 			prepareNextTurnWithContext: async (turn, signal) => {
 				this.context.completeTurn(
 					sessionId,
+					laneId,
 					turn.toolResults.map((result) => result.toolCallId),
 				);
 				const messages = await managed(signal);
@@ -480,11 +505,12 @@ export class HarnezAgentRuntime {
 						});
 					},
 					(stage) => {
-						this.context.recoverProviderOverflow(sessionId, "main", stage);
+						this.context.recoverProviderOverflow(sessionId, laneId, stage);
 						retryContext = {
 							...requestContext,
 							messages: this.messages(
 								sessionId,
+								laneId,
 								model,
 								task,
 								entry.emit,
@@ -501,6 +527,7 @@ export class HarnezAgentRuntime {
 	}
 	private async messagesAsync(
 		sessionId: string,
+		laneId: string,
 		model: Model<Api>,
 		task: TaskRuntime,
 		signal: AbortSignal,
@@ -514,6 +541,7 @@ export class HarnezAgentRuntime {
 		if (pendingInput?.length) {
 			await managedMessagesAsync({
 				sessionId,
+				laneId,
 				model,
 				task,
 				context: this.context,
@@ -524,11 +552,18 @@ export class HarnezAgentRuntime {
 				...(systemPrompt === undefined ? {} : { systemPrompt }),
 				...(compactor ? { compactor } : {}),
 			});
-			return this.messages(sessionId, model, task, emit, turnId);
+			return this.messages(sessionId, laneId, model, task, emit, turnId);
 		}
 		const options = this.contextOptions(model);
 		try {
-			const messages = this.messages(sessionId, model, task, emit, turnId);
+			const messages = this.messages(
+				sessionId,
+				laneId,
+				model,
+				task,
+				emit,
+				turnId,
+			);
 			const inspection = this.context.inspect(sessionId, options);
 			if (inspection.estimatedTokens < Math.floor(options.budget * 0.8))
 				return messages;
@@ -537,6 +572,7 @@ export class HarnezAgentRuntime {
 		}
 		await managedMessagesAsync({
 			sessionId,
+			laneId,
 			model,
 			task,
 			context: this.context,
@@ -546,10 +582,11 @@ export class HarnezAgentRuntime {
 			tools,
 			...(systemPrompt === undefined ? {} : { systemPrompt }),
 		});
-		return this.messages(sessionId, model, task, emit, turnId);
+		return this.messages(sessionId, laneId, model, task, emit, turnId);
 	}
 	private messages(
 		sessionId: string,
+		laneId: string,
 		model: Model<Api>,
 		task?: TaskRuntime,
 		emit?: ((event: ServerEvent) => void) | undefined,
@@ -557,6 +594,7 @@ export class HarnezAgentRuntime {
 	): AgentMessage[] {
 		return managedMessages({
 			sessionId,
+			laneId,
 			model,
 			...(task ? { task } : {}),
 			store: this.store,
@@ -598,6 +636,7 @@ export class HarnezAgentRuntime {
 		try {
 			entry.agent.state.messages = this.messages(
 				sessionId,
+				entry.laneId,
 				entry.agent.state.model,
 				entry.task,
 				entry.emit,
@@ -753,12 +792,14 @@ function asError(error: unknown): Error {
 
 function newAgentEntry(
 	key: string,
+	laneId: string,
 	tools: CoreTools,
 	task: TaskRuntime,
 	sink?: RuntimeEventSink,
 ): AgentEntry {
 	return {
 		key,
+		laneId,
 		agent: undefined as unknown as Agent,
 		tools,
 		contextError: undefined,

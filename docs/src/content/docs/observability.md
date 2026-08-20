@@ -5,9 +5,8 @@ slug: observability
 
 # Observability
 
-Harnez can export lifecycle traces and metrics through OpenTelemetry. It is
-disabled unless `HARNEZ_OTEL=1`. Configure the standard OpenTelemetry
-environment variables, for example:
+Harnez exports lifecycle traces and metrics through OpenTelemetry when you set
+`HARNEZ_OTEL=1`. Configure the standard OpenTelemetry environment variables:
 
 ```text
 HARNEZ_OTEL=1
@@ -18,8 +17,8 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
 The OTLP HTTP exporters honor signal-specific endpoints, protocol, headers,
-resource attributes, and sampling from standard `OTEL_*` variables. A minimal
-local collector configuration is:
+resource attributes, and sampling from standard `OTEL_*` variables. Use this
+minimal local collector configuration:
 
 ```yaml
 receivers:
@@ -50,7 +49,7 @@ provider/model, and cache counts. They never expose source messages, summaries,
 tool or MCP payloads, observations, image bytes, credentials, or filesystem
 paths.
 
-By default, events contain only IDs, status, durations, counts, model/tool
+By default, events contain only IDs, status, durations, counts, model and tool
 names, and context pressure fields. For local debugging, enable selected
 payloads with a comma-separated list:
 
@@ -61,7 +60,7 @@ HARNEZ_OTEL_CAPTURE_MAX_CHARS=16384
 
 `all` enables every category. `prompts` records the provider-facing system
 prompt and message history, while `responses` records terminal assistant
-messages. `tool-arguments` and `tool-results` cover built-in tools;
+messages. `tool-arguments` and `tool-results` cover built-in tools.
 `mcp-payloads` independently covers MCP arguments and results. `paths` permits
 path fields inside other enabled payloads.
 
@@ -70,11 +69,11 @@ Captured payload attributes default to 16,384 characters each. Set
 the limit. Truncation is marked with the original character count. Unknown
 capture names and invalid limits fail startup.
 
-Credentials, API keys, authorization and cookie values, environment maps,
-private keys, image bytes, and arbitrary binary values are removed under every
-setting, including `all`. Other private user text can still appear in prompts,
-responses, and tool payloads, so use content capture only with a trusted local
-collector and disable it when the debugging session ends.
+Harnez removes credentials, API keys, authorization and cookie values,
+environment maps, private keys, image bytes, and arbitrary binary values under
+every setting, including `all`. Other private user text can still appear in
+prompts, responses, and tool payloads. Use content capture only with a trusted
+local collector, and disable it when the debugging session ends.
 
 Prefix identity is computed locally from the provider, model, serializer
 version, fixed envelope, capability context, tool schemas, and emitted provider
@@ -102,18 +101,19 @@ In Grafana Explore, select the Tempo data source and run:
 ```
 
 Open a trace and inspect `chat` spans for `gen_ai.input.messages` and
-`gen_ai.output.messages`. Inspect `execute_tool` spans for `harnez.toolArguments`,
-`harnez.toolResults`, or `harnez.mcpPayload`. Prometheus contains aggregate
-counters and histograms rather than individual payloads.
+`gen_ai.output.messages`. Inspect `execute_tool` spans for
+`harnez.toolArguments`, `harnez.toolResults`, or `harnez.mcpPayload`.
+Prometheus contains aggregate counters and histograms, not individual
+payloads.
 
-Debug logs remain metadata-only and do not duplicate captured content. A
+Debug logs contain metadata only and do not duplicate captured content. A
 managed macOS server writes them to
 `~/Library/Application Support/harnez/server.log`; run
 `tail -f ~/Library/Application\ Support/harnez/server.log` to follow them.
 
 The useful context fields are `under_pressure`, `pressure_streak`, and
-`agent_continued`. A collector query for tasks that kept working through
-repeated pressure is:
+`agent_continued`. Use this collector query to find tasks that kept working
+through repeated pressure:
 
 ```text
 harnez.context.pressure_streak > 1 AND harnez.context.agent_continued = true
@@ -125,6 +125,6 @@ compaction, live-token, history-token, and pressure-streak instruments.
 Model metrics are labeled by provider, model, and status; tool metrics by tool,
 source, and status; context metrics by trigger and outcome.
 
-Telemetry configuration, including both content-capture variables, is removed
-before bash and stdio MCP child processes start. Harnez does not create
-distributed child traces.
+Harnez removes telemetry configuration, including both content-capture
+variables, before bash and stdio MCP child processes start. Harnez does not
+create distributed child traces.

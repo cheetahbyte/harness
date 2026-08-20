@@ -1,3 +1,5 @@
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+
 import type {
 	ImageAttachment,
 	ModelConfig,
@@ -23,6 +25,9 @@ import { isMcpProvider, mcpCapabilities } from "../mcp/capabilities";
 import type { McpRegistry, McpToolDescriptor } from "../mcp/registry";
 import { expandPrompt, scanPrompts } from "../prompts";
 import { activateSkill, type SkillSnapshotEntry, scanSkills } from "../skills";
+import type { SubagentExecutionRequest } from "../subagents/manager";
+import type { ResolvedAgentProfile } from "../subagents/profiles";
+import { submitSubagentResultTool } from "../subagents/tools";
 import { TaskRuntime, type TaskTerminalStatus } from "../task-runtime";
 import type { RuntimeEventSink } from "../telemetry/events";
 import { tokenCost } from "../token-cost";
@@ -72,9 +77,49 @@ type RunInput = {
 };
 
 export class SessionTaskRunner {
+	private subagentTools:
+		| ((sessionId: string) => readonly AgentTool[])
+		| undefined;
 	private readonly turnIds = new Map<string, number>();
 	private readonly startedTasks = new Set<string>();
 	constructor(private readonly options: RunnerOptions) {}
+	setSubagentTools(factory: (sessionId: string) => readonly AgentTool[]): void {
+		this.subagentTools = factory;
+	}
+
+	/** Runs an isolated child on its already-allocated context lane. */
+	async runSubagent(request: SubagentExecutionRequest): Promise<void> {
+		const controller = new AbortController();
+		request.signal.addEventListener("abort", () => controller.abort(), {
+			once: true,
+		});
+		const running = await this.createTask({
+			id: request.sessionId,
+			text: `${request.profile.body}\n\n${request.task}\n\nBefore ending, call submit_subagent_result exactly once with your structured handoff.`,
+			images: [],
+			controller,
+			laneId: request.laneId,
+			taskId: request.agentId,
+			config: request.profile.modelConfig,
+			profile: request.profile,
+		});
+		request.onRuntime(running.task);
+		await this.options.runtime.run({
+			sessionId: request.sessionId,
+			agentId: request.agentId,
+			laneId: request.laneId,
+			text: running.prompt,
+			config: request.profile.modelConfig,
+			tools: running.tools,
+			task: running.task,
+			skills: running.skills,
+			mcpTools: running.mcpTools,
+			mcp: running.mcp,
+			signal: controller.signal,
+			emit: (event) => this.options.emit(request.sessionId, event),
+			extraTools: [submitSubagentResultTool(request.submit)],
+		});
+	}
 
 	async run(input: RunInput): Promise<void> {
 		const { id, session, command, predecessor, resume } = input;
@@ -124,6 +169,8 @@ export class SessionTaskRunner {
 		try {
 			timing = await this.options.runtime.run({
 				sessionId: id,
+				agentId: id,
+				laneId: "main",
 				text: running.prompt,
 				...(images.length ? { images } : {}),
 				config: this.options.modelConfig(id),
@@ -132,6 +179,7 @@ export class SessionTaskRunner {
 				skills: running.skills,
 				mcpTools: running.mcpTools,
 				mcp: running.mcp,
+				...(this.subagentTools ? { extraTools: this.subagentTools(id) } : {}),
 				signal: controller.signal,
 				emit: (event) => this.options.emit(id, event),
 				turnId,
@@ -404,6 +452,10 @@ export class SessionTaskRunner {
 		controller,
 		predecessor,
 		submissionWatermark,
+		laneId = "main",
+		taskId,
+		config = this.options.modelConfig(id),
+		profile,
 	}: {
 		id: string;
 		text: string;
@@ -411,6 +463,10 @@ export class SessionTaskRunner {
 		controller: AbortController;
 		predecessor?: TaskRuntime;
 		submissionWatermark?: number;
+		laneId?: string;
+		taskId?: string;
+		config?: ModelConfig;
+		profile?: ResolvedAgentProfile;
 	}): Promise<RunningTask> {
 		if (images.length) {
 			if (
@@ -421,14 +477,27 @@ export class SessionTaskRunner {
 		const bindingGeneration = crypto.randomUUID();
 		const contextWatermark = this.options.store.contextSequence(id);
 		const workspace = this.options.workspace(id);
-		const tools = new CoreTools(workspace);
+		const tools = new CoreTools(workspace, profile?.coreNames);
 		const registry = this.options.mcpFor(id);
 		const [scanned, prompts, mcp] = await Promise.all([
 			scanSkills(workspace, undefined, bindingGeneration),
 			scanPrompts(workspace),
 			registry.snapshot(),
 		]);
-		const skills = [...scanned.discoverable, ...scanned.operatorOnly];
+		const skills = [...scanned.discoverable, ...scanned.operatorOnly].filter(
+			(skill) =>
+				!profile ||
+				profile.capabilities.some(
+					(capability) => capability.id === skill.capability.id,
+				),
+		);
+		const childMcpTools = profile
+			? mcp.tools.filter((tool) =>
+					profile.capabilities.some(
+						(capability) => capability.id === `tool:${tool.name}`,
+					),
+				)
+			: mcp.tools;
 		for (const diagnostic of scanned.diagnostics)
 			log.warn(
 				{ sessionId: id, path: diagnostic.path, error: diagnostic.error },
@@ -455,7 +524,7 @@ export class SessionTaskRunner {
 			[
 				...tools.capabilities(bindingGeneration),
 				...contextCapabilities(bindingGeneration),
-				...mcpCapabilities(mcp.tools, bindingGeneration),
+				...mcpCapabilities(childMcpTools, bindingGeneration),
 				...skills.map(({ capability }) => capability),
 			],
 			bindingGeneration,
@@ -466,6 +535,8 @@ export class SessionTaskRunner {
 		});
 		const { task, context, accountant } = this.createRuntime({
 			id,
+			...(config ? { config } : {}),
+			...(taskId ? { taskId } : {}),
 			snapshot,
 			contextWatermark,
 			...(predecessor ? { predecessor } : {}),
@@ -498,13 +569,14 @@ export class SessionTaskRunner {
 			accountant,
 		);
 		this.options.context.recover(id);
-		this.options.store.startContextTask(id, task.id, task.startedAt);
+		if (laneId === "main")
+			this.options.store.startContextTask(id, task.id, task.startedAt);
 		return {
 			controller,
 			task,
 			tools,
 			skills,
-			mcpTools: mcp.tools,
+			mcpTools: childMcpTools,
 			mcp: registry,
 			prompt: withSkippedSkills(prompt, skipped),
 			contextWatermark,
@@ -513,12 +585,16 @@ export class SessionTaskRunner {
 
 	private createRuntime({
 		id,
+		config = this.options.modelConfig(id),
+		taskId,
 		snapshot,
 		contextWatermark,
 		predecessor,
 		submissionWatermark,
 	}: {
 		id: string;
+		config?: ModelConfig;
+		taskId?: string;
 		snapshot: CapabilitySnapshot;
 		contextWatermark: number;
 		predecessor?: TaskRuntime;
@@ -530,12 +606,12 @@ export class SessionTaskRunner {
 	} {
 		const predecessorDigest = predecessor?.digest(snapshot);
 		const context = new CapabilityContext(
-			{ model: this.options.modelConfig(id) },
+			{ model: config },
 			(base, items) => ({
 				base,
 				capabilityContext: items.map(({ content }) => content),
 			}),
-			this.options.runtime.capabilityBudget(id, this.options.modelConfig(id)),
+			this.options.runtime.capabilityBudget(id, config),
 			512,
 		);
 		const task = new TaskRuntime(
@@ -543,6 +619,7 @@ export class SessionTaskRunner {
 			context,
 			crypto.getRandomValues(new Uint8Array(32)),
 			{
+				...(taskId ? { id: taskId } : {}),
 				unknownPriorMutatingEffects:
 					(predecessorDigest?.unknownMutatingCalls ?? 0) > 0,
 				...(predecessorDigest ? { predecessorDigest } : {}),
@@ -555,7 +632,7 @@ export class SessionTaskRunner {
 			},
 		);
 		const accountant = {
-			modelId: this.options.modelConfig(id)?.model ?? "unconfigured",
+			modelId: config?.model ?? "unconfigured",
 			serializerVersion: "pi-json-v1",
 			method: "conservative_estimate" as const,
 			count: (request: unknown) => tokenCost(request),
