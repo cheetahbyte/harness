@@ -14,6 +14,7 @@ import observability from "./observability.md?raw";
 import promptTemplates from "./prompt-templates.md?raw";
 import sessions from "./sessions.md?raw";
 import skills from "./skills.md?raw";
+import subagents from "./subagents.md?raw";
 import taskRuntime from "./task-runtime.md?raw";
 import toolDiscovery from "./tool-discovery.md?raw";
 import unknownProviders from "./unknown-providers.md?raw";
@@ -132,6 +133,14 @@ export const docPages: DocPage[] = [
 			"Create reusable skill instructions, control model discovery, activate skills manually, and troubleshoot loading.",
 		section: "Advanced",
 		source: skills,
+	},
+	{
+		slug: getFrontmatterSlug(subagents),
+		title: "Subagents",
+		description:
+			"Delegate bounded work to isolated background agents with profiles, capability limits, durable handoffs, and restart recovery.",
+		section: "Advanced",
+		source: subagents,
 	},
 	{
 		slug: getFrontmatterSlug(mcp),

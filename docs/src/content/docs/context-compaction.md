@@ -5,10 +5,10 @@ slug: architecture/context-compaction
 
 # Context compaction
 
-An agent can fill its context window quickly. File reads and test logs may be
-useful for one turn, while user instructions may need to stay available for the
-entire session. Sending all of that history back to the model on every turn
-wastes tokens and eventually stops fitting.
+An agent can fill its context window quickly. File reads and test logs might
+help for one turn, while user instructions might apply to the entire session.
+Sending the full history on every turn wastes tokens and eventually exceeds the
+available space.
 
 Harnez keeps the full session history separate from the smaller conversation
 context it sends to the model:
@@ -20,9 +20,9 @@ observations    = exact tool output stored outside the working set
 repository      = durable result of completed actions
 ```
 
-Only the model-facing working set is compacted. The event log, exact tool
+Harnez compacts only the model-facing working set. The event log, exact tool
 output, and workspace files remain intact. Loaded tool schemas and activated
-skill bodies use task-owned context, but their injected tokens count against
+skill bodies use task-owned context, and their injected tokens count against
 the same model input budget. See
 [Task runtime](/docs/architecture/task-runtime).
 
@@ -42,7 +42,7 @@ flowchart TD
     F --> R[Handoff result]
 ```
 
-The tree lets Harnez reuse immutable prefixes and evict replaceable branches.
+Harnez reuses immutable prefixes and evicts replaceable branches in this tree.
 Checkpoints never delete source items: exact history remains in SQLite and can
 be recovered after a restart.
 
@@ -57,7 +57,7 @@ Each stored conversation item moves through one of four states:
 | `retained` | Completed turns and tool exchanges that may still help | Yes, when the budget is exceeded |
 | `archived` | History kept in storage but represented compactly or omitted from the next model request | Already removed |
 
-Harnez pins unknown item types rather than guessing that they are safe to
+Harnez pins unknown item types instead of guessing that they are safe to
 remove. When a top-level task ends, its user-visible assistant prose becomes
 `retained` and therefore reclaimable; predecessor tool traffic is omitted.
 Oversized textual user input remains exact in session storage and reaches the
@@ -93,7 +93,8 @@ observation://obs-7c2f...?offset=12000&limit=4000
 
 ## Episodes and dependencies
 
-For non-trivial work, the agent marks where an episode starts and ends:
+For work that has more than one step, the agent marks where an episode starts
+and ends:
 
 - An `exploration` episode gathers information. It must end with a concise
   conclusion.
@@ -119,9 +120,9 @@ investigation around until the action that used it has also been archived.
 ## Eviction order
 
 Before each model request, Harnez recalculates the conversation working set and
-includes the fixed cost of the permanent tool definitions. The default
-conversation budget defaults to the model's usable input window. At 80%
-pressure, Harnez aims for 60% of the usable budget.
+includes the fixed cost of the permanent tool definitions. The conversation
+budget defaults to the model's usable input window. At 80% pressure, Harnez
+aims for 60% of that budget.
 When LLM compaction is enabled, Harnez attempts a bounded condensation when the
 source prefix and a 4,096-token reserve fit. The LLM has no tools and must
 return validated memory JSON. Invalid output can be retried once. An
@@ -134,7 +135,7 @@ episode conclusions, and observation references. If the lane changes while an
 LLM condensation is running, Harnez discards the stale result and replans with
 the deterministic fallback.
 
-For session history, it removes context in three passes:
+Harnez removes session history in three passes:
 
 1. Completed tool exchanges are compacted first. Writes and edits have early
    priority because their effects already exist in the repository. Reads use
@@ -174,7 +175,7 @@ output once. Explicit `condense_context` remains deterministic and does not make
 a model call.
 
 Automatic LLM and deterministic fallback attempts emit compaction lifecycle
-events; successful explicit condensation emits an explicit event and the TUI
+events. Successful explicit condensation emits an explicit event, and the TUI
 displays its milestone. A no-op or failed call leaves storage unchanged.
 Pinned-history rolling summary remains the final emergency budget fallback.
 

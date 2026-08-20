@@ -49,6 +49,28 @@ export type ImageAttachment = {
 	data: string;
 };
 
+export type SubagentState =
+	| "running"
+	| "cancelling"
+	| "completed"
+	| "blocked"
+	| "failed"
+	| "cancelled";
+
+export type SubagentStateEvent = {
+	type: "subagent-state";
+	agent: {
+		id: string;
+		profile: string;
+		description: string;
+		state: SubagentState;
+		startedAt?: string;
+		finishedAt?: string;
+		summary?: string;
+		toolSubject?: string;
+	};
+};
+
 type UserInput = { text: string; images?: ImageAttachment[] };
 
 export function displayUserInput(
@@ -119,6 +141,7 @@ export type ClientCommand =
 	| { type: "cycle-model" };
 
 export type ServerEvent =
+	| SubagentStateEvent
 	| { type: "session"; sessionId: string }
 	| { type: "user"; text: string; id?: string }
 	| { type: "assistant-delta"; text: string }

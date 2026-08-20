@@ -170,6 +170,20 @@ export type SubagentResult = {
 	unresolvedIssues: string[];
 	artifactRefs: string[];
 };
+export type SubagentState =
+	| "running"
+	| "cancelling"
+	| "completed"
+	| "blocked"
+	| "failed"
+	| "cancelled";
+export type PublicSubagentRecord = {
+	id: string;
+	profile: string;
+	description: string;
+	state: SubagentState;
+	result?: SubagentResult;
+};
 export type ContextInspection = {
 	sessionId: string;
 	estimatedTokens: number;

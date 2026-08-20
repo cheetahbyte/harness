@@ -332,7 +332,10 @@ export class ContextManager {
 	private persist(input: RecordInput): ContextItem {
 		const knownKind = kinds.has(input.kind);
 		const createdAt = input.createdAt ?? new Date().toISOString();
-		const activeEpisode = this.activeEpisode(input.sessionId);
+		const activeEpisode = this.activeEpisode(
+			input.sessionId,
+			input.originLane ?? "main",
+		);
 		return this.store.appendContextItem({
 			...input,
 			id: input.id ?? crypto.randomUUID(),
@@ -351,23 +354,33 @@ export class ContextManager {
 		});
 	}
 
-	private activeEpisode(sessionId: string): ContextEpisode | undefined {
-		if (!this.activeEpisodes.has(sessionId))
+	private activeEpisode(
+		sessionId: string,
+		laneId = "main",
+	): ContextEpisode | undefined {
+		const key = `${sessionId}:${laneId}`;
+		if (!this.activeEpisodes.has(key))
 			this.activeEpisodes.set(
-				sessionId,
+				key,
 				replayEpisodes(this.store.episodeEvents(sessionId)).find(
 					({ episode }) => episode.state === "active",
 				)?.episode,
 			);
-		return this.activeEpisodes.get(sessionId);
+		return this.activeEpisodes.get(key);
 	}
 
-	private activeEpisodeIds(sessionId: string): Set<string> {
+	private activeEpisodeIds(sessionId: string, laneId = "main"): Set<string> {
 		return new Set(
-			this.episodes(sessionId)
+			this.episodes(sessionId, laneId)
 				.filter((episode) => episode.state === "active")
 				.map((episode) => episode.id),
 		);
+	}
+
+	private laneItems(sessionId: string, laneId: string): ContextItem[] {
+		return laneId === "main"
+			? this.store.contextItems(sessionId)
+			: this.store.contextPath(sessionId, laneId);
 	}
 
 	archive(id: string, reason: string): void {
@@ -382,10 +395,17 @@ export class ContextManager {
 		);
 	}
 
-	completeTurn(sessionId: string, newToolResultIds: string[] = []): void {
+	completeTurn(
+		sessionId: string,
+		laneIdOrIds: string | string[] = "main",
+		ids: string[] = [],
+	): void {
+		const laneId = typeof laneIdOrIds === "string" ? laneIdOrIds : "main";
+		const newToolResultIds =
+			typeof laneIdOrIds === "string" ? ids : laneIdOrIds;
 		const newToolCallIds = new Set(newToolResultIds);
-		const items = this.store.contextItems(sessionId);
-		const activeEpisodeIds = this.activeEpisodeIds(sessionId);
+		const items = this.laneItems(sessionId, laneId);
+		const activeEpisodeIds = this.activeEpisodeIds(sessionId, laneId);
 		const retainedGroups = new Set<string>();
 		for (const item of items)
 			if (
@@ -417,9 +437,15 @@ export class ContextManager {
 				);
 	}
 
-	completeGroup(sessionId: string, groupId: string): void {
-		const activeEpisodeIds = this.activeEpisodeIds(sessionId);
-		for (const item of this.store.contextItems(sessionId))
+	completeGroup(
+		sessionId: string,
+		laneIdOrGroup: string,
+		maybeGroup?: string,
+	): void {
+		const laneId = maybeGroup === undefined ? "main" : laneIdOrGroup;
+		const groupId = maybeGroup ?? laneIdOrGroup;
+		const activeEpisodeIds = this.activeEpisodeIds(sessionId, laneId);
+		for (const item of this.laneItems(sessionId, laneId))
 			if (
 				item.groupId === groupId &&
 				item.lifecycle === "active" &&
@@ -436,17 +462,27 @@ export class ContextManager {
 
 	startEpisode(
 		sessionId: string,
-		input: {
+		laneIdOrInput:
+			| string
+			| {
+					name: string;
+					kind: ContextEpisode["kind"];
+					dependencies?: string[];
+			  },
+		input?: {
 			name: string;
 			kind: ContextEpisode["kind"];
 			dependencies?: string[];
 		},
 	): ContextEpisode {
+		const laneId = typeof laneIdOrInput === "string" ? laneIdOrInput : "main";
+		if (typeof laneIdOrInput !== "string") input = laneIdOrInput;
+		if (!input) throw new Error("Episode input is required");
 		if (input.kind !== "exploration" && input.kind !== "action")
 			throw new Error("Episode kind must be exploration or action");
 		const name = input.name.trim();
 		if (!name) throw new Error("Episode name cannot be empty");
-		const episodes = this.episodes(sessionId);
+		const episodes = this.episodes(sessionId, laneId);
 		if (episodes.some((episode) => episode.state === "active"))
 			throw new Error("An episode is already active");
 		if (episodes.some((episode) => episode.name === name))
@@ -491,12 +527,19 @@ export class ContextManager {
 			dependencies: [...dependencies],
 			state: "active",
 		};
-		this.activeEpisodes.set(sessionId, episode);
+		this.activeEpisodes.set(`${sessionId}:${laneId}`, episode);
 		return episode;
 	}
 
-	endEpisode(sessionId: string, conclusion?: string): ContextEpisode {
-		const episode = this.activeEpisode(sessionId);
+	endEpisode(
+		sessionId: string,
+		laneIdOrConclusion?: string,
+		maybeConclusion?: string,
+	): ContextEpisode {
+		const laneId = maybeConclusion === undefined ? "main" : laneIdOrConclusion!;
+		const conclusion =
+			maybeConclusion === undefined ? laneIdOrConclusion : maybeConclusion;
+		const episode = this.activeEpisode(sessionId, laneId);
 		if (!episode) throw new Error("No active episode");
 		const trimmedConclusion = conclusion?.trim();
 		if (episode.kind === "exploration" && !trimmedConclusion)
@@ -523,13 +566,13 @@ export class ContextManager {
 				? {}
 				: { conclusion: trimmedConclusion }),
 		};
-		this.activeEpisodes.set(sessionId, undefined);
+		this.activeEpisodes.set(`${sessionId}:${laneId}`, undefined);
 		return completed;
 	}
 
-	episodes(sessionId: string): ContextEpisode[] {
+	episodes(sessionId: string, laneId = "main"): ContextEpisode[] {
 		const snapshots = replayEpisodes(this.store.episodeEvents(sessionId));
-		const items = this.store.contextItems(sessionId);
+		const items = this.laneItems(sessionId, laneId);
 		return episodeStates(items, snapshots);
 	}
 
@@ -559,7 +602,11 @@ export class ContextManager {
 				item.kind === "assistant"
 					? userVisibleAssistant(item.payload)
 					: undefined;
-			if (payload && JSON.stringify(payload) === JSON.stringify(item.payload)) {
+			if (
+				payload &&
+				item.episodeId === undefined &&
+				JSON.stringify(payload) === JSON.stringify(item.payload)
+			) {
 				this.store.setContextLifecycle(
 					item.id,
 					"retained",

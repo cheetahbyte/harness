@@ -5,9 +5,9 @@ slug: architecture
 
 # Architecture
 
-Harnez uses a local client/server architecture. Running `harnez` connects to
-an existing server or starts one. From the outside, it should still feel like
-one application.
+Harnez uses a local client/server architecture. Running `harnez` connects to an
+existing server or starts one. The client and server still work as one
+application.
 
 ## Runtime
 
@@ -17,6 +17,14 @@ client, so the interface can be killed and reattached without losing work.
 Each top-level request runs inside a fresh
 [task runtime](/docs/architecture/task-runtime) with its own capability
 snapshot and execution ledger.
+
+The server-owned subagent manager coordinates isolated child runs. It enforces
+the 16-child limit, owns lifecycle state, cancellation, waiters, and recovery,
+and publishes live state to the TUI. It does not own model execution or
+conversation storage: the task runtime and agent runtime execute each child,
+while SQLite child lanes, task records, and validated handoffs remain the
+authoritative durable state. Live execution state is memory-only and is not
+resumed after a server restart.
 
 ```mermaid
 flowchart LR
@@ -38,10 +46,9 @@ creates a recovery checkpoint retaining the current turn and retries once.
 
 ## Agent loop
 
-A turn is a straight line: a user message goes through context construction
-into a model call; tool calls come back, run, and their results feed back
-into context for the next model call. It ends when the model responds
-without requesting further action.
+A turn sends a user message through context construction into a model call. Tool
+calls run and their results return to context for the next model call. The turn
+ends when the model responds without requesting further action.
 
 ```text
 User message → context → model call → tool calls
@@ -59,21 +66,21 @@ Three inputs steer that loop from the TUI:
 
 ## Subagents
 
-Subagents are isolated agents with predefined profiles (`implementer`,
-`explorer`, `reviewer`, and similar). A subagent doesn't inherit the parent's
-whole transcript. It starts from its profile, relevant skills, applicable
-repository instructions, and an explicit task brief. It reports back a
-compact result: status, changes, verification performed, and anything
-unresolved. The parent never imports a child's raw transcript.
+Subagents are isolated agents with predefined profiles, such as `implementer`,
+`explorer`, and `reviewer`. A subagent does not inherit the parent's full
+transcript. It starts with its profile, relevant skills, applicable repository
+instructions, and an explicit task brief. It reports status, changes,
+verification, and unresolved issues. The parent never imports a child's raw
+transcript.
 
 ## Context management
 
-Harnez separates the lossless session history from the bounded working set
-sent to a model. Every context item is tracked as `pinned`, `active`,
-`retained`, or `archived`. System instructions remain protected; user messages
-and explicit pins collapse into one bounded rolling summary only as a final
-fallback. Tool output is externalized at creation. The model sees a bounded
-preview and a reference it can use to recall the exact result later.
+Harnez separates lossless session history from the bounded working set sent to
+a model. Every context item is tracked as `pinned`, `active`, `retained`, or
+`archived`. System instructions remain protected. User messages and explicit
+pins collapse into one bounded rolling summary only as a final fallback. Tool
+output is externalized when Harnez creates it. The model sees a bounded preview
+and a reference that it can use to recall the exact result later.
 
 When the context budget reaches 80%, Harnez targets 60% of the usable input
 budget. If LLM compaction is enabled, it attempts a bounded condensation before
@@ -81,11 +88,11 @@ archiving completed tool exchanges and work in a deterministic order. Failed
 condensation uses the deterministic checkpoint fallback; disabled LLM
 compaction defers fallback until the budget is exceeded. Capability content is
 charged against the same final input budget.
-Nothing is deleted; the full event history persists independently of what's
-currently in the model's context. Main and child lanes share immutable prefix
-nodes but have independent heads and revisions. Checkpoints record their
-covered range and exact retained tail, so a restart reconstructs the same
-provider-visible history.
+Nothing is deleted. The full event history persists independently of the
+model's current context. Main and child lanes share immutable prefix nodes but
+have independent heads and revisions. Checkpoints record their covered range
+and exact retained tail, so a restart reconstructs the same provider-visible
+history.
 
 ## Tool discovery
 

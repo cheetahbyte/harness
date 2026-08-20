@@ -5,24 +5,22 @@ slug: introduction
 
 # Introduction
 
-Harnez is a minimal harness for coding agents. It ships a server process that
-runs the agent loop, and a terminal UI to drive it. That's the whole surface
-area.
+Harnez is a small harness for coding agents. It runs the agent loop in a
+server process and provides a terminal UI for interacting with it.
 
-It is model-agnostic. Plug in any provider through the underlying agent core.
-Otherwise, it stays out of your way: no dashboard, no plugin marketplace, and
-no config you didn't ask for.
+Harnez is model agnostic. You can connect any provider supported by the
+underlying agent core. It does not include a dashboard, plugin marketplace, or
+configuration that you did not request.
 
 ```text
 bun packages/server/src/index.ts
 ```
 
-## Why a harness, not a framework
+## Why a harness instead of a framework
 
-Harnez is opinionated about one workflow: terminal-first coding agents. It
-doesn't try to be a general extension platform. There's no plugin
-marketplace and no public SDK. Good internal modularity is a goal; public
-extensibility isn't.
+Harnez focuses on terminal-first coding agents. It is not a general extension
+platform. It has no plugin marketplace or public SDK. The code is modular
+internally, but the project does not provide a public extension API.
 
 > [!TIP] Where to go next
 > Start with [Installation](/docs/installation) to get the binary running,
@@ -31,14 +29,13 @@ extensibility isn't.
 
 ## Design principles
 
-- **Coding-first, not coding-bound.** Software development gets the strongest
-  UX and tooling, but the runtime doesn't assume it. Research, document
-  analysis, and other agentic workflows work too.
-- **Model-agnostic.** Models are runtime dependencies, not architectural
-  foundations. Different agents in the same session can use different
-  models.
-- **Trusted execution.** Harnez doesn't gate ordinary reads, writes, edits,
-  or shell commands behind approval prompts. Control comes from visibility,
-  steering, and interruption instead.
-- **Context is scarce; execution state is not.** Large tool output is
-  externalized rather than stuffed into the model's context window.
+- **Coding first, not coding only.** Software development has the strongest
+  user experience and tooling, but the runtime does not require it. You can
+  also use Harnez for research, document analysis, and other agent workflows.
+- **Model agnostic.** Models are runtime dependencies, not architectural
+  foundations. Agents in the same session can use different models.
+- **Trusted execution.** Harnez does not require approval prompts for ordinary
+  reads, writes, edits, or shell commands. You control the session through
+  visibility, steering, and interruption.
+- **Context is scarce, but execution state is not.** Harnez stores large tool
+  output outside the model's context window.

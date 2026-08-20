@@ -6,7 +6,7 @@ slug: advanced/mcp
 # MCP servers
 
 Harnez connects to Model Context Protocol servers and adds their tools to the
-same capability catalog as its built-in tools. Configuration uses the
+capability catalog with its built-in tools. Configuration uses the
 [Agent Plugins](https://agent-plugins.org/) `mcp.json` format, so the same file
 works in other clients that read it.
 
@@ -151,16 +151,15 @@ server reports.
 
 The Harnez server is one daemon shared by every project on the machine, but
 `mcp.json` is resolved per workspace. A session opened in one project sees that
-project's `.harnez/mcp.json` plus your user file, never another project's — and
-never another project's binaries, which is what a relative `command` in it would
-resolve to.
+project's `.harnez/mcp.json` and your user file. It never loads another
+project's configuration or binaries. This also controls where a relative
+`command` resolves.
 
-Two projects that configure the same server share one child process rather than
-running it twice. Harnez matches on what the server *is* — its transport,
-command, arguments, environment, and roots — not on the name you gave it, so the
-same server named `gh` in one project and `github` in another is still one
-process. Its `PLUGIN_DATA` directory is derived from the configured name, so
-deliberately separate installations stay separate.
+Two projects that configure the same server share one child process. Harnez
+matches the server's transport, command, arguments, environment, and roots, not
+the configured name. The same server named `gh` in one project and `github` in
+another still uses one process. Its `PLUGIN_DATA` directory comes from the
+configured name, so deliberately separate installations stay separate.
 
 ## Idle servers
 
@@ -171,8 +170,8 @@ exactly the same capabilities as a running one, and `/mcp` marks it `idle`.
 
 ## Switching servers on and off
 
-`/mcp` lists every server configured for the current workspace — user file and
-project file alike — with where it came from and how many tools it reported:
+`/mcp` lists every server configured for the current workspace, from both the
+user and project files. It shows each server's source and tool count:
 
 ```text
 MCP Servers · 2/3 connected
@@ -183,10 +182,11 @@ MCP Servers · 2/3 connected
 ```
 
 `Space` switches a server on or off, `Enter` saves, and `Esc` closes the menu.
-Typing filters the list. Saving takes effect immediately: a server switched off
-is released, and its child stops unless another workspace still has it on. One
-switched on connects before the menu redraws with the result — including the
-reason if it failed. A server that is off contributes nothing to the catalog.
+Typing filters the list. Saving takes effect immediately. Harnez releases a
+server that you switch off and stops its child unless another workspace still
+has it on. Harnez connects a server that you switch on before the menu redraws,
+including the reason if the connection fails. An off server contributes nothing
+to the catalog.
 
 The tool count is what a server costs during discovery: entries the model pages
 through when it searches. It is not a per-turn cost. MCP tools stay out of every

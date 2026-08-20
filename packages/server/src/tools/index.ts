@@ -10,13 +10,13 @@ import { WriteTool } from "./write";
 export class CoreTools {
 	private readonly tools: WorkspaceTool[];
 
-	constructor(workspace: string) {
+	constructor(workspace: string, allowedNames?: ReadonlySet<string>) {
 		this.tools = [
 			new ReadTool(workspace),
 			new WriteTool(workspace),
 			new EditTool(workspace),
 			new BashTool(workspace),
-		];
+		].filter((tool) => !allowedNames || allowedNames.has(tool.name));
 	}
 
 	agentTools(): AgentTool[] {

@@ -5,9 +5,9 @@ slug: advanced/prompt-templates
 
 # Prompt templates
 
-A prompt template is a reusable prompt stored in a Markdown file. Typing
-`/<name>` as the first word of a prompt replaces it with the file's contents
-before the task starts, so a long instruction you send often becomes one word.
+A prompt template is a reusable prompt stored in a Markdown file. When you type
+`/<name>` as the first word of a prompt, Harnez replaces it with the file's
+contents before the task starts. A long instruction can then become one word.
 
 Templates are text, not tools. They do not add capabilities to a task; they
 only decide what the task's first message says.
@@ -74,8 +74,8 @@ and built-in commands:
 /review-pr
 ```
 
-Anything you type after the name is appended to the expanded prompt as a
-separate paragraph, so context stays with the invocation:
+Harnez appends anything you type after the name to the expanded prompt as a
+separate paragraph. This keeps the extra context with the invocation:
 
 ```text
 /review-pr focus on the migration

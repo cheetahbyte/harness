@@ -5,8 +5,8 @@ slug: advanced/unknown-providers
 
 # Add an unknown provider
 
-Harnez can use a provider that is not built into its model catalog when the
-provider exposes an OpenAI-compatible Chat Completions API.
+Harnez can use providers outside its model catalog when they expose an
+OpenAI-compatible Chat Completions API.
 
 ## Add the provider
 
@@ -29,8 +29,8 @@ Add a named provider to `~/.config/harnez/settings.json`:
 }
 ```
 
-The provider name is your own stable ID. `models` contains the exact model IDs
-accepted by the endpoint. Keep API keys out of this file.
+Choose a stable ID for the provider. `models` contains the exact model IDs that
+the endpoint accepts. Keep API keys out of this file.
 
 Restart Harnez after editing the settings file:
 
@@ -82,8 +82,8 @@ For a local server that does not require authentication, use `auth: "none"`:
 }
 ```
 
-No `/login` is required. Harnez sends the placeholder header
-`Authorization: Bearer unused`, which the local server must tolerate.
+You do not need `/login`. Harnez sends the placeholder header
+`Authorization: Bearer unused`; the local server must tolerate it.
 
 ## Compatibility requirements
 

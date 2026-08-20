@@ -56,8 +56,12 @@ import {
 	SettingsStore,
 } from "./settings-store";
 import { availableSkills } from "./skills";
+import { SubagentManager } from "./subagents/manager";
+import { resolveAgentProfile, scanAgentProfiles } from "./subagents/profiles";
+import { parentSubagentTools } from "./subagents/tools";
 import type { TaskRuntime } from "./task-runtime";
 import type { RuntimeEventSink } from "./telemetry/events";
+import { CoreTools } from "./tools";
 
 export class HarnezServer {
 	private readonly telemetrySink: RuntimeEventSink | undefined;
@@ -74,6 +78,7 @@ export class HarnezServer {
 	/** Shared by every workspace, so one server is one child process. */
 	private readonly mcpPool = new McpConnectionPool();
 	private readonly taskRunner: SessionTaskRunner;
+	private readonly subagents: SubagentManager;
 	private readonly authentication: SessionAuthentication;
 	private readonly namer: SessionNamer;
 	private readonly manuallyNamedSessions = new Set<string>();
@@ -135,6 +140,55 @@ export class HarnezServer {
 			emit: (sessionId, event) => this.publish(sessionId, event),
 			...(options.telemetry ? { sink: options.telemetry } : {}),
 		});
+		this.subagents = new SubagentManager({
+			store: this.store,
+			context: this.context,
+			resolveProfile: async (sessionId, name) =>
+				resolveAgentProfile(
+					await scanAgentProfiles(this.workspace(sessionId)),
+					name,
+					{
+						parentModel: this.modelConfig(sessionId),
+						resolveModel: (config) => {
+							providerModels(
+								config,
+								this.credentials,
+								this.modelsFor(sessionId) as Models,
+							);
+						},
+						capabilities: new CoreTools(this.workspace(sessionId)).capabilities(
+							"subagent-profile",
+						),
+					},
+				),
+			execute: async (request) => this.taskRunner.runSubagent(request),
+			steer: (agentId, message) =>
+				this.runtime.steer(agentId, message, {
+					onStarted() {},
+					onFinished() {},
+				}),
+			forget: (agentId) => this.runtime.forget(agentId),
+			emit: (sessionId, record) =>
+				this.publish(
+					sessionId,
+					{
+						type: "subagent-state",
+						agent: {
+							id: record.id,
+							profile: record.profile,
+							description: record.description,
+							state: record.state,
+							...(record.startedAt ? { startedAt: record.startedAt } : {}),
+							...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
+						},
+					},
+					false,
+				),
+		});
+		this.taskRunner.setSubagentTools((sessionId) =>
+			parentSubagentTools(this.subagents, sessionId),
+		);
+		this.subagents.recover();
 	}
 
 	/** Releases process-level resources; stdio MCP servers are child processes. */
@@ -172,7 +226,7 @@ export class HarnezServer {
 
 	contextStatus(id: string) {
 		this.session(id);
-		return this.runtime.inspect(id);
+		return this.runtime.inspect(id, id, "main");
 	}
 
 	acceptSubagentResult(id: string, result: SubagentResult, subagentId: string) {
@@ -220,6 +274,8 @@ export class HarnezServer {
 		session.events.on("event", listener);
 		for (const { seq, event } of this.store.eventsFrom(id, from))
 			listener(event, seq);
+		for (const agent of this.subagents.snapshot(id))
+			listener({ type: "subagent-state", agent: agent });
 		const model = this.modelConfig(id);
 		if (model) listener({ type: "model-config", config: model });
 		listener({ type: "fast-cycle", entries: this.settingsFor(id).fastCycle() });

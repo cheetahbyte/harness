@@ -5,10 +5,9 @@ slug: architecture/tool-discovery
 
 # Tool discovery
 
-Harnez gives each task an immutable catalog snapshot. The catalog currently
-contains workspace tools and model-invocable skills. Discovery returns trusted
-metadata first, without putting every tool schema or skill body into the model
-context.
+Harnez gives each task an immutable catalog snapshot. The catalog contains
+workspace tools and model-invocable skills. Discovery returns trusted metadata
+first, so the model does not receive every tool schema or skill body at once.
 
 Core workspace tools are loaded when a task starts. The same discovery path
 supports capabilities that are not already loaded.
@@ -36,14 +35,14 @@ fail if the task's capability-context budget cannot fit the new content.
 
 ## Search behavior
 
-List and search return 20 results by default and accept a limit up to 100.
+List and search return 20 results by default and accept a limit of up to 100.
 Longer result sets use a cursor. Search normalizes the query, splits it into
 terms, and scores exact names, name terms, tags, descriptions, provider names,
 and capability kinds. Equal scores are ordered by canonical capability ID.
 
-The analyzer version is returned as `lexical-v1`. There is no embedding lookup,
-second model, or hidden semantic router. A search with no results only means
-that the lexical index found no match.
+The analyzer version is returned as `lexical-v1`. Harnez does not use
+embeddings, a second model, or a hidden semantic router. A search with no
+results means that the lexical index found no match.
 
 ## Identity and authority
 
@@ -69,8 +68,8 @@ A skill needs valid frontmatter with a `name` or `id` and a `description`.
 Skills are model-discoverable by default. Set `disable-model-invocation: true`
 to keep a skill available for manual use without exposing it to model
 discovery. Harnez hashes the same bytes it uses to parse the manifest.
-Activation reads the file again and verifies both the manifest and body hashes
-before adding the body to task context.
+Activation reads the file again and verifies both hashes before adding the body
+to task context.
 
 Invalid manifests are reported as diagnostics and left out of model discovery.
 
