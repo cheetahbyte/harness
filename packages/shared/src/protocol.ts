@@ -49,7 +49,7 @@ export type ImageAttachment = {
 	data: string;
 };
 
-export type SubagentState =
+type SubagentState =
 	| "running"
 	| "cancelling"
 	| "completed"

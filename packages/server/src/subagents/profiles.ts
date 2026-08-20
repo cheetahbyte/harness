@@ -7,11 +7,11 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ModelConfig } from "../../../shared/src/protocol";
 import type { CapabilityInput } from "../capabilities/types";
 
-export type ProfileCapabilities =
+type ProfileCapabilities =
 	| "all"
 	| { core: string[]; skills: string[]; mcp: string[] };
 
-export type AgentProfile = {
+type AgentProfile = {
 	name: string;
 	description: string;
 	body: string;
@@ -21,7 +21,7 @@ export type AgentProfile = {
 	path: string;
 };
 
-export type AgentProfileDiagnostic = {
+type AgentProfileDiagnostic = {
 	path: string;
 	state: "invalid" | "unreadable" | "shadowed";
 	error: string;

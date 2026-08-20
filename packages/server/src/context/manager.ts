@@ -370,11 +370,8 @@ export class ContextManager {
 	}
 
 	private activeEpisodeIds(sessionId: string, laneId = "main"): Set<string> {
-		return new Set(
-			this.episodes(sessionId, laneId)
-				.filter((episode) => episode.state === "active")
-				.map((episode) => episode.id),
-		);
+		const episode = this.activeEpisode(sessionId, laneId);
+		return episode ? new Set([episode.id]) : new Set();
 	}
 
 	private laneItems(sessionId: string, laneId: string): ContextItem[] {

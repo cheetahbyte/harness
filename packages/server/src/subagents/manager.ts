@@ -8,7 +8,7 @@ import type { SessionStore } from "../sessions/store";
 import type { TaskRuntime } from "../task-runtime";
 import type { ResolvedAgentProfile } from "./profiles";
 
-export const MAX_CONCURRENT_SUBAGENTS = 16;
+const MAX_CONCURRENT_SUBAGENTS = 16;
 
 export type SubagentExecutionRequest = {
 	sessionId: string;
