@@ -149,6 +149,15 @@ test("compaction settings default on and project settings override global settin
 		expect(new SettingsStore(settingsFile(dir, "empty.json", {}), settingsFile(dir, "empty-project.json", {})).compactionEnabled()).toBe(true);
 });
 
+test("subagent settings are layered and range checked", () => {
+	const dir = workspace();
+	const global = settingsFile(dir, "global.json", { subagents: { maxConcurrent: 3, maxDepth: 4 } });
+	const project = settingsFile(dir, "project.json", { subagents: { maxConcurrent: 2 } });
+	expect(new SettingsStore(global, project).subagents()).toEqual({ maxConcurrent: 2, maxDepth: 4 });
+	const invalid = settingsFile(dir, "invalid.json", { subagents: { maxDepth: 9 } });
+	expect(() => new SettingsStore(invalid, project)).toThrow("subagents.maxDepth");
+});
+
 test.each([
 	[[], "providers must be an object"],
 	[{ " ": {} }, 'provider " " ID must not be blank'],

@@ -26,8 +26,13 @@ import type { McpRegistry, McpToolDescriptor } from "../mcp/registry";
 import { expandPrompt, scanPrompts } from "../prompts";
 import { activateSkill, type SkillSnapshotEntry, scanSkills } from "../skills";
 import type { SubagentExecutionRequest } from "../subagents/manager";
+import { memoryIndex, profileMemoryTools } from "../subagents/memory";
 import type { ResolvedAgentProfile } from "../subagents/profiles";
 import { submitSubagentResultTool } from "../subagents/tools";
+import {
+	finish as finishWorktree,
+	prepare as prepareWorktree,
+} from "../subagents/worktree";
 import { TaskRuntime, type TaskTerminalStatus } from "../task-runtime";
 import type { RuntimeEventSink } from "../telemetry/events";
 import { tokenCost } from "../token-cost";
@@ -54,6 +59,7 @@ export type RunningTask = {
 	mcp: Pick<McpRegistry, "call">;
 	prompt: string;
 	contextWatermark: number;
+	memoryTools?: AgentTool[];
 };
 
 type RunnerOptions = {
@@ -93,32 +99,45 @@ export class SessionTaskRunner {
 		request.signal.addEventListener("abort", () => controller.abort(), {
 			once: true,
 		});
+		const parentWorkspace = this.options.workspace(request.sessionId);
+		const lease =
+			request.profile.isolation === "worktree"
+				? await prepareWorktree(parentWorkspace, request.agentId)
+				: undefined;
 		const running = await this.createTask({
 			id: request.sessionId,
 			text: `${request.profile.body}\n\n${request.task}\n\nBefore ending, call submit_subagent_result exactly once with your structured handoff.`,
 			images: [],
 			controller,
 			laneId: request.laneId,
-			taskId: request.agentId,
+			taskId: request.taskId,
 			config: request.profile.modelConfig,
 			profile: request.profile,
+			...(lease ? { workspaceOverride: lease.path } : {}),
 		});
 		request.onRuntime(running.task);
-		await this.options.runtime.run({
-			sessionId: request.sessionId,
-			agentId: request.agentId,
-			laneId: request.laneId,
-			text: running.prompt,
-			config: request.profile.modelConfig,
-			tools: running.tools,
-			task: running.task,
-			skills: running.skills,
-			mcpTools: running.mcpTools,
-			mcp: running.mcp,
-			signal: controller.signal,
-			emit: (event) => this.options.emit(request.sessionId, event),
-			extraTools: [submitSubagentResultTool(request.submit)],
-		});
+		try {
+			await this.options.runtime.run({
+				sessionId: request.sessionId,
+				agentId: request.agentId,
+				laneId: request.laneId,
+				text: running.prompt,
+				config: request.profile.modelConfig,
+				tools: running.tools,
+				task: running.task,
+				skills: running.skills,
+				mcpTools: running.mcpTools,
+				mcp: running.mcp,
+				signal: controller.signal,
+				emit: (event) => this.options.emit(request.sessionId, event),
+				extraTools: [
+					...(running.memoryTools ?? []),
+					submitSubagentResultTool(request.submit),
+				],
+			});
+		} finally {
+			if (lease) await finishWorktree(lease);
+		}
 	}
 
 	async run(input: RunInput): Promise<void> {
@@ -456,6 +475,7 @@ export class SessionTaskRunner {
 		taskId,
 		config = this.options.modelConfig(id),
 		profile,
+		workspaceOverride,
 	}: {
 		id: string;
 		text: string;
@@ -467,6 +487,7 @@ export class SessionTaskRunner {
 		taskId?: string;
 		config?: ModelConfig;
 		profile?: ResolvedAgentProfile;
+		workspaceOverride?: string;
 	}): Promise<RunningTask> {
 		if (images.length) {
 			if (
@@ -476,8 +497,16 @@ export class SessionTaskRunner {
 		}
 		const bindingGeneration = crypto.randomUUID();
 		const contextWatermark = this.options.store.contextSequence(id);
-		const workspace = this.options.workspace(id);
+		const workspace = workspaceOverride ?? this.options.workspace(id);
 		const tools = new CoreTools(workspace, profile?.coreNames);
+		const memoryTools = profile?.memory
+			? profileMemoryTools(
+					this.options.workspace(id),
+					profile.name,
+					profile.memory,
+					profile.coreNames.has("write") || profile.coreNames.has("edit"),
+				)
+			: [];
 		const registry = this.options.mcpFor(id);
 		const [scanned, prompts, mcp] = await Promise.all([
 			scanSkills(workspace, undefined, bindingGeneration),
@@ -515,6 +544,13 @@ export class SessionTaskRunner {
 			);
 		/** A template expands before skills are selected, so it can invoke them. */
 		const { text: expanded, template } = expandPrompt(text, prompts.templates);
+		const memory = profile?.memory
+			? await memoryIndex(
+					this.options.workspace(id),
+					profile.name,
+					profile.memory,
+				)
+			: "";
 		if (template)
 			log.info(
 				{ sessionId: id, prompt: template.name, path: template.path },
@@ -578,8 +614,12 @@ export class SessionTaskRunner {
 			skills,
 			mcpTools: childMcpTools,
 			mcp: registry,
-			prompt: withSkippedSkills(prompt, skipped),
+			prompt: withSkippedSkills(
+				memory ? `Durable profile memory:\n${memory}\n\n${prompt}` : prompt,
+				skipped,
+			),
 			contextWatermark,
+			...(memoryTools.length ? { memoryTools } : {}),
 		};
 	}
 

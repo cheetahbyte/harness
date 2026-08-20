@@ -17,6 +17,11 @@ type AgentProfile = {
 	body: string;
 	model?: string;
 	thinking?: ModelThinkingLevel;
+	allowedSubagents: "all" | string[];
+	isolation: "shared" | "worktree";
+	memory?: "project" | "local" | "user";
+	color?: string;
+	skills: string[];
 	capabilities: ProfileCapabilities;
 	path: string;
 };
@@ -36,6 +41,7 @@ export type AgentProfileEnvironment = {
 	parentModel: ModelConfig | undefined;
 	resolveModel: (config: ModelConfig) => void;
 	capabilities: readonly CapabilityInput[];
+	models?: readonly { provider: string; model: string }[];
 };
 
 export type ResolvedAgentProfile = Omit<AgentProfile, "capabilities"> & {
@@ -62,6 +68,9 @@ const BUILT_INS: readonly AgentProfile[] = [
 		description: "Handle a bounded task with all workspace capabilities.",
 		body: "Complete only the assigned work package and report a structured result.",
 		capabilities: "all",
+		allowedSubagents: [],
+		isolation: "shared",
+		skills: [],
 		path: "builtin:general-purpose",
 	},
 	{
@@ -70,6 +79,9 @@ const BUILT_INS: readonly AgentProfile[] = [
 			"Inspect the codebase and report evidence without editing files.",
 		body: "Inspect first. Use bash only for read-oriented commands; bash is trusted execution, not a read-only sandbox.",
 		capabilities: { core: ["read", "bash"], skills: [], mcp: [] },
+		allowedSubagents: [],
+		isolation: "shared",
+		skills: [],
 		path: "builtin:explore",
 	},
 ];
@@ -155,6 +167,11 @@ function parseAgentProfile(text: string, path: string): AgentProfile {
 		"model",
 		"thinking",
 		"capabilities",
+		"allowed_subagents",
+		"isolation",
+		"memory",
+		"color",
+		"skills",
 	]);
 	for (const key of Object.keys(fields))
 		if (!allowed.has(key)) throw new Error(`unknown profile field ${key}`);
@@ -183,6 +200,25 @@ function parseAgentProfile(text: string, path: string): AgentProfile {
 			!THINKING_LEVELS.has(thinking as ModelThinkingLevel))
 	)
 		throw new Error(`invalid thinking level ${String(thinking)}`);
+	const allowedSubagents = parseNames(
+		fields["allowed_subagents"],
+		"allowed_subagents",
+		true,
+	);
+	const isolation = fields["isolation"] ?? "shared";
+	if (isolation !== "shared" && isolation !== "worktree")
+		throw new Error("profile isolation must be shared or worktree");
+	const memory = fields["memory"];
+	if (
+		memory !== undefined &&
+		memory !== "project" &&
+		memory !== "local" &&
+		memory !== "user"
+	)
+		throw new Error("profile memory must be project, local, or user");
+	const color = fields["color"];
+	if (color !== undefined && (typeof color !== "string" || !isColor(color)))
+		throw new Error("profile color must be a named palette color or #RRGGBB");
 	return {
 		name,
 		description,
@@ -192,8 +228,53 @@ function parseAgentProfile(text: string, path: string): AgentProfile {
 			? {}
 			: { thinking: thinking as ModelThinkingLevel }),
 		capabilities: parseCapabilities(fields["capabilities"]),
+		allowedSubagents,
+		isolation,
+		...(memory === undefined
+			? {}
+			: { memory: memory as "project" | "local" | "user" }),
+		...(color === undefined ? {} : { color }),
+		skills: parseNames(fields["skills"], "skills"),
 		path,
 	};
+}
+
+function parseNames(value: unknown, field: string): string[];
+function parseNames(
+	value: unknown,
+	field: string,
+	allowAll: true,
+): "all" | string[];
+function parseNames(
+	value: unknown,
+	field: string,
+	allowAll = false,
+): "all" | string[] {
+	if (allowAll && value === "all") return "all";
+	if (value === undefined) return [];
+	if (
+		!Array.isArray(value) ||
+		value.some((item) => typeof item !== "string" || !item.trim())
+	)
+		throw new Error(
+			`profile ${field} must be an array of names${allowAll ? " or all" : ""}`,
+		);
+	return [...value] as string[];
+}
+
+function isColor(value: string): boolean {
+	return (
+		new Set([
+			"red",
+			"blue",
+			"green",
+			"yellow",
+			"purple",
+			"orange",
+			"pink",
+			"cyan",
+		]).has(value) || /^#[0-9a-fA-F]{6}$/.test(value)
+	);
 }
 
 function parseCapabilities(value: unknown): ProfileCapabilities {
@@ -228,15 +309,14 @@ export function resolveAgentProfile(
 	if (!profile) throw new Error(`Unknown subagent profile ${name}`);
 	let modelConfig: ModelConfig;
 	if (profile.model) {
-		const slash = profile.model.indexOf("/");
-		if (slash <= 0 || slash === profile.model.length - 1)
-			throw new Error(`Malformed model reference ${profile.model}`);
+		const resolved = resolveModelReference(profile.model, environment);
+		const slash = resolved.indexOf("/");
 		modelConfig = {
-			...(environment.parentModel?.provider === profile.model.slice(0, slash)
+			...(environment.parentModel?.provider === resolved.slice(0, slash)
 				? { baseUrl: environment.parentModel.baseUrl }
 				: {}),
-			provider: profile.model.slice(0, slash),
-			model: profile.model.slice(slash + 1),
+			provider: resolved.slice(0, slash),
+			model: resolved.slice(slash + 1),
 		};
 	} else if (environment.parentModel)
 		modelConfig = { ...environment.parentModel };
@@ -266,19 +346,72 @@ export function resolveAgentProfile(
 	return { ...profile, modelConfig, capabilities: selected, coreNames };
 }
 
+function resolveModelReference(
+	reference: string,
+	environment: AgentProfileEnvironment,
+): string {
+	if (environment.models === undefined) {
+		if (!reference.includes("/"))
+			throw new Error(`Malformed model reference ${reference}`);
+		return reference;
+	}
+	const available = environment.models;
+	const [provider, model] = reference.includes("/")
+		? reference.split(/\/(.+)/)
+		: [undefined, reference];
+	const normalized = normalizeModel(model);
+	const matches = available.filter(
+		(candidate) =>
+			normalizeModel(candidate.model) === normalized &&
+			(provider === undefined || candidate.provider === provider),
+	);
+	if (matches.length !== 1)
+		throw new Error(
+			matches.length
+				? `Ambiguous model reference ${reference}`
+				: `Unknown model reference ${reference}`,
+		);
+	return `${matches[0]?.provider}/${matches[0]?.model}`;
+}
+
+function normalizeModel(value: string): string {
+	return value
+		.toLowerCase()
+		.replace(/[._-]/g, "")
+		.replace(/\d{4}[._-]?\d{2}[._-]?\d{2}$/, "");
+}
+
 function filterCapabilities(
 	allow: Exclude<ProfileCapabilities, "all">,
 	inputs: readonly CapabilityInput[],
 ): CapabilityInput[] {
+	const mcp = allow.mcp.flatMap((name) => {
+		if (!name.includes("*")) return [name];
+		if (!name.startsWith("mcp__"))
+			throw new Error(`MCP wildcard must begin with mcp__: ${name}`);
+		const expression = new RegExp(
+			`^${name.split("*").map(escapeRegex).join(".*")}$`,
+		);
+		const matches = inputs
+			.filter((input) => input.kind === "tool" && expression.test(input.name))
+			.map((input) => input.name);
+		if (!matches.length)
+			throw new Error(`Unknown capability pattern tool:${name}`);
+		return matches;
+	});
 	const ids = new Set([
 		...allow.core.map((name) => `tool:${name}`),
 		...allow.skills.map((name) => `skill:${name}`),
-		...allow.mcp.map((name) => `tool:${name}`),
+		...mcp.map((name) => `tool:${name}`),
 	]);
 	for (const id of ids)
 		if (!inputs.some((input) => input.id === id))
 			throw new Error(`Unknown capability ${id}`);
 	return inputs.filter((input) => ids.has(input.id));
+}
+
+function escapeRegex(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function errorMessage(error: unknown): string {

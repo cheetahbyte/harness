@@ -50,6 +50,7 @@ export type ImageAttachment = {
 };
 
 type SubagentState =
+	| "queued"
 	| "running"
 	| "cancelling"
 	| "completed"
@@ -61,6 +62,10 @@ export type SubagentStateEvent = {
 	type: "subagent-state";
 	agent: {
 		id: string;
+		parentId?: string;
+		depth?: number;
+		color?: string;
+		resumable?: boolean;
 		profile: string;
 		description: string;
 		state: SubagentState;
@@ -69,6 +74,23 @@ export type SubagentStateEvent = {
 		summary?: string;
 		toolSubject?: string;
 	};
+};
+
+export type SubagentTranscriptEntry = {
+	sequence: number;
+	kind: "user" | "assistant" | "reasoning" | "tool-call" | "tool-result";
+	text: string;
+	detail?: string;
+	subject?: string;
+	id?: string;
+	error?: boolean;
+};
+
+/** Ephemeral child output, kept out of the parent transcript. */
+type SubagentTranscriptEvent = {
+	type: "subagent-transcript";
+	agentId: string;
+	entry: SubagentTranscriptEntry;
 };
 
 type UserInput = { text: string; images?: ImageAttachment[] };
@@ -120,6 +142,9 @@ export type ClientCommand =
 	| { type: "resume-queued"; taskId: string }
 	| { type: "cancel-queued"; taskId: string }
 	| ({ type: "replace-queued"; taskId: string; id?: string } & UserInput)
+	| ({ type: "agent-steer"; id: string } & UserInput)
+	| { type: "agent-cancel"; id: string }
+	| ({ type: "agent-resume"; id: string } & UserInput)
 	| { type: "confirm"; taskId: string; callId: string }
 	| { type: "acknowledge-unknown-effects"; taskId: string }
 	| ({ type: "configure" } & ModelConfig)
@@ -142,6 +167,7 @@ export type ClientCommand =
 
 export type ServerEvent =
 	| SubagentStateEvent
+	| SubagentTranscriptEvent
 	| { type: "session"; sessionId: string }
 	| { type: "user"; text: string; id?: string }
 	| { type: "assistant-delta"; text: string }

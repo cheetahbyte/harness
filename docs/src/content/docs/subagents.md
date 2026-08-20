@@ -36,15 +36,20 @@ capabilities:
   core: [read, bash]
   skills: []
   mcp: []
+allowed_subagents: [reviewer]
+color: cyan
+skills: [api-conventions]
+isolation: worktree
+memory: project
 ---
 Inspect first. Report evidence and unresolved questions.
 ```
 
 The filename supplies `name` when `name` is omitted. Names use lowercase
-letters, digits, and hyphens. The supported fields are `name`, `description`,
-`model`, `thinking`, and `capabilities`. The model must be a configured
-`<provider>/<model>` reference. If `model` is omitted, the child inherits the
-parent model; `thinking` overrides the inherited thinking level when present.
+letters, digits, and hyphens. Supported fields also include `allowed_subagents`,
+`color`, `skills`, `isolation`, and `memory`. Model names may use a configured
+provider/model or a unique fuzzy model name. If `model` is omitted, the child
+inherits the parent model.
 
 Set `capabilities` to `all` or to an object with `core`, `skills`, and `mcp`
 arrays. Each explicit name must exist in the task's workspace snapshot. An empty
@@ -83,6 +88,11 @@ The complete tool set is:
 - `submit_subagent_result` is available only inside a child and submits its
   validated structured handoff.
 
+Operators can use `/agents`, `/agent-steer <id> <message>`,
+`/agent-cancel <id>`, and `/agent-resume <id> <message>`. The HTTP transcript
+projection is `GET /sessions/:sessionId/subagents/:agentId/transcript` with
+bounded `after` and `limit` cursors.
+
 Accepted IDs belong to the parent session. Harnez rejects unknown IDs and IDs
 from other sessions. You can cancel a waiting result call without cancelling
 the child. Cancelling the parent does not cancel its children, and a failed
@@ -96,9 +106,8 @@ assistant, reasoning, tool-call, observation, or compacted-history items. The
 full child trace remains on that lane. Only one validated `SubagentResult` is
 appended to the parent's main lane.
 
-The TUI lists running and cancelling children with their profile, description,
-and elapsed time. Terminal children leave the list and add one short completion,
-failure, or cancellation notice to the transcript.
+The TUI lists queued, live, and terminal children in a tree. Child transcript
+deltas are tagged and stay out of the parent transcript.
 
 Completed handoffs remain available after a restart. If the server restarts
 while a child is running, Harnez closes the child lane and returns a failed
@@ -107,7 +116,7 @@ execution.
 
 ## Current limits
 
-The first release does not include nested subagents, a pending queue, direct
-user steering controls, child transcript browsing, resumable child
-conversations, worktree isolation, memory, profile colors, fuzzy model
-matching, skill preloading, MCP wildcards, or configurable concurrency.
+Nested delegation is explicitly allowlisted and depth-capped. Top-level
+children use the workspace `subagents.maxConcurrent` FIFO limit (1–64).
+Worktree and memory resources are profile-authoritative and do not grant extra
+filesystem authority.

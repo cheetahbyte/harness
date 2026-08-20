@@ -103,6 +103,25 @@ export function parentSubagentTools(
 			execute: async (_id, input) =>
 				text(await manager.cancel(sessionId, (input as { id: string }).id)),
 		},
+		{
+			name: "resume_agent",
+			label: "Resume agent",
+			description:
+				"Resume a terminal subagent conversation with a new message.",
+			parameters: Type.Object(
+				{
+					id: Type.String({ minLength: 1 }),
+					message: Type.String({ minLength: 1 }),
+				},
+				{ additionalProperties: false },
+			),
+			execute: async (_id, input) => {
+				const request = input as { id: string; message: string };
+				return text(
+					await manager.resume(sessionId, request.id, request.message),
+				);
+			},
+		},
 	];
 }
 

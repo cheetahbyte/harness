@@ -143,8 +143,9 @@ export class HarnezServer {
 		this.subagents = new SubagentManager({
 			store: this.store,
 			context: this.context,
-			resolveProfile: async (sessionId, name) =>
-				resolveAgentProfile(
+			resolveProfile: async (sessionId, name) => {
+				const availableModels = await this.modelsFor(sessionId).getAvailable();
+				return resolveAgentProfile(
 					await scanAgentProfiles(this.workspace(sessionId)),
 					name,
 					{
@@ -159,8 +160,13 @@ export class HarnezServer {
 						capabilities: new CoreTools(this.workspace(sessionId)).capabilities(
 							"subagent-profile",
 						),
+						models: availableModels.map((model) => ({
+							provider: model.provider,
+							model: model.id,
+						})),
 					},
-				),
+				);
+			},
 			execute: async (request) => this.taskRunner.runSubagent(request),
 			steer: (agentId, message) =>
 				this.runtime.steer(agentId, message, {
@@ -184,6 +190,7 @@ export class HarnezServer {
 					},
 					false,
 				),
+			limits: (sessionId) => this.settingsFor(sessionId).subagents(),
 		});
 		this.taskRunner.setSubagentTools((sessionId) =>
 			parentSubagentTools(this.subagents, sessionId),
@@ -227,6 +234,27 @@ export class HarnezServer {
 	contextStatus(id: string) {
 		this.session(id);
 		return this.runtime.inspect(id, id, "main");
+	}
+
+	async subagentTranscript(
+		id: string,
+		agentId: string,
+		after = 0,
+		limit = 100,
+	) {
+		await this.subagents.get(id, agentId);
+		return this.store
+			.contextPath(id, agentId)
+			.filter(
+				(item) =>
+					item.sequence > after &&
+					["user", "assistant", "tool-result"].includes(item.kind),
+			)
+			.slice(0, limit);
+	}
+
+	subagentStatus(id: string, agentId: string) {
+		return this.subagents.get(id, agentId);
 	}
 
 	acceptSubagentResult(id: string, result: SubagentResult, subagentId: string) {

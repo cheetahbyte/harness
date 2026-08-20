@@ -8,11 +8,10 @@ import type { SessionStore } from "../sessions/store";
 import type { TaskRuntime } from "../task-runtime";
 import type { ResolvedAgentProfile } from "./profiles";
 
-const MAX_CONCURRENT_SUBAGENTS = 16;
-
 export type SubagentExecutionRequest = {
 	sessionId: string;
 	agentId: string;
+	taskId: string;
 	laneId: string;
 	task: string;
 	profile: ResolvedAgentProfile;
@@ -21,9 +20,20 @@ export type SubagentExecutionRequest = {
 	submit: (result: SubagentResult) => boolean;
 };
 
+export type SubagentActor =
+	| { kind: "operator"; sessionId: string }
+	| { kind: "agent"; sessionId: string; agentId?: string };
+export type SubagentCommand =
+	| { action: "spawn"; profile: string; task: string; description: string }
+	| { action: "get"; id: string; wait?: boolean; signal?: AbortSignal }
+	| { action: "steer"; id: string; message: string }
+	| { action: "cancel"; id: string }
+	| { action: "resume"; id: string; message: string };
+
 type Record = PublicSubagentRecord & {
 	sessionId: string;
 	task: string;
+	runTaskId?: string;
 	startedAt: string;
 	finishedAt?: string;
 	controller: AbortController;
@@ -48,6 +58,7 @@ type Options = {
 			finishedAt?: string;
 		},
 	) => void;
+	limits?: (sessionId: string) => { maxConcurrent: number; maxDepth: number };
 };
 
 const restartResult: SubagentResult = {
@@ -73,72 +84,110 @@ const noHandoff: SubagentResult = {
 	artifactRefs: [],
 };
 const terminal = (state: SubagentState) =>
-	!["running", "cancelling"].includes(state);
+	!["queued", "running", "cancelling"].includes(state);
 
 export class SubagentManager {
 	private readonly records = new Map<string, Record>();
 	constructor(private readonly options: Options) {}
+
+	async dispatch(actor: SubagentActor, command: SubagentCommand) {
+		const sessionId = actor.sessionId;
+		if (command.action === "spawn" && actor.kind === "agent")
+			return this.spawn({
+				sessionId,
+				profile: command.profile,
+				task: command.task,
+				description: command.description,
+				...(actor.agentId === undefined
+					? {}
+					: { parentAgentId: actor.agentId }),
+			});
+		if (command.action !== "spawn" && actor.kind === "agent") {
+			const target = this.options.store.subagent(sessionId, command.id);
+			if (!target || target.parentAgentId !== actor.agentId)
+				throw new Error("Unknown subagent");
+		}
+		switch (command.action) {
+			case "spawn":
+				return this.spawn({ sessionId, ...command });
+			case "get":
+				return this.get(sessionId, command.id, command);
+			case "steer":
+				return this.steer(sessionId, command.id, command.message);
+			case "cancel":
+				return this.cancel(sessionId, command.id);
+			case "resume":
+				return this.resume(sessionId, command.id, command.message);
+		}
+	}
 
 	async spawn(input: {
 		sessionId: string;
 		profile: string;
 		task: string;
 		description: string;
-	}): Promise<{ id: string; state: "running" }> {
+		parentAgentId?: string;
+	}): Promise<{ id: string; state: "queued" | "running" }> {
 		const profile = await this.options.resolveProfile(
 			input.sessionId,
 			input.profile,
 		);
-		if (
-			[...this.records.values()].filter((record) => !terminal(record.state))
-				.length >= MAX_CONCURRENT_SUBAGENTS
-		)
-			throw new Error(
-				`Maximum of ${MAX_CONCURRENT_SUBAGENTS} concurrent subagents reached`,
+		const parent = input.parentAgentId
+			? this.options.store.subagent(input.sessionId, input.parentAgentId)
+			: undefined;
+		if (input.parentAgentId && !parent)
+			throw new Error("Unknown parent subagent");
+		if (parent) {
+			const parentProfile = await this.options.resolveProfile(
+				input.sessionId,
+				parent.profile,
 			);
-		const main = this.options.store.lane(input.sessionId, "main");
-		if (!main?.headItemId)
+			if (
+				parentProfile.allowedSubagents !== "all" &&
+				!parentProfile.allowedSubagents.includes(input.profile)
+			)
+				throw new Error(
+					`Profile ${parent.profile} cannot spawn ${input.profile}`,
+				);
+			if (
+				parent.depth >= (this.options.limits?.(input.sessionId).maxDepth ?? 2)
+			)
+				throw new Error("Maximum subagent nesting depth reached");
+		}
+		if (!this.options.store.lane(input.sessionId, "main")?.headItemId)
 			throw new Error(
 				"Cannot spawn a subagent before the main context is initialized",
 			);
 		const id = crypto.randomUUID();
-		this.options.context.forkLane({
-			sessionId: input.sessionId,
-			name: id,
-			ownerTaskId: id,
-			fromItemId: main.headItemId,
-		});
-		this.options.context.record({
-			sessionId: input.sessionId,
-			originLane: id,
-			kind: "pinned-note",
-			lifecycle: "retained",
-			projection: "omitted",
-			reason: "subagent spawn metadata",
-			payload: {
-				schemaVersion: 1,
-				id,
-				profile: input.profile,
-				description: input.description,
-				task: input.task,
-			},
-			tokenCost: 0,
-		});
 		const record: Record = {
 			id,
 			sessionId: input.sessionId,
 			profile: input.profile,
 			description: input.description,
 			task: input.task,
-			state: "running",
-			startedAt: new Date().toISOString(),
+			state: "queued",
+			...(parent
+				? { parentId: parent.id, depth: parent.depth + 1 }
+				: { depth: 1 }),
+			startedAt: "",
 			controller: new AbortController(),
 			waiters: new Set(),
 		};
 		this.records.set(id, record);
+		this.options.store.createSubagent({
+			id,
+			sessionId: input.sessionId,
+			profile: input.profile,
+			description: input.description,
+			...(parent
+				? { parentAgentId: parent.id, depth: parent.depth + 1 }
+				: { depth: 1 }),
+			state: "queued",
+			pendingMessage: input.task,
+		});
 		this.publish(record);
-		void this.execute(record, profile);
-		return { id, state: "running" };
+		void this.drain(input.sessionId, profile);
+		return { id, state: "queued" };
 	}
 
 	async get(
@@ -167,6 +216,16 @@ export class SubagentManager {
 		id: string,
 	): Promise<{ id: string; state: "cancelling" | "cancelled" }> {
 		const record = this.require(sessionId, id);
+		if (record.state === "queued") {
+			record.state = "cancelled";
+			record.finishedAt = new Date().toISOString();
+			this.options.store.updateSubagent(sessionId, id, {
+				state: "cancelled",
+				finishedAt: record.finishedAt,
+			});
+			this.publish(record);
+			return { id, state: "cancelled" };
+		}
 		if (terminal(record.state)) return { id, state: "cancelled" };
 		if (record.state === "running") {
 			record.state = "cancelling";
@@ -178,6 +237,35 @@ export class SubagentManager {
 			id,
 			state: record.state === "cancelling" ? "cancelling" : "cancelled",
 		};
+	}
+
+	async resume(
+		sessionId: string,
+		id: string,
+		message: string,
+	): Promise<{ id: string; state: "running" }> {
+		const record = this.require(sessionId, id);
+		if (!terminal(record.state) || record.state === "queued")
+			throw new Error("Only terminal subagents can be resumed");
+		const profile = await this.options.resolveProfile(
+			sessionId,
+			record.profile,
+		);
+		const taskId = crypto.randomUUID();
+		const durable = this.options.store.startSubagentRun(sessionId, id, taskId);
+		if (!durable) throw new Error("Subagent is already active");
+		if (!durable.laneId)
+			throw new Error("Subagent has no resumable context lane");
+		this.options.store.reactivateChildLane(sessionId, durable.laneId, taskId);
+		record.task = message;
+		record.runTaskId = taskId;
+		record.startedAt = durable.startedAt ?? new Date().toISOString();
+		delete record.finishedAt;
+		delete record.result;
+		record.state = "running";
+		this.publish(record);
+		void this.execute(record, profile);
+		return { id, state: "running" };
 	}
 
 	snapshot(sessionId: string): PublicSubagentRecord[] {
@@ -211,6 +299,7 @@ export class SubagentManager {
 			await this.options.execute({
 				sessionId: record.sessionId,
 				agentId: record.id,
+				taskId: record.runTaskId ?? record.id,
 				laneId: record.id,
 				task: record.task,
 				profile,
@@ -250,9 +339,14 @@ export class SubagentManager {
 		record.state = state;
 		record.result = result;
 		record.finishedAt = new Date().toISOString();
+		this.options.store.updateSubagent(record.sessionId, record.id, {
+			state,
+			result,
+			finishedAt: record.finishedAt,
+		});
 		this.options.context.finishTask({
 			sessionId: record.sessionId,
-			taskId: record.id,
+			taskId: record.runTaskId ?? record.id,
 			laneId: record.id,
 			status:
 				state === "cancelled"
@@ -267,12 +361,31 @@ export class SubagentManager {
 		this.publish(record);
 		for (const resolve of record.waiters) resolve();
 		record.waiters.clear();
+		void this.drain(record.sessionId);
 	}
 	private require(sessionId: string, id: string): Record {
 		const existing = this.records.get(id);
 		if (existing) {
 			if (existing.sessionId !== sessionId) throw new Error("Unknown subagent");
 			return existing;
+		}
+		const durable = this.options.store.subagent(sessionId, id);
+		if (durable) {
+			const record: Record = {
+				id: durable.id,
+				sessionId: durable.sessionId,
+				profile: durable.profile,
+				description: durable.description,
+				task: durable.pendingMessage ?? "",
+				state: durable.state,
+				...(durable.result ? { result: durable.result } : {}),
+				startedAt: durable.startedAt ?? "",
+				...(durable.finishedAt ? { finishedAt: durable.finishedAt } : {}),
+				controller: new AbortController(),
+				waiters: new Set(),
+			};
+			this.records.set(id, record);
+			return record;
 		}
 		const metadata = this.options.store
 			.subagentMetadata(sessionId)
@@ -324,5 +437,76 @@ export class SubagentManager {
 			startedAt: record.startedAt,
 			...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
 		});
+	}
+
+	private async drain(
+		sessionId: string,
+		initial?: ResolvedAgentProfile,
+	): Promise<void> {
+		const limit = this.options.limits?.(sessionId).maxConcurrent ?? 16;
+		while (
+			[...this.records.values()].filter(
+				(record) =>
+					record.sessionId === sessionId && record.state === "running",
+			).length < limit
+		) {
+			const record = [...this.records.values()].find(
+				(entry) => entry.sessionId === sessionId && entry.state === "queued",
+			);
+			if (!record) return;
+			try {
+				const profile =
+					initial && initial.name === record.profile
+						? initial
+						: await this.options.resolveProfile(sessionId, record.profile);
+				const prefix = this.options.store.contextPath(sessionId, "main")[0];
+				if (!prefix)
+					throw new Error("Cannot spawn without a system context prefix");
+				record.startedAt = new Date().toISOString();
+				record.runTaskId = crypto.randomUUID();
+				this.options.context.forkLane({
+					sessionId,
+					name: record.id,
+					ownerTaskId: record.runTaskId,
+					fromItemId: prefix.id,
+				});
+				this.options.context.record({
+					sessionId,
+					originLane: record.id,
+					kind: "pinned-note",
+					lifecycle: "retained",
+					projection: "omitted",
+					reason: "subagent spawn metadata",
+					payload: {
+						schemaVersion: 1,
+						id: record.id,
+						profile: record.profile,
+						description: record.description,
+						task: record.task,
+					},
+					tokenCost: 0,
+				});
+				record.state = "running";
+				this.options.store.updateSubagent(sessionId, record.id, {
+					laneId: record.id,
+					state: "running",
+					activeTaskId: record.runTaskId,
+					startedAt: record.startedAt,
+				});
+				this.publish(record);
+				void this.execute(record, profile);
+				initial = undefined;
+			} catch {
+				record.state = "failed";
+				record.result = noHandoff;
+				record.finishedAt = new Date().toISOString();
+				this.options.store.updateSubagent(sessionId, record.id, {
+					state: "failed",
+					result: noHandoff,
+					finishedAt: record.finishedAt,
+				});
+				this.publish(record);
+			}
+		}
 	}
 }

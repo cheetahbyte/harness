@@ -32,6 +32,7 @@ type Settings = {
 	disabledMcpServers?: string[];
 	session?: { title?: { generated?: boolean; source?: string } };
 	providers?: ProviderSettings;
+	subagents?: { maxConcurrent?: number; maxDepth?: number };
 };
 
 /**
@@ -132,6 +133,26 @@ export class SettingsStore {
 		);
 	}
 
+	subagents(): { maxConcurrent: number; maxDepth: number } {
+		const settings = { ...this.global.subagents, ...this.project.subagents };
+		return {
+			maxConcurrent: boundedSetting(
+				settings.maxConcurrent,
+				"subagents.maxConcurrent",
+				16,
+				1,
+				64,
+			),
+			maxDepth: boundedSetting(
+				settings.maxDepth,
+				"subagents.maxDepth",
+				2,
+				1,
+				8,
+			),
+		};
+	}
+
 	sessionTitle(): { generated: boolean; source: string } {
 		return {
 			generated:
@@ -174,9 +195,52 @@ function readSettings(path: string): Settings {
 			{ cause: error },
 		);
 	}
-	return settings.providers === undefined
-		? settings
-		: { ...settings, providers: readProviders(settings.providers, path) };
+	const validated =
+		settings.providers === undefined
+			? settings
+			: { ...settings, providers: readProviders(settings.providers, path) };
+	if (validated.subagents !== undefined && !isRecord(validated.subagents))
+		throw new Error(`${path}: subagents must be an object`);
+	if (validated.subagents) {
+		boundedSetting(
+			validated.subagents.maxConcurrent,
+			"subagents.maxConcurrent",
+			16,
+			1,
+			64,
+			path,
+		);
+		boundedSetting(
+			validated.subagents.maxDepth,
+			"subagents.maxDepth",
+			2,
+			1,
+			8,
+			path,
+		);
+	}
+	return validated;
+}
+
+function boundedSetting(
+	value: unknown,
+	name: string,
+	fallback: number,
+	minimum: number,
+	maximum: number,
+	path?: string,
+): number {
+	if (value === undefined) return fallback;
+	if (
+		typeof value !== "number" ||
+		!Number.isSafeInteger(value) ||
+		value < minimum ||
+		value > maximum
+	)
+		throw new Error(
+			`${path ? `${path}: ` : ""}${name} must be an integer from ${minimum} through ${maximum}`,
+		);
+	return value;
 }
 
 function readProviders(value: unknown, path: string): ProviderSettings {

@@ -95,6 +95,7 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 			blockedQueueId: undefined,
 			fastCycle: [],
 			agents: [],
+			agentTranscripts: {},
 			disableThinkingBlocks: false,
 			sessionCostUsd: undefined,
 			turnCostUsd: undefined,
@@ -102,27 +103,21 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 			apply(event) {
 				if (event.type === "session") return;
 				if (event.type === "subagent-state") {
-					const terminal = !["running", "cancelling"].includes(
-						event.agent.state,
-					);
 					return set((state) => {
 						const previous = state.agents.find(
 							(agent) => agent.id === event.agent.id,
 						);
-						const agents = terminal
-							? state.agents.filter((agent) => agent.id !== event.agent.id)
-							: [
-									...state.agents.filter(
-										(agent) => agent.id !== event.agent.id,
-									),
-									event.agent,
-								].toSorted(
-									(a, b) =>
-										Date.parse(a.startedAt ?? "") -
-										Date.parse(b.startedAt ?? ""),
-								);
+						const agents = [
+							...state.agents.filter((agent) => agent.id !== event.agent.id),
+							event.agent,
+						].toSorted(
+							(a, b) =>
+								Date.parse(a.startedAt ?? "") - Date.parse(b.startedAt ?? ""),
+						);
 						const notice =
-							terminal &&
+							!["running", "cancelling", "queued"].includes(
+								event.agent.state,
+							) &&
 							previous &&
 							!["completed", "blocked", "failed", "cancelled"].includes(
 								previous.state,
@@ -140,6 +135,16 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 						};
 					});
 				}
+				if (event.type === "subagent-transcript")
+					return set((state) => ({
+						agentTranscripts: {
+							...state.agentTranscripts,
+							[event.agentId]: [
+								...(state.agentTranscripts[event.agentId] ?? []),
+								{ ...event.entry },
+							],
+						},
+					}));
 				if (event.type === "user")
 					return set((state) => {
 						const existing = event.id
@@ -410,6 +415,7 @@ export type TuiState = {
 	modelConfig?: ModelConfig;
 	fastCycle: FastCycleEntry[];
 	agents: SubagentStateEvent["agent"][];
+	agentTranscripts: Record<string, TranscriptEntry[]>;
 	disableThinkingBlocks: boolean;
 	sessionCostUsd: number | undefined;
 	turnCostUsd: number | undefined;

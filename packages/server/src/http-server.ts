@@ -86,6 +86,35 @@ async function fetchHarnez(
 		return Response.json(harnez.store.list());
 	if (request.method === "POST" && url.pathname === "/sessions")
 		return createSession(harnez, request);
+	const transcript = url.pathname.match(
+		/^\/sessions\/([^/]+)\/subagents\/([^/]+)\/transcript$/,
+	);
+	if (request.method === "GET" && transcript) {
+		const [, sessionId, agentId] = transcript;
+		if (!sessionId || !agentId)
+			return new Response("not found", { status: 404 });
+		try {
+			const limit = Number(url.searchParams.get("limit") ?? 100);
+			if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200)
+				throw new Error(
+					"transcript limit must be an integer from 1 through 200",
+				);
+			const after = Math.max(0, Number(url.searchParams.get("after")) || 0);
+			const items = await harnez.subagentTranscript(
+				sessionId,
+				agentId,
+				after,
+				limit,
+			);
+			return Response.json({
+				items,
+				nextCursor: items.at(-1)?.sequence,
+				state: (await harnez.subagentStatus(sessionId, agentId)).state,
+			});
+		} catch (error) {
+			return errorResponse(error, 404);
+		}
+	}
 	const match = url.pathname.match(
 		/^\/sessions\/([^/]+)(?:\/(events|commands|context|subagent-results))?$/,
 	);

@@ -175,6 +175,56 @@ export class TuiApp {
 					return this.send({ type: "replace-queued", taskId, text });
 				},
 			},
+			{
+				name: "/agent-steer",
+				description: "Send a message to a running child",
+				kind: "command",
+				run: (args) => {
+					const { id, text } = agentArgs(args, "steering message");
+					return this.send({ type: "agent-steer", id, text });
+				},
+			},
+			{
+				name: "/agent-cancel",
+				description: "Cancel a queued or running child",
+				kind: "command",
+				run: (args) => {
+					const id = args.trim();
+					if (!id) throw new Error("agent id is required");
+					return this.send({ type: "agent-cancel", id });
+				},
+			},
+			{
+				name: "/agent-resume",
+				description: "Resume a terminal child with a message",
+				kind: "command",
+				run: (args) => {
+					const { id, text } = agentArgs(args, "resume message");
+					return this.send({ type: "agent-resume", id, text });
+				},
+			},
+			{
+				name: "/agents",
+				description: "Inspect delegated child agents",
+				kind: "command",
+				run: (args) => {
+					if (args.trim()) throw new Error("/agents does not accept arguments");
+					const agents = this.store.getState().agents;
+					if (!agents.length)
+						return this.showNoticeText("Agents", "No child agents.");
+					return this.showSelect(
+						"Agents",
+						agents.map((agent) => ({
+							name: `${agent.profile} · ${agent.state}`,
+							description: agent.description,
+							value: agent.id,
+						})),
+						(option) => this.showAgentTranscript(String(option.value)),
+						true,
+						"inline",
+					);
+				},
+			},
 		];
 		this.composer = new ComposerView(
 			renderer,
@@ -274,6 +324,18 @@ export class TuiApp {
 		if (!command) return false;
 		await command.run(arguments_.join(" "));
 		return true;
+	}
+
+	private showAgentTranscript(id: string) {
+		const agent = this.store.getState().agents.find((item) => item.id === id);
+		const entries = this.store.getState().agentTranscripts[id] ?? [];
+		const body = entries.length
+			? entries.map((entry) => `${entry.kind}: ${entry.text}`).join("\n")
+			: "No transcript events received yet.";
+		this.showNoticeText(
+			agent ? `${agent.profile} · ${agent.state}` : "Agent transcript",
+			body,
+		);
 	}
 
 	private queuedTaskId(args: string): string {
@@ -732,6 +794,14 @@ function describeMcpServer(server: McpServerOption): string {
 
 function modelKey(config: { provider: string; model: string }): string {
 	return `${config.provider}/${config.model}`;
+}
+
+function agentArgs(args: string, label: string): { id: string; text: string } {
+	const [id, ...rest] = args.trim().split(/\s+/);
+	if (!id) throw new Error("agent id is required");
+	const text = rest.join(" ").trim();
+	if (!text) throw new Error(`${label} is required`);
+	return { id, text };
 }
 
 function noticeText(notification: AuthNotifyEvent): string {

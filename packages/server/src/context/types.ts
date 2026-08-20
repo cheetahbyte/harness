@@ -94,6 +94,7 @@ export type ContextLane = {
 	name: string;
 	headItemId?: string;
 	forkedFromItemId?: string;
+	parentLaneName?: string;
 	ownerTaskId?: string;
 	state: ContextLaneState;
 	revision: number;
@@ -133,6 +134,7 @@ export type FinishContextTaskRequest = {
 	status: "completed" | "failed" | "cancelled" | "superseded";
 	startedAt?: string;
 	laneId?: string;
+	handoffLaneName?: string;
 	episodeId?: string;
 	ledger?: readonly import("../task-ledger").ExecutionLedgerEntry[];
 	handoff?: SubagentResult;
@@ -171,6 +173,7 @@ export type SubagentResult = {
 	artifactRefs: string[];
 };
 export type SubagentState =
+	| "queued"
 	| "running"
 	| "cancelling"
 	| "completed"
@@ -179,6 +182,10 @@ export type SubagentState =
 	| "cancelled";
 export type PublicSubagentRecord = {
 	id: string;
+	parentId?: string;
+	depth?: number;
+	color?: string;
+	resumable?: boolean;
 	profile: string;
 	description: string;
 	state: SubagentState;

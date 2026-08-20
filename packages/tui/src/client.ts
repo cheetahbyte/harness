@@ -2,6 +2,7 @@ import type {
 	ClientCommand,
 	ServerEvent,
 	StreamLine,
+	SubagentTranscriptEntry,
 } from "../../shared/src/protocol";
 
 export type StreamOptions = {
@@ -22,6 +23,12 @@ export type SessionSummary = {
 	createdAt: string;
 	workspace: string | null;
 	title: string | null;
+};
+
+export type SubagentTranscript = {
+	items: SubagentTranscriptEntry[];
+	nextCursor?: number;
+	state: string;
 };
 
 /**
@@ -113,6 +120,30 @@ export class HarnezClient {
 					: `command failed (${response.status})`,
 			);
 		}
+	}
+
+	async subagentTranscript(
+		sessionId: string,
+		agentId: string,
+		after = 0,
+		limit = 100,
+	): Promise<SubagentTranscript> {
+		const url = new URL(
+			`${this.base}/sessions/${sessionId}/subagents/${agentId}/transcript`,
+		);
+		url.searchParams.set("after", String(after));
+		url.searchParams.set("limit", String(limit));
+		const response = await fetch(url);
+		if (!response.ok)
+			throw new Error(`subagent transcript failed (${response.status})`);
+		const body = await readJson(response, "subagent transcript");
+		if (
+			!body ||
+			typeof body !== "object" ||
+			!Array.isArray((body as { items?: unknown }).items)
+		)
+			throw new Error("subagent transcript returned an invalid response");
+		return body as SubagentTranscript;
 	}
 
 	async stream(sessionId: string, options: StreamOptions): Promise<void> {

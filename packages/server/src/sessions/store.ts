@@ -15,6 +15,7 @@ import type {
 	NewContextItem,
 	NewEpisodeEvent,
 	SubagentResult,
+	SubagentState,
 } from "../context/types";
 import type { ExecutionLedgerEntry, TaskRecoveryReason } from "../task-ledger";
 import type { TaskTerminalStatus } from "../task-runtime";
@@ -34,6 +35,55 @@ export type SubagentSpawnMetadata = {
 	description: string;
 	task: string;
 };
+
+export type SubagentRecord = {
+	id: string;
+	sessionId: string;
+	parentAgentId?: string;
+	profile: string;
+	description: string;
+	laneId?: string;
+	depth: number;
+	state: SubagentState;
+	runNumber: number;
+	activeTaskId?: string;
+	pendingMessage?: string;
+	result?: SubagentResult;
+	worktreePath?: string;
+	worktreeBranch?: string;
+	baseCommit?: string;
+	createdAt: string;
+	startedAt?: string;
+	finishedAt?: string;
+};
+
+export type NewSubagentRecord = Omit<
+	SubagentRecord,
+	"createdAt" | "runNumber" | "state"
+> & {
+	createdAt?: string;
+	state?: SubagentState;
+};
+
+export type SubagentRecordPatch = Partial<
+	Pick<
+		SubagentRecord,
+		| "parentAgentId"
+		| "profile"
+		| "description"
+		| "laneId"
+		| "depth"
+		| "state"
+		| "activeTaskId"
+		| "pendingMessage"
+		| "result"
+		| "worktreePath"
+		| "worktreeBranch"
+		| "baseCommit"
+		| "startedAt"
+		| "finishedAt"
+	>
+>;
 
 const DATABASE_PATH = ".harnez/harnez.sqlite";
 const LEGACY_DATABASE_PATH = ".harness/harness.sqlite";
@@ -122,6 +172,95 @@ export class SessionStore {
 		this.db
 			.query("UPDATE sessions SET title = ? WHERE id = ?")
 			.run(title, sessionId);
+	}
+
+	createSubagent(input: NewSubagentRecord): SubagentRecord {
+		const createdAt = input.createdAt ?? new Date().toISOString();
+		this.db
+			.query(
+				"INSERT INTO subagents (id, session_id, parent_agent_id, profile, description, lane_id, depth, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			)
+			.run(
+				input.id,
+				input.sessionId,
+				input.parentAgentId ?? null,
+				input.profile,
+				input.description,
+				input.laneId ?? null,
+				input.depth,
+				input.state ?? "queued",
+				createdAt,
+			);
+		const record = this.subagent(input.sessionId, input.id);
+		if (!record) throw new Error(`Subagent ${input.id} was not persisted`);
+		return record;
+	}
+
+	subagent(sessionId: string, id: string): SubagentRecord | undefined {
+		const row = this.db
+			.query("SELECT * FROM subagents WHERE session_id = ? AND id = ?")
+			.get(sessionId, id) as SubagentRow | null;
+		return row ? subagentFromRow(row) : undefined;
+	}
+
+	subagents(sessionId: string): SubagentRecord[] {
+		return (
+			this.db
+				.query(
+					"SELECT * FROM subagents WHERE session_id = ? ORDER BY created_at, id",
+				)
+				.all(sessionId) as SubagentRow[]
+		).map(subagentFromRow);
+	}
+
+	updateSubagent(
+		sessionId: string,
+		id: string,
+		patch: SubagentRecordPatch,
+	): SubagentRecord | undefined {
+		const current = this.subagent(sessionId, id);
+		if (!current) return undefined;
+		const next = { ...current, ...patch };
+		this.db
+			.query(
+				"UPDATE subagents SET parent_agent_id = ?, profile = ?, description = ?, lane_id = ?, depth = ?, state = ?, active_task_id = ?, pending_message = ?, result = ?, worktree_path = ?, worktree_branch = ?, base_commit = ?, started_at = ?, finished_at = ? WHERE session_id = ? AND id = ?",
+			)
+			.run(
+				next.parentAgentId ?? null,
+				next.profile,
+				next.description,
+				next.laneId ?? null,
+				next.depth,
+				next.state,
+				next.activeTaskId ?? null,
+				next.pendingMessage ?? null,
+				next.result === undefined ? null : JSON.stringify(next.result),
+				next.worktreePath ?? null,
+				next.worktreeBranch ?? null,
+				next.baseCommit ?? null,
+				next.startedAt ?? null,
+				next.finishedAt ?? null,
+				sessionId,
+				id,
+			);
+		return this.subagent(sessionId, id);
+	}
+
+	/** Atomically claim a fresh task run for a terminal record. */
+	startSubagentRun(
+		sessionId: string,
+		id: string,
+		taskId: string,
+		startedAt = new Date().toISOString(),
+	): SubagentRecord | undefined {
+		return this.db.transaction(() => {
+			const result = this.db
+				.query(
+					"UPDATE subagents SET run_number = run_number + 1, active_task_id = ?, state = 'running', result = NULL, pending_message = NULL, started_at = ?, finished_at = NULL WHERE session_id = ? AND id = ? AND state IN ('queued', 'completed', 'blocked', 'failed', 'cancelled')",
+				)
+				.run(taskId, startedAt, sessionId, id);
+			return result.changes ? this.subagent(sessionId, id) : undefined;
+		})();
 	}
 
 	exists(id: string): boolean {
@@ -236,6 +375,7 @@ export class SessionStore {
 		name: string;
 		taskId: string;
 		fromItemId: string;
+		parentLaneName?: string;
 		startedAt: string;
 	}): ContextLane {
 		return this.db.transaction(() => {
@@ -244,6 +384,9 @@ export class SessionStore {
 				name: input.name,
 				ownerTaskId: input.taskId,
 				fromItemId: input.fromItemId,
+				...(input.parentLaneName === undefined
+					? {}
+					: { parentLaneName: input.parentLaneName }),
 			});
 			this.db
 				.query(
@@ -260,6 +403,7 @@ export class SessionStore {
 		status: TaskTerminalStatus;
 		startedAt: string;
 		laneName?: string;
+		handoffLaneName?: string;
 		ledger?: readonly ExecutionLedgerEntry[];
 		terminalEpisode?: NewEpisodeEvent;
 		handoff?: NewContextItem;
@@ -314,15 +458,18 @@ export class SessionStore {
 					new Date().toISOString(),
 				);
 			if (input.handoff) {
-				const main = this.lane(input.sessionId, "main");
-				if (!main) throw new Error("main lane missing");
+				const handoffLane = this.lane(
+					input.sessionId,
+					input.handoffLaneName ?? "main",
+				);
+				if (!handoffLane) throw new Error("handoff lane missing");
 				const result = this.appendContextAtHead(
-					{ ...input.handoff, originLane: "main" },
-					"main",
-					main.revision,
+					{ ...input.handoff, originLane: handoffLane.name },
+					handoffLane.name,
+					handoffLane.revision,
 				);
 				if ("status" in result)
-					throw new Error("main lane changed while handing off");
+					throw new Error("handoff lane changed while handing off");
 			}
 		})();
 	}
@@ -580,6 +727,7 @@ export class SessionStore {
 		name: string;
 		ownerTaskId: string;
 		fromItemId: string;
+		parentLaneName?: string;
 	}): ContextLane {
 		this.db.transaction(() => {
 			const parent = this.contextItem(input.fromItemId);
@@ -587,27 +735,58 @@ export class SessionStore {
 				throw new Error(
 					"Lane fork item belongs to another session or is unknown",
 				);
+			const parentLane = input.parentLaneName ?? "main";
 			if (
-				!this.contextPath(input.sessionId, "main").some(
+				!this.contextPath(input.sessionId, parentLane).some(
 					(item) => item.id === input.fromItemId,
 				)
 			)
-				throw new Error("Child lanes must fork from main");
+				throw new Error(
+					input.parentLaneName === undefined
+						? "Child lanes must fork from main"
+						: "Child lanes must fork from their parent lane",
+				);
 			this.db
 				.query(
-					"INSERT INTO context_lanes (session_id, name, head_item_id, forked_from_item_id, owner_task_id, state, revision, created_at) VALUES (?, ?, ?, ?, ?, 'active', 0, ?)",
+					"INSERT INTO context_lanes (session_id, name, head_item_id, forked_from_item_id, parent_lane_name, owner_task_id, state, revision, created_at) VALUES (?, ?, ?, ?, ?, ?, 'active', 0, ?)",
 				)
 				.run(
 					input.sessionId,
 					input.name,
 					input.fromItemId,
 					input.fromItemId,
+					input.parentLaneName ?? null,
 					input.ownerTaskId,
 					new Date().toISOString(),
 				);
 		})();
 		const lane = this.lane(input.sessionId, input.name);
 		if (!lane) throw new Error(`Lane ${input.name} was not created`);
+		return lane;
+	}
+
+	reactivateChildLane(
+		sessionId: string,
+		name: string,
+		taskId: string,
+	): ContextLane {
+		const startedAt = new Date().toISOString();
+		this.db.transaction(() => {
+			const updated = this.db
+				.query(
+					"UPDATE context_lanes SET owner_task_id = ?, state = 'active', closed_at = NULL WHERE session_id = ? AND name = ? AND name <> 'main' AND state IN ('completed', 'failed', 'cancelled', 'abandoned') AND owner_task_id IS NULL",
+				)
+				.run(taskId, sessionId, name);
+			if (updated.changes !== 1)
+				throw new Error(`Child context lane ${name} is not resumable`);
+			this.db
+				.query(
+					"INSERT INTO tasks (id, session_id, state, started_at) VALUES (?, ?, 'running', ?)",
+				)
+				.run(taskId, sessionId, startedAt);
+		})();
+		const lane = this.lane(sessionId, name);
+		if (!lane) throw new Error(`Unknown context lane ${name}`);
 		return lane;
 	}
 
@@ -824,7 +1003,7 @@ export class SessionStore {
 
 const contextItemQuery = `SELECT context_items.sequence, context_items.id, context_items.session_id, context_items.parent_id, context_items.origin_lane, context_items.node_role, context_items.kind, context_items.payload, context_items.compact_payload, context_items.token_cost, context_items.compact_token_cost, context_items.source, context_items.group_id, context_items.episode_id, context_items.content_hash, context_items.source_digest, context_items.policy_version, context_items.created_at, context_lifecycle.lifecycle, context_lifecycle.projection, context_lifecycle.reason, context_lifecycle.updated_at FROM context_items JOIN context_lifecycle ON context_lifecycle.item_id = context_items.id`;
 
-const laneQuery = `SELECT session_id, name, head_item_id, forked_from_item_id, owner_task_id, state, revision, created_at, closed_at FROM context_lanes`;
+const laneQuery = `SELECT session_id, name, head_item_id, forked_from_item_id, parent_lane_name, owner_task_id, state, revision, created_at, closed_at FROM context_lanes`;
 
 type ContextItemRow = {
 	sequence: number;
@@ -908,12 +1087,67 @@ type ContextLaneRow = {
 	name: string;
 	head_item_id: string | null;
 	forked_from_item_id: string | null;
+	parent_lane_name: string | null;
 	owner_task_id: string | null;
 	state: ContextLaneState;
 	revision: number;
 	created_at: string;
 	closed_at: string | null;
 };
+
+type SubagentRow = {
+	id: string;
+	session_id: string;
+	parent_agent_id: string | null;
+	profile: string;
+	description: string;
+	lane_id: string | null;
+	depth: number;
+	state: SubagentState;
+	run_number: number;
+	active_task_id: string | null;
+	pending_message: string | null;
+	result: string | null;
+	worktree_path: string | null;
+	worktree_branch: string | null;
+	base_commit: string | null;
+	created_at: string;
+	started_at: string | null;
+	finished_at: string | null;
+};
+
+function subagentFromRow(row: SubagentRow): SubagentRecord {
+	return {
+		id: row.id,
+		sessionId: row.session_id,
+		...(row.parent_agent_id === null
+			? {}
+			: { parentAgentId: row.parent_agent_id }),
+		profile: row.profile,
+		description: row.description,
+		...(row.lane_id === null ? {} : { laneId: row.lane_id }),
+		depth: row.depth,
+		state: row.state,
+		runNumber: row.run_number,
+		...(row.active_task_id === null
+			? {}
+			: { activeTaskId: row.active_task_id }),
+		...(row.pending_message === null
+			? {}
+			: { pendingMessage: row.pending_message }),
+		...(row.result === null
+			? {}
+			: { result: JSON.parse(row.result) as SubagentResult }),
+		...(row.worktree_path === null ? {} : { worktreePath: row.worktree_path }),
+		...(row.worktree_branch === null
+			? {}
+			: { worktreeBranch: row.worktree_branch }),
+		...(row.base_commit === null ? {} : { baseCommit: row.base_commit }),
+		createdAt: row.created_at,
+		...(row.started_at === null ? {} : { startedAt: row.started_at }),
+		...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
+	};
+}
 
 function laneFromRow(row: ContextLaneRow): ContextLane {
 	return {
@@ -923,6 +1157,9 @@ function laneFromRow(row: ContextLaneRow): ContextLane {
 		...(row.forked_from_item_id === null
 			? {}
 			: { forkedFromItemId: row.forked_from_item_id }),
+		...(row.parent_lane_name === null
+			? {}
+			: { parentLaneName: row.parent_lane_name }),
 		...(row.owner_task_id === null ? {} : { ownerTaskId: row.owner_task_id }),
 		state: row.state,
 		revision: row.revision,

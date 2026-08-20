@@ -19,7 +19,8 @@ export class AgentsView {
 
 	update(agents: readonly SubagentStateEvent["agent"][], now = Date.now()) {
 		this.root.visible = agents.length > 0;
-		this.text.content = agents.map((agent) => line(agent, now)).join("\n");
+		this.text.content = tree(agents, now);
+		this.text.fg = DIM;
 	}
 }
 
@@ -28,6 +29,34 @@ export function line(agent: SubagentStateEvent["agent"], now: number): string {
 	const elapsed = Math.max(0, now - started);
 	const subject = agent.toolSubject ? ` · ${agent.toolSubject}` : "";
 	return `${agent.profile} · ${agent.description} · ${formatElapsed(elapsed)}${subject}`;
+}
+
+function tree(
+	agents: readonly SubagentStateEvent["agent"][],
+	now = Date.now(),
+): string {
+	const byParent = new Map<string | undefined, SubagentStateEvent["agent"][]>();
+	for (const agent of agents)
+		byParent.set(agent.parentId, [
+			...(byParent.get(agent.parentId) ?? []),
+			agent,
+		]);
+	const rows: string[] = [];
+	const visit = (parent: string | undefined) => {
+		for (const agent of byParent.get(parent) ?? []) {
+			const state =
+				agent.state === "running" ? "●" : agent.state === "queued" ? "○" : "·";
+			rows.push(
+				`${"  ".repeat(agent.depth ?? 0)}${state} ${line(agent, now)} [${agent.state}]`,
+			);
+			visit(agent.id);
+		}
+	};
+	visit(undefined);
+	for (const agent of agents)
+		if (!rows.some((row) => row.includes(agent.description)))
+			rows.push(line(agent, now));
+	return rows.join("\n");
 }
 
 export function formatElapsed(elapsedMs: number): string {

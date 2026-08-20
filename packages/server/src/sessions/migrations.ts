@@ -160,6 +160,19 @@ const migrations: readonly Migration[] = [
 			}
 		},
 	},
+	{
+		version: 8,
+		run(db) {
+			if (!hasColumn(db, "context_lanes", "parent_lane_name"))
+				db.run("ALTER TABLE context_lanes ADD COLUMN parent_lane_name TEXT");
+			db.run(
+				"CREATE TABLE IF NOT EXISTS subagents (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, parent_agent_id TEXT, profile TEXT NOT NULL, description TEXT NOT NULL, lane_id TEXT, depth INTEGER NOT NULL, state TEXT NOT NULL, run_number INTEGER NOT NULL DEFAULT 0, active_task_id TEXT, pending_message TEXT, result TEXT, worktree_path TEXT, worktree_branch TEXT, base_commit TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT)",
+			);
+			db.run(
+				"CREATE INDEX IF NOT EXISTS subagents_session_state_created ON subagents(session_id, state, created_at)",
+			);
+		},
+	},
 ];
 
 export const LATEST_SCHEMA_VERSION = migrations.length;

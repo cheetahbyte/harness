@@ -203,12 +203,16 @@ export class ContextManager {
 		name: string;
 		ownerTaskId: string;
 		fromItemId: string;
+		parentLaneName?: string;
 	}): import("./types").ContextLane {
 		return this.store.startChildContextTask({
 			sessionId: request.sessionId,
 			name: request.name,
 			taskId: request.ownerTaskId,
 			fromItemId: request.fromItemId,
+			...(request.parentLaneName === undefined
+				? {}
+				: { parentLaneName: request.parentLaneName }),
 			startedAt: new Date().toISOString(),
 		});
 	}
@@ -272,6 +276,9 @@ export class ContextManager {
 			status: request.status,
 			startedAt: request.startedAt ?? new Date().toISOString(),
 			laneName,
+			...(request.handoffLaneName === undefined
+				? {}
+				: { handoffLaneName: request.handoffLaneName }),
 			...(request.ledger ? { ledger: request.ledger } : {}),
 			...(terminalEpisode ? { terminalEpisode } : {}),
 			...(handoff ? { handoff } : {}),
