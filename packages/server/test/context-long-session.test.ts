@@ -198,7 +198,7 @@ test("survives 500 mixed turns, compaction, recovery, and lane handoff", async (
 		reason: "provider overflow",
 	});
 	raw.set("provider-overflow", JSON.stringify(overflowPayload));
-	manager.checkpointProviderOverflow(sessionId);
+	manager.recoverProviderOverflow(sessionId);
 
 	// No LLM is available here: the same history must still make progress.
 	for (let index = 0; index < 50; index++) {

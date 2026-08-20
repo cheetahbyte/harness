@@ -184,7 +184,6 @@ path in the error.
 | --- | --- |
 | `HARNEZ_PORT` | Server listen port. Default `7432`. |
 | `HARNEZ_URL` | Server URL the TUI connects to. Default `http://localhost:7432`. |
-| `HARNEZ_CONTEXT_BUDGET` | Overrides the context token budget used for compaction. |
 | `HARNEZ_LOG_LEVEL` | Pino log level. Default `info`. |
 | `HARNEZ_OTEL` | Set to `1` to enable OpenTelemetry traces and metrics. |
 | `HARNEZ_OTEL_CAPTURE_CONTENT` | Comma-separated opt-in payload categories, or `all`. Default empty. |
@@ -198,9 +197,7 @@ standard `OTEL_*` variables for endpoint, protocol, headers, service name,
 resource attributes, exporters, and sampling. Content capture is disabled by
 default; see [Observability](/docs/advanced/observability) before enabling it.
 
-Context admission triggers at 80% of the usable budget and targets 60%. When
-`compaction.enabled` is true, the runtime makes one bounded LLM condensation
-operation when it can reserve enough space for the request and can retry invalid
-output once. A failed operation uses deterministic checkpoint compaction.
-Provider context-length errors create a recovery checkpoint and retry once with
-the current turn preserved.
+Harnez manages model context automatically. When `compaction.enabled` is true,
+the runtime can condense older history before using deterministic checkpoint
+compaction. Provider context-length errors create a recovery checkpoint and
+retry once with the current turn preserved.

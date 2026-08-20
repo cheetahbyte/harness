@@ -134,8 +134,9 @@ flowchart TD
 Admission triggers at 80% of the usable input budget and targets 60%. LLM
 condensation is bounded and tool-free. With `compaction.enabled` set to
 `false`, the deterministic fallback waits until the budget is exceeded. Exact
-source history remains persisted, and a provider context-length error retains
-the current turn before one retry.
+source history remains persisted; oversized text is projected as an
+authoritative recallable source, and provider overflow recovery moves through
+`full -> reference -> minimal-reference`.
 
 ---
 

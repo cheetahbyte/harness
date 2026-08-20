@@ -289,7 +289,19 @@ export class SessionTaskRunner {
 		error: unknown,
 		startedAt: number,
 	): Promise<void> {
-		log.error({ err: error, sessionId: id }, "run failed");
+		const message =
+			error instanceof ContextBudgetError
+				? "Unable to prepare the model request."
+				: error instanceof Error
+					? error.message
+					: String(error);
+		log.error(
+			{
+				err: error instanceof ContextBudgetError ? message : error,
+				sessionId: id,
+			},
+			"run failed",
+		);
 		this.options.sink?.({
 			type: "task.completed",
 			timestamp: new Date().toISOString(),
@@ -298,24 +310,7 @@ export class SessionTaskRunner {
 			status: "failed",
 			durationMs: Date.now() - startedAt,
 		});
-		const message = error instanceof Error ? error.message : String(error);
-		/**
-		 * The budget cliff is the one failure the user can act on, and it is the
-		 * only place compaction cannot help: protected content alone overflows.
-		 * It gets its own event so clients can say that instead of showing it as
-		 * an indistinguishable provider error.
-		 */
-		this.options.emit(
-			id,
-			error instanceof ContextBudgetError
-				? {
-						type: "context-budget-error",
-						estimatedTokens: error.estimatedTokens,
-						budget: error.budget,
-						code: error.code,
-					}
-				: { type: "error", message },
-		);
+		this.options.emit(id, { type: "error", message });
 		const terminalMessageIds = this.terminalMessages(id, running);
 		if (!running.task.result())
 			running.task.finish({

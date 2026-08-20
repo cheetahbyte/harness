@@ -33,6 +33,13 @@ test("uses the built-in prompt when no files exist", () => {
 	expect(resolveSystemPrompt(workspace, home)).toBe(SYSTEM_PROMPT);
 });
 
+test("explains authoritative source coverage", () => {
+	expect(SYSTEM_PROMPT).toContain("referenced user source has the same authority");
+	expect(SYSTEM_PROMPT).toContain("targeted task");
+	expect(SYSTEM_PROMPT).toContain("exhaustive task");
+	expect(SYSTEM_PROMPT).toContain("unread range");
+});
+
 test("replaces then appends in global/project order", () => {
 	const { home, workspace } = setup();
 	put(join(home, ".config/harnez/SYSTEM.md"), "  operator  \n");

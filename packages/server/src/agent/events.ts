@@ -14,7 +14,6 @@ import type {
 	ContextManager,
 	PrepareTurnRequest,
 } from "../context/manager";
-import { ContextBudgetError, type ContextInspection } from "../context/types";
 import type { SessionStore } from "../sessions/store";
 import { resolveSystemPrompt } from "../system-prompt";
 import type { TaskRuntime } from "../task-runtime";
@@ -63,7 +62,6 @@ export function translateAgentEvent({
 	emit,
 	context,
 	shrink,
-	inspect,
 	sink,
 }: {
 	sessionId: string;
@@ -72,7 +70,6 @@ export function translateAgentEvent({
 	emit: (event: ServerEvent) => void;
 	context: ContextManager;
 	shrink: () => void;
-	inspect: () => ContextInspection;
 	sink?: RuntimeEventSink;
 }): void {
 	switch (event.type) {
@@ -91,7 +88,7 @@ export function translateAgentEvent({
 			emitMessageUpdate(event, emit);
 			return;
 		case "message_end":
-			handleMessageEnd(sessionId, entry, event.message, context, inspect, emit);
+			handleMessageEnd(sessionId, entry, event.message, context, emit);
 			return;
 		case "agent_end":
 			handleAgentEnd(sessionId, entry, context, shrink, emit);
@@ -215,7 +212,6 @@ function handleMessageEnd(
 	entry: AgentEntry,
 	message: AgentMessage,
 	context: ContextManager,
-	inspect: () => ContextInspection,
 	emit: (event: ServerEvent) => void,
 ): void {
 	if (!entry.preRecorded.delete(messageKey(message)))
@@ -230,32 +226,10 @@ function handleMessageEnd(
 		totalTokens: message.usage.totalTokens,
 		costUsd: message.usage.cost.total,
 	});
-	emitContextStatus(inspect, emit);
 	if (message.errorMessage)
 		emit({ type: "error", message: message.errorMessage });
 }
 
-/**
- * Reports the working set against the whole recorded history. Both figures come
- * from `tokenCost`'s chars/4 estimate, so the ratio is internally consistent
- * even though neither number matches provider-reported usage.
- */
-function emitContextStatus(
-	inspect: () => ContextInspection,
-	emit: (event: ServerEvent) => void,
-): void {
-	const inspection = inspect();
-	if (inspection.budget === undefined || inspection.target === undefined)
-		return;
-	emit({
-		type: "context-status",
-		liveTokens: inspection.estimatedTokens,
-		historyTokens: inspection.historyTokens,
-		parkedObservations: inspection.parkedObservations,
-		budget: inspection.budget,
-		target: inspection.target,
-	});
-}
 function handleAgentEnd(
 	sessionId: string,
 	entry: AgentEntry,
@@ -268,16 +242,10 @@ function handleAgentEnd(
 	shrink();
 	entry.promptGroupId = undefined;
 	if (!entry.contextError) return;
-	emit(
-		entry.contextError instanceof ContextBudgetError
-			? {
-					type: "context-budget-error",
-					estimatedTokens: entry.contextError.estimatedTokens,
-					budget: entry.contextError.budget,
-					code: entry.contextError.code,
-				}
-			: { type: "error", message: entry.contextError.message },
-	);
+	emit({
+		type: "error",
+		message: "Unable to prepare the model request.",
+	});
 }
 
 function recordAgentMessage({

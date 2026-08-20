@@ -249,7 +249,7 @@ function contextTools({
 	task,
 }: AgentToolsOptions): AgentTool[] {
 	return [
-		recallTool(sessionId, context),
+		recallTool(sessionId, context, task),
 		pinTool(sessionId, model, context, contextOptions),
 		episodeTool(sessionId, context),
 		condenseTool(sessionId, model, context, contextOptions, task, emit),
@@ -424,7 +424,11 @@ function combinedSignal(
 		? AbortSignal.any([providerSignal, runtimeSignal])
 		: runtimeSignal;
 }
-function recallTool(sessionId: string, context: ContextManager): AgentTool {
+function recallTool(
+	sessionId: string,
+	context: ContextManager,
+	task: TaskRuntime,
+): AgentTool {
 	return {
 		name: "recall_observation",
 		label: "recall observation",
@@ -442,12 +446,41 @@ function recallTool(sessionId: string, context: ContextManager): AgentTool {
 				...(offset === undefined ? {} : { offset }),
 				...(limit === undefined ? {} : { limit }),
 			});
+			const coverage = task.recordSourceRead(
+				result.observationId,
+				result.totalLength,
+				result.source.previewedRanges ?? [],
+				[result.offset, result.offset + result.text.length],
+			);
 			return {
-				content: [{ type: "text", text: `${result.text}${extent(result)}` }],
-				details: result,
+				content: [
+					{
+						type: "text",
+						text: `${result.text}${extent(result)}\n\n${coverageText(coverage)}`,
+					},
+				],
+				details: { ...result, coverage },
 			};
 		},
 	};
+}
+
+function coverageText(
+	coverage: import("../task-runtime").SourceCoverage,
+): string {
+	return [
+		`authoritative_source: observation://${coverage.sourceId}`,
+		`characters: ${coverage.totalCharacters}`,
+		coverageRanges("read_ranges", coverage.readRanges),
+		coverageRanges("unread_ranges", coverage.unreadRanges),
+	].join("\n");
+}
+
+function coverageRanges(
+	name: string,
+	values: readonly (readonly [number, number])[],
+): string {
+	return `${name}:\n${values.map(([start, end]) => `  - [${start}, ${end})`).join("\n") || "  - none"}`;
 }
 
 /**

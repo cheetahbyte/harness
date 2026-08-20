@@ -73,6 +73,19 @@ function ref(capabilities: CapabilitySnapshot, id: string) {
 }
 
 describe("TaskRuntime", () => {
+	test("tracks source coverage across overlapping reads", () => {
+		const task = runtime();
+		expect(task.recordSourceRead("obs-1", 10, [[0, 2]], [4, 6])).toEqual({
+			sourceId: "obs-1",
+			totalCharacters: 10,
+			readRanges: [[0, 2], [4, 6]],
+			unreadRanges: [[2, 4], [6, 10]],
+		});
+		expect(task.recordSourceRead("obs-1", 10, [], [2, 10]).unreadRanges).toEqual([]);
+		expect(task.recordSourceRead("obs-1", 10, [], [4, 6]).readRanges).toEqual([[0, 10]]);
+		expect(task.ledger().filter((entry) => entry.type === "source_range_read")).toHaveLength(2);
+	});
+
 	test("records redacted HMAC evidence and a terminal call outcome", async () => {
 		const task = runtime();
 		await task.execute(

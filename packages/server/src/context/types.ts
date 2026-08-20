@@ -17,11 +17,14 @@ export type ContextLaneState =
 	| "failed"
 	| "cancelled"
 	| "abandoned";
+export type SourceRange = readonly [start: number, end: number];
 export type ContextSource = {
 	toolCallId?: string;
 	toolName?: string;
 	evictionPriority?: "early" | "normal" | "late";
 	observationId?: string;
+	totalCharacters?: number;
+	previewedRanges?: SourceRange[];
 	subagentId?: string;
 	isError?: boolean;
 };

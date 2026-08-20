@@ -316,7 +316,6 @@ function entryColor(entry: TranscriptEntry) {
 	if (entry.kind === "user") return USER_TEXT;
 	if (entry.kind === "reasoning") return DIM;
 	if (entry.kind === "completed") return DIM;
-	if (entry.kind === "compaction") return DIM;
 	if (entry.kind.startsWith("tool")) return ACCENT;
 	return TEXT;
 }
