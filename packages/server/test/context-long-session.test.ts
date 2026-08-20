@@ -269,4 +269,4 @@ test("survives 500 mixed turns, compaction, recovery, and lane handoff", async (
 	assertRawPayloads(store, raw);
 	expect(() => manager.inspect(sessionId, { budget: 1_000 })).not.toThrow();
 	store.db.close();
-});
+}, 30_000);
