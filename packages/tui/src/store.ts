@@ -115,18 +115,24 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 								Date.parse(a.startedAt ?? "") - Date.parse(b.startedAt ?? ""),
 						);
 						const notice =
-							!["running", "cancelling", "queued"].includes(
-								event.agent.state,
-							) &&
-							previous &&
-							!["completed", "blocked", "failed", "cancelled"].includes(
-								previous.state,
-							)
+							!previous &&
+							["running", "cancelling", "queued"].includes(event.agent.state)
 								? {
 										kind: "status" as const,
-										text: `${event.agent.profile}: ${event.agent.summary ?? event.agent.state}`,
+										text: `${event.agent.profile} started · ${event.agent.description}`,
 									}
-								: undefined;
+								: !["running", "cancelling", "queued"].includes(
+											event.agent.state,
+									  ) &&
+									  previous &&
+									  !["completed", "blocked", "failed", "cancelled"].includes(
+											previous.state,
+									  )
+									? {
+											kind: "status" as const,
+											text: `${event.agent.profile}: ${event.agent.summary ?? event.agent.state}`,
+										}
+									: undefined;
 						return {
 							agents,
 							...(notice

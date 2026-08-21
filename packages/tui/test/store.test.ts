@@ -3,6 +3,31 @@ import { createTuiStore } from "../src/store";
 import { displayUserInput } from "../../shared/src/protocol";
 
 describe("TUI protocol store", () => {
+	test("announces a new subagent once", () => {
+		const store = createTuiStore("session-1");
+		const agent = {
+			id: "agent-1",
+			profile: "explore",
+			description: "Inspect package version",
+			state: "queued" as const,
+		};
+		store.getState().apply({ type: "subagent-state", agent });
+		store.getState().apply({
+			type: "subagent-state",
+			agent: { ...agent, state: "running" },
+		});
+
+		expect(
+			store
+				.getState()
+				.entries.filter((entry) => entry.text.includes("explore started")),
+		).toEqual([
+			{
+				kind: "status",
+				text: "explore started · Inspect package version",
+			},
+		]);
+	});
 	function createStoreWithStatus(showStatus: boolean) {
 		const previous = process.env["HARNESS_SHOW_STATUS"];
 		if (showStatus) process.env["HARNESS_SHOW_STATUS"] = "1";

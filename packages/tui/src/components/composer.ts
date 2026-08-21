@@ -8,7 +8,10 @@ import {
 	type HostClipboardService,
 } from "@opentui/core";
 
-import type { ImageAttachment } from "../../../shared/src/protocol";
+import type {
+	ImageAttachment,
+	SubagentStateEvent,
+} from "../../../shared/src/protocol";
 import {
 	expandsAt,
 	type SlashCommandKind,
@@ -77,6 +80,12 @@ export class ComposerView {
 		description: TextRenderable;
 	}[];
 	private readonly inputRow: BoxRenderable;
+	private readonly activeAgents: BoxRenderable;
+	private readonly activeAgentRows: {
+		root: BoxRenderable;
+		indicator: TextRenderable;
+		text: TextRenderable;
+	}[];
 	private commands: readonly CommandHint[];
 	private hasFollowUps = false;
 	private compact = false;
@@ -89,6 +98,8 @@ export class ComposerView {
 	private selectedSuggestion = 0;
 	private suggestionOffset = 0;
 	private suggestionStart = 0;
+	private activeAgentList: SubagentStateEvent["agent"][] = [];
+	private activeAgentSelection = 0;
 	private images: ImageAttachment[] = [];
 
 	constructor(
@@ -104,6 +115,7 @@ export class ComposerView {
 			toggleThinking: () => void;
 			cycleThinkingLevel: () => void;
 			cycleModel: () => void;
+			openAgent?: (id: string | undefined) => void;
 		},
 		private readonly clipboard?: HostClipboardService,
 	) {
@@ -201,10 +213,35 @@ export class ComposerView {
 		});
 		this.input.onResized = () => this.syncHeight();
 		this.inputRow.add(this.input);
+		this.activeAgents = new BoxRenderable(renderer, {
+			width: "100%",
+			flexDirection: "column",
+			marginTop: 1,
+			visible: false,
+		});
+		this.activeAgentRows = Array.from({ length: 10 }, () => {
+			const root = new BoxRenderable(renderer, {
+				width: "100%",
+				height: 1,
+				flexDirection: "row",
+				visible: false,
+			});
+			const indicator = new TextRenderable(renderer, { width: 2, fg: ACCENT });
+			const text = new TextRenderable(renderer, {
+				fg: DIM,
+				truncate: true,
+				flexGrow: 1,
+			});
+			root.add(indicator);
+			root.add(text);
+			this.activeAgents.add(root);
+			return { root, indicator, text };
+		});
 		this.root.add(this.queue);
 		this.root.add(this.suggestions);
 		this.root.add(this.runningIndicator);
 		this.root.add(this.inputRow);
+		this.root.add(this.activeAgents);
 		renderer.keyInput.prependListener("keypress", this.handleKey);
 		renderer.keyInput.prependListener("paste", this.handlePaste);
 		this.input.focus();
@@ -227,6 +264,17 @@ export class ComposerView {
 	setCommands(commands: readonly CommandHint[]) {
 		this.commands = commands;
 		this.syncInput();
+	}
+
+	setActiveAgents(agents: readonly SubagentStateEvent["agent"][]) {
+		this.activeAgentList = agents.filter((agent) =>
+			["queued", "running", "cancelling"].includes(agent.state),
+		);
+		this.activeAgentSelection = Math.min(
+			this.activeAgentSelection,
+			Math.max(0, this.activeAgentList.length - 1),
+		);
+		this.renderActiveAgents();
 	}
 
 	update(followUps: FollowUp[]) {
@@ -367,6 +415,45 @@ export class ComposerView {
 				this.submit(false);
 				return;
 			}
+		}
+		if (
+			this.activeAgents.visible &&
+			(key.name === "up" || key.name === "down")
+		) {
+			if (key.name === "up" && this.activeAgentSelection === 0) {
+				this.activeAgents.visible = false;
+				key.preventDefault();
+				return;
+			}
+			const direction = key.name === "up" ? -1 : 1;
+			this.activeAgentSelection = Math.max(
+				0,
+				Math.min(
+					this.activeAgentList.length - 1,
+					this.activeAgentSelection + direction,
+				),
+			);
+			this.renderActiveAgents();
+			key.preventDefault();
+			return;
+		}
+		if (
+			!this.suggestions.visible &&
+			key.name === "down" &&
+			this.activeAgentList.length
+		) {
+			this.activeAgents.visible = true;
+			this.activeAgentSelection = 0;
+			this.renderActiveAgents();
+			key.preventDefault();
+			return;
+		}
+		if (this.activeAgents.visible && key.name === "return") {
+			this.actions.openAgent?.(
+				this.activeAgentList[this.activeAgentSelection]?.id,
+			);
+			key.preventDefault();
+			return;
 		}
 		if (key.super && key.name === "c") {
 			const text = this.renderer.getSelection()?.getSelectedText();
@@ -520,6 +607,20 @@ export class ComposerView {
 			row.name.content = command.name;
 			row.description.content = command.description;
 		}
+	}
+
+	private renderActiveAgents() {
+		this.activeAgents.height = this.activeAgents.visible
+			? this.activeAgentList.length
+			: 0;
+		for (const [index, row] of this.activeAgentRows.entries()) {
+			const agent = this.activeAgentList[index];
+			row.root.visible = this.activeAgents.visible && !!agent;
+			if (!agent) continue;
+			row.indicator.content = index === this.activeAgentSelection ? "›" : " ";
+			row.text.content = `• ${agent.profile} · ${agent.description} [${agent.state}]`;
+		}
+		this.syncHeight();
 	}
 
 	private ensureSelectionVisible() {

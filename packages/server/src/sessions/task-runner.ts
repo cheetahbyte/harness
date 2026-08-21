@@ -88,6 +88,7 @@ export class SessionTaskRunner {
 		| undefined;
 	private readonly turnIds = new Map<string, number>();
 	private readonly startedTasks = new Set<string>();
+	private readonly subagentEventSequence = new Map<string, number>();
 	constructor(private readonly options: RunnerOptions) {}
 	setSubagentTools(factory: (sessionId: string) => readonly AgentTool[]): void {
 		this.subagentTools = factory;
@@ -129,7 +130,8 @@ export class SessionTaskRunner {
 				mcpTools: running.mcpTools,
 				mcp: running.mcp,
 				signal: controller.signal,
-				emit: (event) => this.options.emit(request.sessionId, event),
+				emit: (event) =>
+					this.emitSubagentEvent(request.sessionId, request.agentId, event),
 				extraTools: [
 					...(running.memoryTools ?? []),
 					submitSubagentResultTool(request.submit),
@@ -138,6 +140,50 @@ export class SessionTaskRunner {
 		} finally {
 			if (lease) await finishWorktree(lease);
 		}
+	}
+
+	private emitSubagentEvent(
+		sessionId: string,
+		agentId: string,
+		event: ServerEvent,
+	): void {
+		const sequence = (this.subagentEventSequence.get(agentId) ?? 0) + 1;
+		const entry =
+			event.type === "assistant-delta"
+				? { kind: "assistant" as const, text: event.text }
+				: event.type === "assistant-reasoning-delta"
+					? { kind: "reasoning" as const, text: event.text }
+					: event.type === "tool-call"
+						? {
+								kind: "tool-call" as const,
+								text: JSON.stringify(event.input),
+								subject: event.name,
+								id: event.id,
+							}
+						: event.type === "tool-result"
+							? {
+									kind: "tool-result" as const,
+									text: event.output,
+									subject: event.name,
+									id: event.id,
+									...(event.isError === undefined
+										? {}
+										: { error: event.isError }),
+								}
+							: event.type === "error"
+								? {
+										kind: "assistant" as const,
+										text: event.message,
+										error: true,
+									}
+								: undefined;
+		if (!entry) return;
+		this.subagentEventSequence.set(agentId, sequence);
+		this.options.emit(sessionId, {
+			type: "subagent-transcript",
+			agentId,
+			entry: { ...entry, sequence },
+		});
 	}
 
 	async run(input: RunInput): Promise<void> {

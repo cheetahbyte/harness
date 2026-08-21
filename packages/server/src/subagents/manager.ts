@@ -313,14 +313,14 @@ export class SubagentManager {
 				this.finish(
 					record,
 					record.state === "cancelling" ? "cancelled" : "failed",
-					noHandoff,
+					this.noHandoff(record),
 				);
-		} catch {
+		} catch (error) {
 			if (!terminal(record.state))
 				this.finish(
 					record,
 					record.state === "cancelling" ? "cancelled" : "failed",
-					noHandoff,
+					failureResult(error),
 				);
 		}
 	}
@@ -329,6 +329,19 @@ export class SubagentManager {
 		if (terminal(record.state) || record.state === "cancelling") return false;
 		this.finish(record, result.status, result);
 		return true;
+	}
+	private noHandoff(record: Record): SubagentResult {
+		const lastAssistant = this.options.store
+			.contextPath(record.sessionId, record.id)
+			.toReversed()
+			.find((item) => item.kind === "assistant")?.payload as
+			| { content?: readonly { type?: string; text?: string }[] }
+			| undefined;
+		const text = lastAssistant?.content
+			?.filter((part) => part.type === "text")
+			.map((part) => part.text ?? "")
+			.join("");
+		return text ? { ...noHandoff, findings: [text] } : noHandoff;
 	}
 	private finish(
 		record: Record,
@@ -509,4 +522,11 @@ export class SubagentManager {
 			}
 		}
 	}
+}
+
+function failureResult(error: unknown): SubagentResult {
+	return {
+		...noHandoff,
+		unresolvedIssues: [error instanceof Error ? error.message : String(error)],
+	};
 }

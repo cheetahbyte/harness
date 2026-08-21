@@ -18,8 +18,11 @@ export class AgentsView {
 	}
 
 	update(agents: readonly SubagentStateEvent["agent"][], now = Date.now()) {
-		this.root.visible = agents.length > 0;
-		this.text.content = tree(agents, now);
+		const active = agents.filter((agent) =>
+			["queued", "running", "cancelling"].includes(agent.state),
+		);
+		this.root.visible = active.length > 0;
+		this.text.content = tree(active, now);
 		this.text.fg = DIM;
 	}
 }

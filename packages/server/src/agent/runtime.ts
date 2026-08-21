@@ -5,6 +5,7 @@ import {
 } from "@earendil-works/pi-agent-core";
 import {
 	type Api,
+	type AssistantMessage,
 	type AssistantMessageEvent,
 	type AssistantMessageEventStream,
 	type CredentialStore,
@@ -669,7 +670,7 @@ function normalizeProviderError(error: unknown): HarnezProviderError {
 }
 const MAX_STREAM_RETRIES = 3;
 const STREAM_RETRY_BASE_DELAY_MS = 500;
-function streamWithRetry(
+export function streamWithRetry(
 	produce: () => AssistantMessageEventStream,
 	signal: AbortSignal | undefined,
 	context: { sessionId: string; provider: string; model: string },
@@ -712,11 +713,12 @@ function streamWithRetry(
 				);
 			}
 			if (!terminal) {
+				const error = incompleteStreamError(context);
 				log.warn(
 					{ ...context, attempt: attempt + 1 },
 					"provider stream ended without terminal event",
 				);
-				return;
+				return out.push({ type: "error", reason: "error", error });
 			}
 			const retryError = terminal.type === "error" ? terminal.error : undefined;
 			const contextLength =
@@ -780,6 +782,30 @@ function streamWithRetry(
 		}
 	})();
 	return out;
+}
+function incompleteStreamError(context: {
+	provider: string;
+	model: string;
+}): AssistantMessage {
+	const errorMessage = "provider stream ended without a terminal event";
+	return {
+		role: "assistant",
+		content: [],
+		api: "openai-completions",
+		provider: context.provider,
+		model: context.model,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "error",
+		errorMessage,
+		timestamp: Date.now(),
+	};
 }
 function isContextLengthError(message: string | undefined): boolean {
 	return /context(?: window| length)|maximum context|too many tokens/i.test(

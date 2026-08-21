@@ -22,6 +22,48 @@ function footerLine(frame: string) {
 }
 
 describe("OpenTUI app", () => {
+	test("opens and navigates agent views with arrow keys", async () => {
+		const store = createTuiStore("session-1");
+		for (const [id, description] of [
+			["agent-1", "Inspect package version"],
+			["agent-2", "Review implementation"],
+		] as const)
+			store.getState().apply({
+				type: "subagent-state",
+				agent: {
+					id,
+					profile: "explore",
+					description,
+					state: "running",
+				},
+			});
+		const view = await createTestRenderer({ width: 72, height: 24 });
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			view.mockInput.pressArrow("down");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain(
+				"› • explore · Inspect package version",
+			);
+			view.mockInput.pressArrow("down");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain(
+				"› • explore · Review implementation",
+			);
+			view.mockInput.pressArrow("up");
+			view.mockInput.pressArrow("up");
+			await view.flush();
+			expect(view.captureCharFrame()).not.toContain("› • explore");
+
+			view.mockInput.pressArrow("left");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("Agents");
+			expect(view.captureCharFrame()).toContain("Inspect package version");
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
 	test("accepts binary and injected Ctrl/Meta-V images without platform clipboard", async () => {
 		const store = createTuiStore("session-1");
 		const sent: unknown[] = [];

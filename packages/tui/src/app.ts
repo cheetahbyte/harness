@@ -235,6 +235,9 @@ export class TuiApp {
 				toggleThinking: () => this.toggleThinking(),
 				cycleThinkingLevel: () => this.cycleThinkingLevel(),
 				cycleModel: () => this.cycleModel(),
+				openAgent: (id) => {
+					if (id) this.showAgentTranscript(id);
+				},
 			},
 			this.clipboard,
 		);
@@ -249,6 +252,7 @@ export class TuiApp {
 		renderer.root.add(this.root);
 		renderer.on(CliRenderEvents.RESIZE, this.updateLayout);
 		this.unsubscribe = store.subscribe(() => this.sync());
+		renderer.keyInput.prependListener("keypress", this.handleGlobalKey);
 		this.updateLayout();
 		this.sync();
 	}
@@ -269,6 +273,7 @@ export class TuiApp {
 		this.unsubscribe();
 		this.renderer.off(CliRenderEvents.RESIZE, this.updateLayout);
 		this.composer.destroy();
+		this.renderer.keyInput.off("keypress", this.handleGlobalKey);
 		this.wizard.destroy();
 	}
 
@@ -329,9 +334,17 @@ export class TuiApp {
 	private showAgentTranscript(id: string) {
 		const agent = this.store.getState().agents.find((item) => item.id === id);
 		const entries = this.store.getState().agentTranscripts[id] ?? [];
+		const lines = entries.reduce<string[]>((result, entry) => {
+			const prefix = `${entry.kind}: `;
+			const previous = result.at(-1);
+			if (previous?.startsWith(prefix))
+				result[result.length - 1] = `${previous}${entry.text}`;
+			else result.push(`${prefix}${entry.text}`);
+			return result;
+		}, []);
 		const body = entries.length
-			? entries.map((entry) => `${entry.kind}: ${entry.text}`).join("\n")
-			: "No transcript events received yet.";
+			? lines.join("\n")
+			: (agent?.summary ?? "No transcript events received yet.");
 		this.showNoticeText(
 			agent ? `${agent.profile} · ${agent.state}` : "Agent transcript",
 			body,
@@ -366,6 +379,7 @@ export class TuiApp {
 		this.transcript.update(state.entries);
 		this.agents.update(state.agents);
 		this.composer.update(state.followUps);
+		this.composer.setActiveAgents(state.agents);
 		this.composer.setRunning(state.running);
 		this.composer.setThinkingLevel(state.modelConfig?.thinkingLevel);
 		/**
@@ -394,6 +408,30 @@ export class TuiApp {
 			this.renderWizard(state.wizard);
 		}
 	}
+
+	private handleGlobalKey = (key: {
+		name?: string;
+		defaultPrevented?: boolean;
+		preventDefault: () => void;
+	}) => {
+		if (key.defaultPrevented || key.name !== "left" || this.wizard.root.visible)
+			return;
+		key.preventDefault();
+		const agents = this.store.getState().agents;
+		if (!agents.length)
+			return this.showNoticeText("Agents", "No child agents.");
+		this.showSelect(
+			"Agents",
+			agents.map((agent) => ({
+				name: `${agent.profile} · ${agent.state}`,
+				description: agent.description,
+				value: agent.id,
+			})),
+			(option) => this.showAgentTranscript(String(option.value)),
+			true,
+			"inline",
+		);
+	};
 
 	private toggleThinking() {
 		const disabled = !this.store.getState().disableThinkingBlocks;
