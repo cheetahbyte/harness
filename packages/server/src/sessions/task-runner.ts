@@ -18,10 +18,11 @@ import {
 	describeRejection,
 	type TokenAccountant,
 } from "../capabilities/context";
+import type { CapabilityInput } from "../capabilities/types";
 import type { ContextManager } from "../context/manager";
 import { ContextBudgetError } from "../context/types";
 import { log } from "../logger";
-import { isMcpProvider, mcpCapabilities } from "../mcp/capabilities";
+import { mcpCapabilities } from "../mcp/capabilities";
 import type { McpRegistry, McpToolDescriptor } from "../mcp/registry";
 import { expandPrompt, scanPrompts } from "../prompts";
 import { activateSkill, type SkillSnapshotEntry, scanSkills } from "../skills";
@@ -113,7 +114,7 @@ export class SessionTaskRunner {
 				: undefined;
 		const running = await this.createTask({
 			id: request.sessionId,
-			text: `${request.profile.body}\n\n${request.task}\n\nBefore ending, call submit_subagent_result exactly once with your Markdown handoff.`,
+			text: subagentPrompt(request.profile, request.task),
 			images: [],
 			controller,
 			laneId: request.laneId,
@@ -610,14 +611,24 @@ export class SessionTaskRunner {
 				{ sessionId: id, prompt: template.name, path: template.path },
 				"prompt template expanded",
 			);
-		const parentTools = profile ? undefined : await this.subagentTools?.(id);
+		const allowSubagents =
+			!profile ||
+			profile.allowedSubagents === "all" ||
+			(Array.isArray(profile.allowedSubagents) &&
+				profile.allowedSubagents.length > 0);
+		const parentTools = allowSubagents
+			? await this.subagentTools?.(id)
+			: undefined;
+		const directCapabilities = [
+			...tools.capabilities(bindingGeneration),
+			...contextCapabilities(bindingGeneration),
+			...(parentTools
+				? parentSubagentCapabilities(parentTools, bindingGeneration)
+				: []),
+		];
 		const catalog = new CapabilityCatalog(
 			[
-				...tools.capabilities(bindingGeneration),
-				...contextCapabilities(bindingGeneration),
-				...(parentTools
-					? parentSubagentCapabilities(parentTools, bindingGeneration)
-					: []),
+				...directCapabilities,
 				...mcpCapabilities(childMcpTools, bindingGeneration),
 				...skills.map(({ capability }) => capability),
 			],
@@ -652,7 +663,7 @@ export class SessionTaskRunner {
 			taskId: task.id,
 			capabilitySnapshotId: bindingGeneration,
 		});
-		this.loadTools(task, snapshot, context, accountant);
+		this.loadTools(task, snapshot, context, accountant, directCapabilities);
 		const { prompt, selected } = selectedSkills(expanded, skills);
 		const skipped = await this.activateSkills(
 			id,
@@ -750,45 +761,29 @@ export class SessionTaskRunner {
 		snapshot: CapabilitySnapshot,
 		context: CapabilityContext,
 		accountant: TokenAccountant,
+		directCapabilities: readonly CapabilityInput[],
 	): void {
-		/**
-		 * Discovery is paginated and ordered by id, so a catalog large enough to
-		 * span pages would otherwise strand core tools behind `tool:mcp__…`.
-		 */
-		let cursor: string | undefined;
-		do {
-			const page = snapshot.list({
-				kind: "tool",
-				limit: 100,
-				...(cursor === undefined ? {} : { cursor }),
+		for (const input of directCapabilities) {
+			const ref = snapshot.reference(input.id, "operator");
+			const inspected = snapshot.inspect(ref);
+			const admission = context.admit({
+				capability: ref,
+				scope: "task",
+				contentHash: ref.contractHash,
+				content: inspected.contract,
+				accountant,
 			});
-			for (const item of page.items) {
-				if (
-					isMcpProvider(item.ref.providerBinding.providerId) ||
-					item.ref.providerBinding.providerId === "harnez-subagents"
-				)
-					continue;
-				const inspected = snapshot.inspect(item.ref);
-				const admission = context.admit({
-					capability: item.ref,
-					scope: "task",
-					contentHash: item.ref.contractHash,
-					content: inspected.contract,
-					accountant,
-				});
-				if (admission.status === "rejected") {
-					log.error(
-						{ tool: item.ref.id, admission },
-						"core tool did not fit the capability budget",
-					);
-					throw new Error(
-						describeRejection(admission, `The ${inspected.name} tool`),
-					);
-				}
-				task.load(item.ref);
+			if (admission.status === "rejected") {
+				log.error(
+					{ tool: ref.id, admission },
+					"core tool did not fit the capability budget",
+				);
+				throw new Error(
+					describeRejection(admission, `The ${inspected.name} tool`),
+				);
 			}
-			cursor = page.nextCursor;
-		} while (cursor !== undefined);
+			task.load(ref);
+		}
 	}
 
 	/**
@@ -937,6 +932,13 @@ function withSkippedSkills(prompt: string, skipped: readonly string[]): string {
 	return `${prompt}\n\n<system-reminder>\n${skipped.join(
 		"\n",
 	)}\nAnswer without it and tell the user it was not applied.\n</system-reminder>`;
+}
+
+export function subagentPrompt(
+	profile: Pick<ResolvedAgentProfile, "name" | "body">,
+	task: string,
+): string {
+	return `You are already running as the ${profile.name} subagent. Execute the assigned task directly; do not delegate it or merely announce that another agent was started.\n\n${profile.body}\n\n${task}\n\nBefore ending, call submit_subagent_result exactly once with your Markdown handoff.`;
 }
 
 function selectedSkills(

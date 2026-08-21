@@ -19,7 +19,7 @@ import type {
 	ImageAttachment,
 } from "../../shared/src/protocol";
 import { displayUserInput } from "../../shared/src/protocol";
-import { AgentsView } from "./components/agents";
+import { AgentsView, GlobalAgentsView } from "./components/agents";
 import { type CommandHint, ComposerView } from "./components/composer";
 import { FooterView } from "./components/footer";
 import { HeaderView } from "./components/header";
@@ -44,6 +44,7 @@ export class TuiApp {
 	private readonly header: HeaderView;
 	private readonly transcript: TranscriptView;
 	private readonly agents: AgentsView;
+	private readonly globalAgents: GlobalAgentsView;
 	private readonly composer: ComposerView;
 	private readonly wizard: WizardView;
 	private readonly footer: FooterView;
@@ -53,6 +54,7 @@ export class TuiApp {
 	private flow: WizardFlow | undefined;
 	private renderedWizard: WizardState | undefined;
 	private authUrl: string | undefined;
+	private viewedAgentId: string | undefined;
 
 	constructor(
 		private readonly renderer: CliRenderer,
@@ -73,6 +75,7 @@ export class TuiApp {
 		this.header = new HeaderView(renderer);
 		this.transcript = new TranscriptView(renderer);
 		this.agents = new AgentsView(renderer);
+		this.globalAgents = new GlobalAgentsView(renderer);
 		this.commands = [
 			{
 				name: "/clear",
@@ -235,9 +238,7 @@ export class TuiApp {
 				toggleThinking: () => this.toggleThinking(),
 				cycleThinkingLevel: () => this.cycleThinkingLevel(),
 				cycleModel: () => this.cycleModel(),
-				openAgent: (id) => {
-					if (id) this.showAgentTranscript(id);
-				},
+				openAgent: (id) => this.selectTranscript(id),
 			},
 			this.clipboard,
 		);
@@ -246,6 +247,7 @@ export class TuiApp {
 		this.transcript.root.add(this.header.root);
 		this.root.add(this.transcript.root);
 		this.root.add(this.agents.root);
+		this.root.add(this.globalAgents.root);
 		this.root.add(this.composer.root);
 		this.root.add(this.wizard.root);
 		this.root.add(this.footer.root);
@@ -351,6 +353,31 @@ export class TuiApp {
 		);
 	}
 
+	private selectTranscript(id: string | undefined) {
+		this.viewedAgentId = id;
+		const state = this.store.getState();
+		this.transcript.update(this.entriesForTranscript(state, id));
+		this.renderer.requestRender();
+	}
+
+	private entriesForTranscript(state: TuiState, id: string | undefined) {
+		if (!id) return state.entries;
+		const entries = state.agentTranscripts[id] ?? [];
+		const agent = state.agents.find((item) => item.id === id);
+		return agent?.summary
+			? [
+					...entries,
+					{
+						kind:
+							agent.state === "failed"
+								? ("error" as const)
+								: ("status" as const),
+						text: `handoff: ${agent.summary}`,
+					},
+				]
+			: entries;
+	}
+
 	private queuedTaskId(args: string): string {
 		const taskId = args.trim() || this.store.getState().blockedQueueId;
 		if (!taskId) throw new Error("blocked queued task id is required");
@@ -376,8 +403,11 @@ export class TuiApp {
 		this.transcript.setSkills(state.skills.map((skill) => skill.name));
 		this.transcript.setPrompts(state.prompts.map((prompt) => prompt.name));
 		this.transcript.setDisableThinkingBlocks(state.disableThinkingBlocks);
-		this.transcript.update(state.entries);
+		this.transcript.update(
+			this.entriesForTranscript(state, this.viewedAgentId),
+		);
 		this.agents.update(state.agents);
+		this.globalAgents.update(state.agents);
 		this.composer.update(state.followUps);
 		this.composer.setActiveAgents(state.agents);
 		this.composer.setRunning(state.running);
@@ -403,6 +433,7 @@ export class TuiApp {
 			if (!named.has(command.name)) named.set(command.name, command);
 		this.composer.setCommands([...named.values()]);
 		this.footer.update(state);
+		if (this.globalAgents.root.visible) this.setGlobalAgentsVisible(true);
 		if (state.wizard !== this.renderedWizard) {
 			this.renderedWizard = state.wizard;
 			this.renderWizard(state.wizard);
@@ -414,24 +445,43 @@ export class TuiApp {
 		defaultPrevented?: boolean;
 		preventDefault: () => void;
 	}) => {
-		if (key.defaultPrevented || key.name !== "left" || this.wizard.root.visible)
+		if (key.defaultPrevented || this.wizard.root.visible) return;
+		if (this.globalAgents.root.visible) {
+			if (key.name === "up" || key.name === "down") {
+				this.globalAgents.moveSelection(key.name === "up" ? -1 : 1);
+				key.preventDefault();
+				return;
+			}
+			if (key.name === "return") {
+				const id = this.globalAgents.selectedId;
+				this.setGlobalAgentsVisible(false);
+				this.selectTranscript(id);
+				key.preventDefault();
+				return;
+			}
+			if (
+				key.name === "escape" ||
+				key.name === "right" ||
+				key.name === "left"
+			) {
+				this.setGlobalAgentsVisible(false);
+				key.preventDefault();
+			}
 			return;
+		}
+		if (key.name !== "left") return;
 		key.preventDefault();
-		const agents = this.store.getState().agents;
-		if (!agents.length)
-			return this.showNoticeText("Agents", "No child agents.");
-		this.showSelect(
-			"Agents",
-			agents.map((agent) => ({
-				name: `${agent.profile} · ${agent.state}`,
-				description: agent.description,
-				value: agent.id,
-			})),
-			(option) => this.showAgentTranscript(String(option.value)),
-			true,
-			"inline",
-		);
+		this.setGlobalAgentsVisible(true);
 	};
+
+	private setGlobalAgentsVisible(visible: boolean) {
+		this.globalAgents.root.visible = visible;
+		this.transcript.root.visible = !visible;
+		this.agents.root.visible = !visible;
+		this.composer.setActive(!visible);
+		this.footer.root.visible = !visible;
+		this.renderer.requestRender();
+	}
 
 	private toggleThinking() {
 		const disabled = !this.store.getState().disableThinkingBlocks;

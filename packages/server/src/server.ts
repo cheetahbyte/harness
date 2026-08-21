@@ -23,7 +23,7 @@ import type {
 import { displayUserInput } from "../../shared/src/protocol";
 import { HarnezAgentRuntime } from "./agent/runtime";
 import { ContextManager } from "./context/manager";
-import type { SubagentResult } from "./context/types";
+import type { PublicSubagentRecord, SubagentResult } from "./context/types";
 import { validateImages } from "./images";
 import { log } from "./logger";
 import { McpConnectionPool } from "./mcp/pool";
@@ -177,23 +177,20 @@ export class HarnezServer {
 			emit: (sessionId, record) =>
 				this.publish(
 					sessionId,
-					{
-						type: "subagent-state",
-						agent: {
-							id: record.id,
-							profile: record.profile,
-							description: record.description,
-							state: record.state,
-							...(record.startedAt ? { startedAt: record.startedAt } : {}),
-							...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
-							...(record.result?.summary
-								? { summary: record.result.summary }
-								: {}),
-						},
-					},
+					{ type: "subagent-state", agent: subagentStateAgent(record) },
 					false,
 				),
 			limits: (sessionId) => this.settingsFor(sessionId).subagents(),
+			notifyCompletion: (sessionId, record) => {
+				const session = this.sessions.get(sessionId);
+				if (!session) return;
+				const messageText = `Subagent ${record.id} (${record.profile}) finished: ${record.state}. Retrieve its handoff with get_agent_result("${record.id}").`;
+				session.scheduler.enqueue(
+					{ id: crypto.randomUUID(), text: messageText },
+					this.store.contextSequence(sessionId),
+				);
+				void this.advance(sessionId, session.scheduler.next());
+			},
 		});
 		this.taskRunner.setSubagentTools(async (sessionId) =>
 			parentSubagentTools(
@@ -310,7 +307,7 @@ export class HarnezServer {
 		for (const { seq, event } of this.store.eventsFrom(id, from))
 			listener(event, seq);
 		for (const agent of this.subagents.snapshot(id))
-			listener({ type: "subagent-state", agent: agent });
+			listener({ type: "subagent-state", agent: subagentStateAgent(agent) });
 		const model = this.modelConfig(id);
 		if (model) listener({ type: "model-config", config: model });
 		listener({ type: "fast-cycle", entries: this.settingsFor(id).fastCycle() });
@@ -1027,6 +1024,27 @@ export class HarnezServer {
 		const seq = persist ? this.store.append(id, event) : undefined;
 		this.session(id).events.emit("event", event, seq);
 	}
+}
+
+export function subagentStateAgent(
+	record: PublicSubagentRecord & {
+		startedAt?: string;
+		finishedAt?: string;
+	},
+): Extract<ServerEvent, { type: "subagent-state" }>["agent"] {
+	return {
+		id: record.id,
+		...(record.parentId ? { parentId: record.parentId } : {}),
+		...(record.depth === undefined ? {} : { depth: record.depth }),
+		...(record.color ? { color: record.color } : {}),
+		...(record.resumable === undefined ? {} : { resumable: record.resumable }),
+		profile: record.profile,
+		description: record.description,
+		state: record.state,
+		...(record.startedAt ? { startedAt: record.startedAt } : {}),
+		...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
+		...(record.result?.summary ? { summary: record.result.summary } : {}),
+	};
 }
 
 function sameModel(a: ModelConfig, b: ModelConfig): boolean {

@@ -60,6 +60,16 @@ type Options = {
 		},
 	) => void;
 	limits?: (sessionId: string) => { maxConcurrent: number; maxDepth: number };
+	notifyCompletion?: (
+		sessionId: string,
+		record: {
+			id: string;
+			profile: string;
+			description: string;
+			state: SubagentState;
+			summary: string;
+		},
+	) => void;
 };
 
 const restartResult: SubagentResult = {
@@ -115,7 +125,7 @@ export class SubagentManager {
 		task: string;
 		description: string;
 		parentAgentId?: string;
-	}): Promise<{ id: string; state: "queued" | "running" }> {
+	}): Promise<{ id: string; state: "queued" | "running"; nextStep: string }> {
 		const profile = await this.options.resolveProfile(
 			input.sessionId,
 			input.profile,
@@ -175,7 +185,11 @@ export class SubagentManager {
 		});
 		this.publish(record);
 		void this.drain(input.sessionId, profile);
-		return { id, state: "queued" };
+		return {
+			id,
+			state: "queued",
+			nextStep: `Call get_agent_result("${id}") to block until the handoff is ready.`,
+		};
 	}
 
 	async get(
@@ -400,8 +414,32 @@ export class SubagentManager {
 			startedAt: record.startedAt,
 			handoff: result,
 		});
+		this.options.context.record({
+			sessionId: record.sessionId,
+			originLane: "main",
+			kind: "subagent-handoff",
+			lifecycle: "retained",
+			projection: "omitted",
+			reason: "subagent completion notice",
+			payload: {
+				schemaVersion: 1,
+				id: record.id,
+				profile: record.profile,
+				description: record.description,
+				state,
+				summary: result.summary,
+			},
+			tokenCost: 0,
+		});
 		this.options.forget(record.id);
 		this.publish(record);
+		this.options.notifyCompletion?.(record.sessionId, {
+			id: record.id,
+			profile: record.profile,
+			description: record.description,
+			state,
+			summary: result.summary,
+		});
 		for (const resolve of record.waiters) resolve();
 		record.waiters.clear();
 		void this.drain(record.sessionId);

@@ -111,6 +111,7 @@ export function contextCapabilities(
 		providerBinding: { providerId: "harnez", bindingGeneration },
 		schema: tool.parameters,
 		effect: tool.effect,
+		modelDiscoverable: false,
 	}));
 }
 
@@ -169,7 +170,7 @@ function instrument(
 	return {
 		...tool,
 		execute: async (id, input, signal, onUpdate) => {
-			const ref = task.snapshot.reference(`tool:${tool.name}`);
+			const ref = task.snapshot.reference(`tool:${tool.name}`, "operator");
 			const result = (await task.execute(ref, input, {
 				execute: async (_input, runtimeSignal) =>
 					await tool.execute(
@@ -334,7 +335,10 @@ function inspectCapabilityTool(task: TaskRuntime): AgentTool {
 		description: "Inspect one capability contract by canonical id.",
 		parameters: idSchema(),
 		execute: async (_id, input) => {
-			const ref = task.snapshot.reference((input as { id: string }).id);
+			const ref = task.snapshot.reference(
+				(input as { id: string }).id,
+				"operator",
+			);
 			return {
 				content: [
 					{
@@ -359,7 +363,10 @@ function loadTool(
 			"Make one catalog tool callable, using an id from capabilities_search or capabilities_list. Inspecting it first is optional. The tool joins your tool list from the next turn onward, so end the turn after loading it rather than trying to call it in the same one.",
 		parameters: idSchema(),
 		execute: async (_id, input) => {
-			const ref = task.snapshot.reference((input as { id: string }).id);
+			const ref = task.snapshot.reference(
+				(input as { id: string }).id,
+				"operator",
+			);
 			task.snapshot.require(ref, "load");
 			const inspected = task.snapshot.inspect(ref);
 			if (inspected.kind !== "tool") throw new Error("CAPABILITY_NOT_A_TOOL");
@@ -401,7 +408,10 @@ function activateSkillTool(
 		description: "Verify and activate one skill for this task.",
 		parameters: idSchema(),
 		execute: async (_id, input) => {
-			const ref = task.snapshot.reference((input as { id: string }).id);
+			const ref = task.snapshot.reference(
+				(input as { id: string }).id,
+				"operator",
+			);
 			task.snapshot.require(ref, "activate");
 			const entry = skills.find((candidate) => candidate.ref.id === ref.id);
 			if (!entry) throw new Error("STALE_CAPABILITY");

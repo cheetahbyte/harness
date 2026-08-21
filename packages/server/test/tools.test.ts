@@ -150,31 +150,26 @@ test("bash children keep ordinary environment but lose telemetry settings", asyn
 	}
 });
 
-test("registers every context tool as a discoverable capability", () => {
+test("registers every context tool as operator capability (modelDiscoverable: false)", () => {
 	const capabilities = contextCapabilities("binding-1");
 	const snapshot = new CapabilityCatalog(capabilities, "binding-1").snapshot({
 		tool: { maxLevel: "execute", confirmation: "none" },
 		skill: { maxLevel: "activate" },
 	});
 
-	expect(snapshot.list().items.map((item) => item.ref.id)).toEqual([
-		"tool:condense_context",
-		"tool:episode",
-		"tool:pin_context",
-		"tool:recall_observation",
-	]);
-	const recall = snapshot.search("observation").items[0];
-	expect(recall?.ref.id).toBe("tool:recall_observation");
+	expect(snapshot.list().items).toEqual([]);
+	const ref = snapshot.reference("tool:recall_observation", "operator");
+	expect(ref.id).toBe("tool:recall_observation");
 	/** Paging belongs in the contract, not in folklore about the URI format. */
 	expect(
-		JSON.stringify(snapshot.inspect(recall!.ref).contract),
+		JSON.stringify(snapshot.inspect(ref).contract),
 	).toContain("offset");
-	expect(snapshot.inspect(recall!.ref).contract).toMatchObject({
+	expect(snapshot.inspect(ref).contract).toMatchObject({
 		effect: "read_only",
 	});
 });
 
-test("registers loaded subagent tools as discoverable capabilities", () => {
+test("registers loaded subagent tools as operator capabilities (modelDiscoverable: false)", () => {
 	const binding = "binding-1";
 	const tools = parentSubagentTools({} as never, "session-1", [
 		{ name: "only-agent", description: "The only configured subagent." },
@@ -187,10 +182,10 @@ test("registers loaded subagent tools as discoverable capabilities", () => {
 		skill: { maxLevel: "activate" },
 	});
 
-	expect(snapshot.search("get agent result wait").items[0]?.ref.id).toBe(
-		"tool:get_agent_result",
-	);
-	const spawn = snapshot.inspect(snapshot.reference("tool:spawn_agent"));
+	expect(snapshot.list().items).toEqual([]);
+	const getRef = snapshot.reference("tool:get_agent_result", "operator");
+	expect(getRef.id).toBe("tool:get_agent_result");
+	const spawn = snapshot.inspect(snapshot.reference("tool:spawn_agent", "operator"));
 	expect(spawn.description).toContain(
 		"only-agent: The only configured subagent.",
 	);
@@ -274,3 +269,74 @@ test("condense_context reports mutation details, suppresses no-op events, and al
 	expect(active.content[0]).toMatchObject({ text: "No context was condensed." });
 	rmSync(dir, { recursive: true, force: true });
 });
+
+test("BashTool appends advisory warning on repeated identical commands and sleep loops", async () => {
+	const workspace = mkdtempSync(join(tmpdir(), "harnez-bash-loop-"));
+	paths.push(workspace);
+	const tools = new CoreTools(workspace);
+	const signal = new AbortController().signal;
+
+	// Executing same command twice should not trigger advisory
+	await execute(tools, "bash", { command: "echo test" }, signal);
+	const res2 = await execute(tools, "bash", { command: "echo test" }, signal);
+	expect(res2).not.toContain("[advisory:");
+
+	// Third identical command triggers advisory
+	const res3 = await execute(tools, "bash", { command: "echo test" }, signal);
+	expect(res3).toContain("[advisory: repeated identical command");
+
+	// Sleep loop tracking
+	const tools2 = new CoreTools(workspace);
+	for (let i = 0; i < 3; i++) {
+		const res = await execute(tools2, "bash", { command: `echo sleep-${i}; sleep 0` }, signal);
+		expect(res).not.toContain("[advisory:");
+	}
+	const resSleep4 = await execute(tools2, "bash", { command: "echo sleep-4; sleep 0" }, signal);
+	expect(resSleep4).toContain("[advisory: repeated identical command");
+});
+
+test("marks first-party capabilities modelDiscoverable: false", () => {
+	const coreCaps = new CoreTools("/tmp").capabilities("binding");
+	expect(coreCaps.every((c) => c.modelDiscoverable === false)).toBe(true);
+
+	const contextCaps = contextCapabilities("binding");
+	expect(contextCaps.every((c) => c.modelDiscoverable === false)).toBe(true);
+
+	const subagentCaps = parentSubagentCapabilities(
+		[{ name: "spawn_agent", description: "spawn", parameters: {} as never, label: "spawn", execute: async () => ({ content: [], details: {} }) }],
+		"binding",
+	);
+	expect(subagentCaps.every((c) => c.modelDiscoverable === false)).toBe(true);
+});
+
+test("spawn_agent tool description mentions retrieval and returns nextStep hint", async () => {
+	const tools = parentSubagentTools(
+		{
+			spawn: async () => {
+				return {
+					id: "child-123",
+					state: "queued",
+					nextStep: 'Call get_agent_result("child-123") to block until the handoff is ready.',
+				};
+			},
+		} as never,
+		"session-1",
+		[{ name: "explore", description: "Explore profile." }],
+	);
+
+	const spawn = tools.find((t) => t.name === "spawn_agent")!;
+	expect(spawn.description).toContain("Call get_agent_result with the returned ID to wait for its output.");
+
+	const result = await spawn.execute(
+		"call-1",
+		{ profile: "explore", task: "do work", description: "work" },
+		new AbortController().signal,
+	);
+	const text = result.content.find((c) => c.type === "text")?.text ?? "";
+	expect(JSON.parse(text)).toMatchObject({
+		id: "child-123",
+		state: "queued",
+		nextStep: 'Call get_agent_result("child-123") to block until the handoff is ready.',
+	});
+});
+

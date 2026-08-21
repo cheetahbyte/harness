@@ -5,12 +5,9 @@ slug: architecture/tool-discovery
 
 # Tool discovery
 
-Harnez gives each task an immutable catalog snapshot. The catalog contains
-workspace tools and model-invocable skills. Discovery returns trusted metadata
-first, so the model does not receive every tool schema or skill body at once.
+Harnez gives each task an immutable catalog snapshot containing MCP tools and model-invocable skills. Discovery returns trusted metadata first, so the model does not receive every MCP schema or skill body at once.
 
-Core workspace tools are loaded when a task starts. The same discovery path
-supports capabilities that are not already loaded.
+Core workspace tools, context capabilities, and subagent tools are loaded directly into the task's tool list (`modelDiscoverable: false`) when a task starts. Dynamic catalog discovery handles MCP tools and skills.
 
 ## Discovery flow
 

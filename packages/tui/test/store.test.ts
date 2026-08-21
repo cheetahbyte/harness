@@ -20,11 +20,11 @@ describe("TUI protocol store", () => {
 		expect(
 			store
 				.getState()
-				.entries.filter((entry) => entry.text.includes("explore started")),
+				.entries.filter((entry) => entry.kind === "agent"),
 		).toEqual([
 			{
-				kind: "status",
-				text: "explore started · Inspect package version",
+				kind: "agent",
+				text: "◆ Explore(Inspect package version)\n  ╰ Backgrounded agent (↓ to manage · ← for all agents)",
 			},
 		]);
 	});

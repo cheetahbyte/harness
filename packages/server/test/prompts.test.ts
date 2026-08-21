@@ -24,10 +24,11 @@ test("guides agents to avoid short-task bookkeeping and batch tool calls", () =>
 	 * list will deny capabilities the user has actually connected, or reach for
 	 * bash instead of the tool built for the job.
 	 */
-	expect(SYSTEM_PROMPT).toContain("Your tool list is partial");
-	expect(SYSTEM_PROMPT).toContain("call capabilities_search");
 	expect(SYSTEM_PROMPT).toContain(
-		"Never conclude that a tool is unavailable from your tool list alone",
+		"Your tool list is authoritative for workspace and built-in capabilities",
+	);
+	expect(SYSTEM_PROMPT).toContain(
+		"Additional MCP tools and skills wait in a catalog behind capabilities_search",
 	);
 	expect(SYSTEM_PROMPT).toContain("skip episodes and pin_context for short tasks");
 	/** The trigger has to be something the model can observe, not a guess. */

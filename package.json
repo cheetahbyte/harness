@@ -76,7 +76,8 @@
 			"!docs/**"
 		],
 		"ignore": [
-			"packages/server/test/fixtures/mcp-echo-server.ts"
+			"packages/server/test/fixtures/mcp-echo-server.ts",
+			"references/**"
 		]
 	}
 }

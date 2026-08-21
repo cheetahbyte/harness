@@ -173,6 +173,7 @@ function formatEntry(
 			"tool-call": "",
 			"tool-result": "↳ ",
 			error: "error: ",
+			agent: "",
 			status: "[",
 			usage: "usage: ",
 			compaction: "⋯ ",

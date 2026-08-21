@@ -22,8 +22,42 @@ function footerLine(frame: string) {
 }
 
 describe("OpenTUI app", () => {
+	test("shows failed handoffs and opens them from the global agent view", async () => {
+		const store = createTuiStore("session-1");
+		store.getState().apply({
+			type: "subagent-state",
+			agent: {
+				id: "agent-1",
+				profile: "general-purpose",
+				description: "List packages",
+				state: "failed",
+				summary: "The child ended without submitting its handoff.",
+			},
+		});
+		const view = await createTestRenderer({ width: 72, height: 20 });
+		const app = new TuiApp(view.renderer, store, async () => {});
+		try {
+			view.mockInput.pressArrow("left");
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("› • main");
+			expect(view.captureCharFrame()).toContain(
+				"The child ended without submitting its handoff.",
+			);
+			view.mockInput.pressArrow("down");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(view.captureCharFrame()).toContain(
+				"handoff: The child ended without submitting its handoff.",
+			);
+		} finally {
+			app.destroy();
+			view.renderer.destroy();
+		}
+	});
+
 	test("opens and navigates agent views with arrow keys", async () => {
 		const store = createTuiStore("session-1");
+		store.getState().apply({ type: "assistant-delta", text: "main transcript" });
 		for (const [id, description] of [
 			["agent-1", "Inspect package version"],
 			["agent-2", "Review implementation"],
@@ -37,28 +71,58 @@ describe("OpenTUI app", () => {
 					state: "running",
 				},
 			});
+		for (const [agentId, text] of [
+			["agent-1", "first child transcript"],
+			["agent-2", "second child transcript"],
+		] as const)
+			store.getState().apply({
+				type: "subagent-transcript",
+				agentId,
+				entry: { sequence: 1, kind: "assistant", text },
+			});
 		const view = await createTestRenderer({ width: 72, height: 24 });
 		const app = new TuiApp(view.renderer, store, async () => {});
 		try {
 			view.mockInput.pressArrow("down");
 			await view.flush();
-			expect(view.captureCharFrame()).toContain(
-				"› • explore · Inspect package version",
-			);
+			expect(view.captureCharFrame()).toContain("› ⬢ main");
+			expect(view.captureCharFrame()).toContain("main transcript");
 			view.mockInput.pressArrow("down");
 			await view.flush();
 			expect(view.captureCharFrame()).toContain(
-				"› • explore · Review implementation",
+				"› ◯ Explore  Inspect package version",
 			);
-			view.mockInput.pressArrow("up");
-			view.mockInput.pressArrow("up");
+			expect(view.captureCharFrame()).toContain("main transcript");
+			view.mockInput.pressEnter();
 			await view.flush();
-			expect(view.captureCharFrame()).not.toContain("› • explore");
+			expect(view.captureCharFrame()).toContain("first child transcript");
+			expect(view.captureCharFrame()).not.toContain("main transcript");
+			view.mockInput.pressArrow("down");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(view.captureCharFrame()).toContain(
+				"› ◯ Explore  Review implementation",
+			);
+			expect(view.captureCharFrame()).toContain("second child transcript");
+			view.mockInput.pressArrow("up");
+			view.mockInput.pressArrow("up");
+			view.mockInput.pressEnter();
+			await view.flush();
+			expect(view.captureCharFrame()).toContain("› ⬢ main");
+			expect(view.captureCharFrame()).toContain("main transcript");
 
 			view.mockInput.pressArrow("left");
 			await view.flush();
-			expect(view.captureCharFrame()).toContain("Agents");
-			expect(view.captureCharFrame()).toContain("Inspect package version");
+			const globalFrame = view.captureCharFrame();
+			expect(globalFrame).toContain("Global agents · 2 total");
+			expect(globalFrame).toContain("Working (2)");
+			expect(globalFrame).toContain("› • main");
+			expect(globalFrame).toContain("Inspect package version");
+			expect(globalFrame).not.toContain("Harnez v");
+			view.mockInput.pressArrow("right");
+			await view.flush();
+			expect(view.captureCharFrame()).not.toContain("Global agents");
+			expect(view.captureCharFrame()).toContain("Harnez v");
 		} finally {
 			app.destroy();
 			view.renderer.destroy();

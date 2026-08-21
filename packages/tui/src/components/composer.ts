@@ -43,6 +43,9 @@ function isImageMime(
 		value === "image/webp"
 	);
 }
+function capitalize(value: string): string {
+	return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+}
 export type CommandHint = {
 	name: string;
 	description: string;
@@ -219,7 +222,7 @@ export class ComposerView {
 			marginTop: 1,
 			visible: false,
 		});
-		this.activeAgentRows = Array.from({ length: 10 }, () => {
+		this.activeAgentRows = Array.from({ length: 11 }, () => {
 			const root = new BoxRenderable(renderer, {
 				width: "100%",
 				height: 1,
@@ -272,7 +275,7 @@ export class ComposerView {
 		);
 		this.activeAgentSelection = Math.min(
 			this.activeAgentSelection,
-			Math.max(0, this.activeAgentList.length - 1),
+			this.activeAgentList.length,
 		);
 		this.renderActiveAgents();
 	}
@@ -422,6 +425,7 @@ export class ComposerView {
 		) {
 			if (key.name === "up" && this.activeAgentSelection === 0) {
 				this.activeAgents.visible = false;
+				this.syncHeight();
 				key.preventDefault();
 				return;
 			}
@@ -429,7 +433,7 @@ export class ComposerView {
 			this.activeAgentSelection = Math.max(
 				0,
 				Math.min(
-					this.activeAgentList.length - 1,
+					this.activeAgentList.length,
 					this.activeAgentSelection + direction,
 				),
 			);
@@ -449,10 +453,11 @@ export class ComposerView {
 			return;
 		}
 		if (this.activeAgents.visible && key.name === "return") {
-			this.actions.openAgent?.(
-				this.activeAgentList[this.activeAgentSelection]?.id,
-			);
+			this.openSelectedAgent();
 			key.preventDefault();
+			if (this.input.plainText.trim() || this.images.length) {
+				void this.submit(false);
+			}
 			return;
 		}
 		if (key.super && key.name === "c") {
@@ -463,6 +468,12 @@ export class ComposerView {
 		}
 		if (key.name === "escape") {
 			key.preventDefault();
+			if (this.activeAgents.visible) {
+				this.activeAgents.visible = false;
+				this.syncHeight();
+				this.renderer.requestRender();
+				return;
+			}
 			this.actions.abort();
 			return;
 		}
@@ -611,16 +622,30 @@ export class ComposerView {
 
 	private renderActiveAgents() {
 		this.activeAgents.height = this.activeAgents.visible
-			? this.activeAgentList.length
+			? this.activeAgentList.length + 1
 			: 0;
 		for (const [index, row] of this.activeAgentRows.entries()) {
-			const agent = this.activeAgentList[index];
-			row.root.visible = this.activeAgents.visible && !!agent;
-			if (!agent) continue;
-			row.indicator.content = index === this.activeAgentSelection ? "›" : " ";
-			row.text.content = `• ${agent.profile} · ${agent.description} [${agent.state}]`;
+			const agent = this.activeAgentList[index - 1];
+			const isMain = index === 0;
+			const isSelected = index === this.activeAgentSelection;
+			row.root.visible = this.activeAgents.visible && (isMain || !!agent);
+			row.indicator.content = isSelected ? "›" : " ";
+			if (isMain) {
+				row.text.content = "⬢ main";
+			} else if (agent) {
+				row.text.content = `◯ ${capitalize(agent.profile)}  ${agent.description}`;
+			}
+			row.text.fg = isMain || isSelected ? TEXT : DIM;
 		}
 		this.syncHeight();
+	}
+
+	private openSelectedAgent() {
+		this.actions.openAgent?.(
+			this.activeAgentSelection === 0
+				? undefined
+				: this.activeAgentList[this.activeAgentSelection - 1]?.id,
+		);
 	}
 
 	private ensureSelectionVisible() {

@@ -36,6 +36,7 @@ export function parentSubagentCapabilities(
 		providerBinding: { providerId: "harnez-subagents", bindingGeneration },
 		schema: parameters,
 		effect: name === "get_agent_result" ? "read_only" : "mutating",
+		modelDiscoverable: false,
 	}));
 }
 
@@ -51,7 +52,7 @@ export function parentSubagentTools(
 		{
 			name: "spawn_agent",
 			label: "Spawn agent",
-			description: `Start an isolated subagent for a bounded task. Available profiles:\n${profileDescription}`,
+			description: `Start an isolated subagent for a bounded task. Call get_agent_result with the returned ID to wait for its output. Available profiles:\n${profileDescription}`,
 			parameters: Type.Object(
 				{
 					profile: Type.Union(profiles.map(({ name }) => Type.Literal(name))),

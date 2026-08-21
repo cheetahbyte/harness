@@ -138,7 +138,7 @@ test("step capability context reaches one inference", async () => {
 		tool: { maxLevel: "execute", confirmation: "none" },
 		skill: { maxLevel: "activate" },
 	});
-	const ref = snapshot.reference("tool:read");
+	const ref = snapshot.reference("tool:read", "operator");
 	const capabilityContext = new CapabilityContext(
 		{},
 		(base, items) => ({ base, items }),

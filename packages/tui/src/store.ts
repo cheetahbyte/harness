@@ -22,6 +22,7 @@ type TranscriptKind =
 	| "tool-call"
 	| "tool-result"
 	| "error"
+	| "agent"
 	| "status"
 	| "usage"
 	| "completed"
@@ -118,8 +119,8 @@ export function createTuiStore(sessionId: string, pwd = process.cwd()) {
 							!previous &&
 							["running", "cancelling", "queued"].includes(event.agent.state)
 								? {
-										kind: "status" as const,
-										text: `${event.agent.profile} started · ${event.agent.description}`,
+										kind: "agent" as const,
+										text: `◆ ${capitalize(event.agent.profile)}(${event.agent.description})\n  ╰ Backgrounded agent (↓ to manage · ← for all agents)`,
 									}
 								: !["running", "cancelling", "queued"].includes(
 											event.agent.state,
@@ -438,6 +439,10 @@ function finishActive(entries: TranscriptEntry[]): TranscriptEntry[] {
 	const last = entries.at(-1);
 	if (!last?.active) return entries;
 	return [...entries.slice(0, -1), { ...last, active: false }];
+}
+
+function capitalize(value: string): string {
+	return `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`;
 }
 
 function withoutFollowUp(state: Pick<TuiState, "followUps">, id: string) {

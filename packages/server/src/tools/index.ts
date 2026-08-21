@@ -34,6 +34,7 @@ export class CoreTools {
 			providerBinding: { providerId: "workspace", bindingGeneration },
 			schema: tool.schema,
 			effect: tool.effect,
+			modelDiscoverable: false,
 		}));
 	}
 

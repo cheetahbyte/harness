@@ -9,6 +9,10 @@ export class BashTool extends WorkspaceTool {
 	readonly description = "Run a shell command in the workspace.";
 	readonly schema = Type.Object({ command: Type.String({ minLength: 1 }) });
 
+	private lastCommand: string | undefined;
+	private consecutiveCount = 0;
+	private sleepCount = 0;
+
 	async execute(
 		input: Record<string, unknown>,
 		signal: AbortSignal,
@@ -16,7 +20,17 @@ export class BashTool extends WorkspaceTool {
 		if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 		if (typeof input["command"] !== "string" || !input["command"])
 			throw new Error("command must be a non-empty string");
-		const proc = Bun.spawn(["/bin/sh", "-lc", input["command"]], {
+		const command = input["command"];
+		if (command === this.lastCommand) {
+			this.consecutiveCount++;
+		} else {
+			this.lastCommand = command;
+			this.consecutiveCount = 1;
+		}
+		if (/\bsleep\b/.test(command)) {
+			this.sleepCount++;
+		}
+		const proc = Bun.spawn(["/bin/sh", "-lc", command], {
 			cwd: this.workspace,
 			env: sanitizedChildEnvironment(),
 			stdout: "pipe",
@@ -30,8 +44,13 @@ export class BashTool extends WorkspaceTool {
 			proc.exited,
 		]);
 		signal.removeEventListener("abort", abort);
-		const output = (stdout + stderr).slice(0, 64_000);
+		let output = (stdout + stderr).slice(0, 64_000);
 		if (exitCode !== 0) throw new Error(`exit ${exitCode}: ${output}`);
-		return output || "completed";
+		output = output || "completed";
+		if (this.consecutiveCount >= 3 || this.sleepCount >= 4) {
+			output +=
+				"\n\n[advisory: repeated identical command; change approach, block on get_agent_result, or condense_context]";
+		}
+		return output;
 	}
 }
