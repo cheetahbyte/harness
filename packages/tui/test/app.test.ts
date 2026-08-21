@@ -189,7 +189,6 @@ describe("OpenTUI app", () => {
 			expect(frame).toContain(`Harnez v${VERSION}`);
 			expect(frame).toContain("gpt-5.6-sol · openai-codex · idle");
 			expect(frame).toContain("~/project");
-			expect(frame).toContain("◆");
 			expect(footerLine(frame)).not.toContain("~/project");
 			expect(view.captureCharFrame()).toContain("Read 1 file");
 			/** The path read, not the bytes it returned. */

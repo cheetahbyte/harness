@@ -12,7 +12,7 @@ import {
 
 import { VERSION } from "../../../shared/src/version";
 import type { TuiState } from "../store";
-import { ACCENT, DIM, TEXT, WARNING } from "./theme";
+import { DIM, TEXT, WARNING } from "./theme";
 
 export class HeaderView {
 	readonly root: BoxRenderable;
@@ -31,12 +31,6 @@ export class HeaderView {
 			alignItems: "center",
 			gap: 2,
 		});
-		identity.add(
-			new TextRenderable(renderer, {
-				content: "╲ ╱\n ◆ \n╱ ╲",
-				fg: ACCENT,
-			}),
-		);
 		this.details = new TextRenderable(renderer, {});
 		identity.add(this.details);
 		this.root.add(identity);
