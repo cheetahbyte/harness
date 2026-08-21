@@ -310,23 +310,15 @@ function parseSubagentHandoff(value: unknown): {
 		subagentId,
 		result: {
 			status,
-			findings: stringArray(result["findings"], "findings"),
-			decisions: stringArray(result["decisions"], "decisions"),
-			changedFiles: stringArray(result["changedFiles"], "changed files"),
-			verification: stringArray(result["verification"], "verification"),
-			unresolvedIssues: stringArray(
-				result["unresolvedIssues"],
-				"unresolved issues",
-			),
-			artifactRefs: stringArray(result["artifactRefs"], "artifact refs"),
+			summary: nonEmptyString(result["summary"], "summary"),
 		},
 	};
 }
 
-function stringArray(value: unknown, name: string): string[] {
-	if (!Array.isArray(value) || value.some((item) => typeof item !== "string"))
+function nonEmptyString(value: unknown, name: string): string {
+	if (typeof value !== "string" || !value.trim())
 		throw new Error(`invalid subagent ${name}`);
-	return value as string[];
+	return value;
 }
 
 function errorResponse(error: unknown, status: number): Response {

@@ -171,6 +171,7 @@ export class HarnezAgentRuntime {
 				: { models, model };
 			const created = this.createAgent({
 				sessionId,
+				agentId,
 				laneId,
 				key,
 				model,
@@ -336,6 +337,7 @@ export class HarnezAgentRuntime {
 
 	private createAgent({
 		sessionId,
+		agentId,
 		laneId = "main",
 		key,
 		model,
@@ -351,6 +353,7 @@ export class HarnezAgentRuntime {
 		extraTools = [],
 	}: {
 		sessionId: string;
+		agentId: string;
 		laneId: string;
 		key: string;
 		model: Model<Api>;
@@ -415,7 +418,7 @@ export class HarnezAgentRuntime {
 			}
 		};
 		const agent = new Agent({
-			sessionId,
+			sessionId: agentId,
 			initialState: {
 				model,
 				thinkingLevel: clampThinkingLevel(

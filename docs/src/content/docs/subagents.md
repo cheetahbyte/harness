@@ -86,7 +86,7 @@ The complete tool set is:
 - `steer_agent` replaces the pending direction for a running child.
 - `cancel_agent` requests cancellation of a running child.
 - `submit_subagent_result` is available only inside a child and submits its
-  validated structured handoff.
+  terminal status and Markdown handoff.
 
 Operators can use `/agents`, `/agent-steer <id> <message>`,
 `/agent-cancel <id>`, and `/agent-resume <id> <message>`. The HTTP transcript
@@ -103,8 +103,8 @@ child does not stop its siblings.
 Each child has its own context lane. The child receives the profile body, the
 explicit task, and a result-reporting instruction, but no parent user,
 assistant, reasoning, tool-call, observation, or compacted-history items. The
-full child trace remains on that lane. Only one validated `SubagentResult` is
-appended to the parent's main lane.
+full child trace remains on that lane. Only one validated `SubagentResult`—a
+terminal status plus a Markdown summary—is appended to the parent's main lane.
 
 The TUI lists queued, live, and terminal children in a tree. Child transcript
 deltas are tagged and stay out of the parent transcript.

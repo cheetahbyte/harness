@@ -6,6 +6,10 @@ import { agentTools, contextCapabilities } from "../src/agent/tools";
 import { CapabilityCatalog } from "../src/capabilities/catalog";
 import { ContextManager } from "../src/context/manager";
 import { SessionStore } from "../src/sessions/store";
+import {
+	parentSubagentCapabilities,
+	parentSubagentTools,
+} from "../src/subagents/tools";
 import { CoreTools } from "../src/tools";
 
 async function execute(
@@ -161,6 +165,22 @@ test("registers every context tool as a discoverable capability", () => {
 	expect(snapshot.inspect(recall!.ref).contract).toMatchObject({
 		effect: "read_only",
 	});
+});
+
+test("registers loaded subagent tools as discoverable capabilities", () => {
+	const binding = "binding-1";
+	const tools = parentSubagentTools({} as never, "session-1");
+	const snapshot = new CapabilityCatalog(
+		parentSubagentCapabilities(tools, binding),
+		binding,
+	).snapshot({
+		tool: { maxLevel: "execute", confirmation: "none" },
+		skill: { maxLevel: "activate" },
+	});
+
+	expect(snapshot.search("get agent result wait").items[0]?.ref.id).toBe(
+		"tool:get_agent_result",
+	);
 });
 
 test("condense_context reports mutation details, suppresses no-op events, and allows active episodes", async () => {

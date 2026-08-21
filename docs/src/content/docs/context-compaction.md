@@ -203,10 +203,11 @@ snapshot and context.
 
 ## Subagent handoffs
 
-The parent receives a structured result instead of the subagent's full trace.
-The handoff contains its status, findings, decisions, changed files,
-verification, unresolved issues, and artifact references. The parent keeps the
-result it needs without adding every intermediate step to its own context.
+The parent receives a terminal status and Markdown summary instead of the
+subagent's full trace. The summary can include findings, decisions, changed
+files, verification, unresolved issues, and artifact references without a
+rigid nested schema. The parent keeps the result it needs without adding every
+intermediate step to its own context.
 
 Before admitting a task, Harnez repairs stale main-lane ownership and abandons
 or fails inconsistent child-lane tasks. Abandoning a child lane closes its open

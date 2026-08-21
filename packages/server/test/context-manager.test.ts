@@ -1307,12 +1307,8 @@ describe("ContextManager", () => {
 		const manager = new ContextManager(store);
 		const result = {
 			status: "completed" as const,
-			findings: ["JWT checks happen in middleware"],
-			decisions: ["keep middleware boundary"],
-			changedFiles: ["src/auth.ts"],
-			verification: ["auth tests pass"],
-			unresolvedIssues: [],
-			artifactRefs: ["subagent://task-42"],
+			summary:
+				"## Findings\n\nJWT checks happen in middleware.\n\n## Decisions\n\nKeep middleware boundary.\n\n## Changed files\n\n- src/auth.ts\n\n## Verification\n\nAuth tests pass.\n\nsubagent://task-42",
 		};
 		const handoff = manager.recordSubagentResult(sessionId, result, {
 			subagentId: "task-42",

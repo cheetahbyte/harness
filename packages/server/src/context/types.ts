@@ -165,12 +165,7 @@ export type InspectOptions = {
 };
 export type SubagentResult = {
 	status: "completed" | "blocked" | "failed";
-	findings: string[];
-	decisions: string[];
-	changedFiles: string[];
-	verification: string[];
-	unresolvedIssues: string[];
-	artifactRefs: string[];
+	summary: string;
 };
 export type SubagentState =
 	| "queued"

@@ -186,13 +186,8 @@ export class HarnezServer {
 							state: record.state,
 							...(record.startedAt ? { startedAt: record.startedAt } : {}),
 							...(record.finishedAt ? { finishedAt: record.finishedAt } : {}),
-							...((record.result?.unresolvedIssues[0] ??
-							record.result?.findings[0])
-								? {
-										summary:
-											record.result?.unresolvedIssues[0] ??
-											record.result?.findings[0],
-									}
+							...(record.result?.summary
+								? { summary: record.result.summary }
 								: {}),
 						},
 					},

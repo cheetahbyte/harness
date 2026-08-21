@@ -242,12 +242,7 @@ describe("persistent context lanes", () => {
 		if ("status" in trace) throw new Error("append failed");
 		const handoff = {
 			status: "completed" as const,
-			findings: ["bounded result"],
-			decisions: [],
-			changedFiles: [],
-			verification: ["checked"],
-			unresolvedIssues: [],
-			artifactRefs: [],
+			summary: "## Findings\n\nBounded result.\n\n## Verification\n\nChecked.",
 		};
 		manager.finishTask({ sessionId, taskId: "child-task", status: "completed", laneId: "child", handoff });
 		manager.finishTask({ sessionId, taskId: "child-task", status: "completed", laneId: "child", handoff });

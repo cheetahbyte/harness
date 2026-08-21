@@ -69,9 +69,8 @@ Three inputs steer that loop from the TUI:
 Subagents are isolated agents with predefined profiles, such as `implementer`,
 `explorer`, and `reviewer`. A subagent does not inherit the parent's full
 transcript. It starts with its profile, relevant skills, applicable repository
-instructions, and an explicit task brief. It reports status, changes,
-verification, and unresolved issues. The parent never imports a child's raw
-transcript.
+instructions, and an explicit task brief. It reports a terminal status and a
+Markdown summary. The parent never imports a child's raw transcript.
 
 ## Context management
 

@@ -702,11 +702,12 @@ export class SessionStore {
 		sessionId: string,
 		subagentId: string,
 	): SubagentResult | undefined {
-		return this.contextItems(sessionId).find(
+		const result = this.contextItems(sessionId).find(
 			(item) =>
 				item.kind === "subagent-handoff" &&
 				item.source?.subagentId === subagentId,
-		)?.payload as SubagentResult | undefined;
+		)?.payload;
+		return result === undefined ? undefined : storedSubagentResult(result);
 	}
 
 	claimMainLane(sessionId: string, taskId: string): boolean {
@@ -1137,7 +1138,7 @@ function subagentFromRow(row: SubagentRow): SubagentRecord {
 			: { pendingMessage: row.pending_message }),
 		...(row.result === null
 			? {}
-			: { result: JSON.parse(row.result) as SubagentResult }),
+			: { result: storedSubagentResult(JSON.parse(row.result)) }),
 		...(row.worktree_path === null ? {} : { worktreePath: row.worktree_path }),
 		...(row.worktree_branch === null
 			? {}
@@ -1146,6 +1147,40 @@ function subagentFromRow(row: SubagentRow): SubagentRecord {
 		createdAt: row.created_at,
 		...(row.started_at === null ? {} : { startedAt: row.started_at }),
 		...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
+	};
+}
+
+function storedSubagentResult(value: unknown): SubagentResult {
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		throw new Error("invalid stored subagent result");
+	const result = value as Record<string, unknown>;
+	const status = result["status"];
+	if (status !== "completed" && status !== "blocked" && status !== "failed")
+		throw new Error("invalid stored subagent status");
+	if (typeof result["summary"] === "string")
+		return { status, summary: result["summary"] };
+	const sections = [
+		["Findings", result["findings"]],
+		["Decisions", result["decisions"]],
+		["Changed files", result["changedFiles"]],
+		["Verification", result["verification"]],
+		["Unresolved issues", result["unresolvedIssues"]],
+		["Artifact references", result["artifactRefs"]],
+	]
+		.filter(
+			(entry): entry is [string, string[]] =>
+				Array.isArray(entry[1]) &&
+				entry[1].every((item) => typeof item === "string") &&
+				entry[1].length > 0,
+		)
+		.map(
+			([heading, items]) =>
+				`## ${heading}\n\n${items.map((item) => `- ${item}`).join("\n")}`,
+		);
+	return {
+		status,
+		summary:
+			sections.join("\n\n") || "Legacy subagent handoff contained no summary.",
 	};
 }
 

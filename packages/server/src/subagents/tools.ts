@@ -1,6 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 
+import type { ToolCapabilityInput } from "../capabilities/types";
 import type { SubagentResult } from "../context/types";
 import type { SubagentManager } from "./manager";
 
@@ -11,12 +12,7 @@ const resultSchema = Type.Object(
 			Type.Literal("blocked"),
 			Type.Literal("failed"),
 		]),
-		findings: Type.Array(Type.String()),
-		decisions: Type.Array(Type.String()),
-		changedFiles: Type.Array(Type.String()),
-		verification: Type.Array(Type.String()),
-		unresolvedIssues: Type.Array(Type.String()),
-		artifactRefs: Type.Array(Type.String()),
+		summary: Type.String({ minLength: 1 }),
 	},
 	{ additionalProperties: false },
 );
@@ -25,6 +21,23 @@ const text = (value: unknown) => ({
 	content: [{ type: "text" as const, text: JSON.stringify(value) }],
 	details: {},
 });
+
+export function parentSubagentCapabilities(
+	tools: readonly AgentTool[],
+	bindingGeneration: string,
+): ToolCapabilityInput[] {
+	return tools.map(({ name, description, parameters }) => ({
+		kind: "tool",
+		id: `tool:${name}`,
+		name,
+		description,
+		providerDisplayName: "Harnez subagents",
+		metadataTrust: "harnez",
+		providerBinding: { providerId: "harnez-subagents", bindingGeneration },
+		schema: parameters,
+		effect: name === "get_agent_result" ? "read_only" : "mutating",
+	}));
+}
 
 export function parentSubagentTools(
 	manager: SubagentManager,
@@ -131,7 +144,8 @@ export function submitSubagentResultTool(
 	return {
 		name: "submit_subagent_result",
 		label: "Submit subagent result",
-		description: "Submit the structured handoff exactly once before ending.",
+		description:
+			"Submit a status and Markdown handoff exactly once before ending.",
 		parameters: resultSchema,
 		execute: async (_id, input) =>
 			text({ accepted: submit(input as SubagentResult) }),

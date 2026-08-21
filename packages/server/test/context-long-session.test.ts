@@ -25,12 +25,7 @@ const memory = {
 
 const handoff: SubagentResult = {
 	status: "completed",
-	findings: ["child lane completed"],
-	decisions: [],
-	changedFiles: [],
-	verification: ["release soak"],
-	unresolvedIssues: [],
-	artifactRefs: [],
+	summary: "## Findings\n\nChild lane completed.\n\n## Verification\n\nRelease soak.",
 };
 
 function assertRawPayloads(store: SessionStore, raw: Map<string, string>): void {

@@ -66,7 +66,7 @@ const BUILT_INS: readonly AgentProfile[] = [
 	{
 		name: "general-purpose",
 		description: "Handle a bounded task with all workspace capabilities.",
-		body: "Complete only the assigned work package and report a structured result.",
+		body: "Complete only the assigned work package and report a Markdown handoff.",
 		capabilities: "all",
 		allowedSubagents: [],
 		isolation: "shared",

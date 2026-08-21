@@ -28,7 +28,10 @@ import { activateSkill, type SkillSnapshotEntry, scanSkills } from "../skills";
 import type { SubagentExecutionRequest } from "../subagents/manager";
 import { memoryIndex, profileMemoryTools } from "../subagents/memory";
 import type { ResolvedAgentProfile } from "../subagents/profiles";
-import { submitSubagentResultTool } from "../subagents/tools";
+import {
+	parentSubagentCapabilities,
+	submitSubagentResultTool,
+} from "../subagents/tools";
 import {
 	finish as finishWorktree,
 	prepare as prepareWorktree,
@@ -60,6 +63,7 @@ export type RunningTask = {
 	prompt: string;
 	contextWatermark: number;
 	memoryTools?: AgentTool[];
+	parentSubagentTools?: readonly AgentTool[];
 };
 
 type RunnerOptions = {
@@ -107,7 +111,7 @@ export class SessionTaskRunner {
 				: undefined;
 		const running = await this.createTask({
 			id: request.sessionId,
-			text: `${request.profile.body}\n\n${request.task}\n\nBefore ending, call submit_subagent_result exactly once with your structured handoff.`,
+			text: `${request.profile.body}\n\n${request.task}\n\nBefore ending, call submit_subagent_result exactly once with your Markdown handoff.`,
 			images: [],
 			controller,
 			laneId: request.laneId,
@@ -244,7 +248,9 @@ export class SessionTaskRunner {
 				skills: running.skills,
 				mcpTools: running.mcpTools,
 				mcp: running.mcp,
-				...(this.subagentTools ? { extraTools: this.subagentTools(id) } : {}),
+				...(running.parentSubagentTools
+					? { extraTools: running.parentSubagentTools }
+					: {}),
 				signal: controller.signal,
 				emit: (event) => this.options.emit(id, event),
 				turnId,
@@ -602,10 +608,14 @@ export class SessionTaskRunner {
 				{ sessionId: id, prompt: template.name, path: template.path },
 				"prompt template expanded",
 			);
+		const parentTools = profile ? undefined : this.subagentTools?.(id);
 		const catalog = new CapabilityCatalog(
 			[
 				...tools.capabilities(bindingGeneration),
 				...contextCapabilities(bindingGeneration),
+				...(parentTools
+					? parentSubagentCapabilities(parentTools, bindingGeneration)
+					: []),
 				...mcpCapabilities(childMcpTools, bindingGeneration),
 				...skills.map(({ capability }) => capability),
 			],
@@ -666,6 +676,7 @@ export class SessionTaskRunner {
 			),
 			contextWatermark,
 			...(memoryTools.length ? { memoryTools } : {}),
+			...(parentTools ? { parentSubagentTools: parentTools } : {}),
 		};
 	}
 
@@ -750,7 +761,11 @@ export class SessionTaskRunner {
 				...(cursor === undefined ? {} : { cursor }),
 			});
 			for (const item of page.items) {
-				if (isMcpProvider(item.ref.providerBinding.providerId)) continue;
+				if (
+					isMcpProvider(item.ref.providerBinding.providerId) ||
+					item.ref.providerBinding.providerId === "harnez-subagents"
+				)
+					continue;
 				const inspected = snapshot.inspect(item.ref);
 				const admission = context.admit({
 					capability: item.ref,

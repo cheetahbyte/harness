@@ -442,9 +442,9 @@ describe("HTTP event stream", () => {
 			);
 			expect(response.status).toBe(201);
 			const handoff = (await response.json()) as {
-				payload: { artifactRefs: string[] };
+				payload: { summary: string };
 			};
-			expect(handoff.payload.artifactRefs).toEqual(["subagent://child-1"]);
+			expect(handoff.payload.summary).toContain("subagent://child-1");
 			expect(JSON.stringify(handoff)).not.toContain(fake.childTrace);
 			const inspection = (await (
 				await fetch(`${base}/sessions/${sessionId}/context`)
@@ -496,12 +496,8 @@ function stubSubagentHandoff() {
 		childTrace: "CHILD_TRACE_SENTINEL",
 		result: {
 			status: "completed" as const,
-			findings: ["found the boundary"],
-			decisions: [],
-			changedFiles: [],
-			verification: ["tests pass"],
-			unresolvedIssues: [],
-			artifactRefs: ["subagent://child-1"],
+			summary:
+				"## Findings\n\nFound the boundary.\n\n## Verification\n\nTests pass.\n\nsubagent://child-1",
 		},
 	};
 }

@@ -161,12 +161,7 @@ db.run("COMMIT");`,
 		});
 		const result = {
 			status: "completed" as const,
-			findings: ["done"],
-			decisions: [],
-			changedFiles: [],
-			verification: ["tests"],
-			unresolvedIssues: [],
-			artifactRefs: [],
+			summary: "## Findings\n\nDone.\n\n## Verification\n\nTests.",
 		};
 		store.updateSubagent(sessionId, "agent-1", {
 			state: "completed",
@@ -184,6 +179,19 @@ db.run("COMMIT");`,
 				result,
 			},
 		]);
+		store.db
+			.query("UPDATE subagents SET result = ? WHERE id = ?")
+			.run(
+				JSON.stringify({
+					status: "completed",
+					findings: ["legacy finding"],
+					verification: ["legacy check"],
+				}),
+				"agent-1",
+			);
+		expect(store.subagent(sessionId, "agent-1")?.result?.summary).toBe(
+			"## Findings\n\n- legacy finding\n\n## Verification\n\n- legacy check",
+		);
 		expect(
 			store.startSubagentRun(sessionId, "agent-1", "task-2"),
 		).toBeDefined();

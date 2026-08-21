@@ -4,6 +4,7 @@ import type {
 	SubagentResult,
 	SubagentState,
 } from "../context/types";
+import { log } from "../logger";
 import type { SessionStore } from "../sessions/store";
 import type { TaskRuntime } from "../task-runtime";
 import type { ResolvedAgentProfile } from "./profiles";
@@ -63,25 +64,12 @@ type Options = {
 
 const restartResult: SubagentResult = {
 	status: "failed",
-	findings: [],
-	decisions: [],
-	changedFiles: [],
-	verification: [],
-	unresolvedIssues: [
+	summary:
 		"The server restarted before the subagent completed. Start a new subagent to retry the work.",
-	],
-	artifactRefs: [],
 };
 const noHandoff: SubagentResult = {
 	status: "failed",
-	findings: [],
-	decisions: [],
-	changedFiles: [],
-	verification: [],
-	unresolvedIssues: [
-		"The subagent ended without submitting a structured handoff.",
-	],
-	artifactRefs: [],
+	summary: "The subagent ended without submitting a Markdown handoff.",
 };
 const terminal = (state: SubagentState) =>
 	!["queued", "running", "cancelling"].includes(state);
@@ -295,6 +283,15 @@ export class SubagentManager {
 		record: Record,
 		profile: ResolvedAgentProfile,
 	): Promise<void> {
+		const startedAt = Date.now();
+		log.info(
+			{
+				sessionId: record.sessionId,
+				subagentId: record.id,
+				profile: record.profile,
+			},
+			"subagent run started",
+		);
 		try {
 			await this.options.execute({
 				sessionId: record.sessionId,
@@ -309,13 +306,44 @@ export class SubagentManager {
 				},
 				submit: (result) => this.submit(record, result),
 			});
-			if (!terminal(record.state))
+			if (!terminal(record.state)) {
+				log.warn(
+					{
+						sessionId: record.sessionId,
+						subagentId: record.id,
+						profile: record.profile,
+						durationMs: Date.now() - startedAt,
+					},
+					"subagent run finished without Markdown handoff",
+				);
 				this.finish(
 					record,
 					record.state === "cancelling" ? "cancelled" : "failed",
 					this.noHandoff(record),
 				);
+			} else {
+				log.info(
+					{
+						sessionId: record.sessionId,
+						subagentId: record.id,
+						profile: record.profile,
+						state: record.state,
+						durationMs: Date.now() - startedAt,
+					},
+					"subagent run finished",
+				);
+			}
 		} catch (error) {
+			log.error(
+				{
+					sessionId: record.sessionId,
+					subagentId: record.id,
+					profile: record.profile,
+					durationMs: Date.now() - startedAt,
+					err: error,
+				},
+				"subagent run failed",
+			);
 			if (!terminal(record.state))
 				this.finish(
 					record,
@@ -341,7 +369,9 @@ export class SubagentManager {
 			?.filter((part) => part.type === "text")
 			.map((part) => part.text ?? "")
 			.join("");
-		return text ? { ...noHandoff, findings: [text] } : noHandoff;
+		return text
+			? { ...noHandoff, summary: `${noHandoff.summary}\n\n${text}` }
+			: noHandoff;
 	}
 	private finish(
 		record: Record,
@@ -527,6 +557,6 @@ export class SubagentManager {
 function failureResult(error: unknown): SubagentResult {
 	return {
 		...noHandoff,
-		unresolvedIssues: [error instanceof Error ? error.message : String(error)],
+		summary: error instanceof Error ? error.message : String(error),
 	};
 }
