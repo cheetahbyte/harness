@@ -637,7 +637,7 @@ The two plugin variables are bound to the config file that declares the server:
 | Variable | Value |
 | --- | --- |
 | `PLUGIN_ROOT` | the directory holding that `mcp.json` |
-| `PLUGIN_DATA` | `~/.config/harnez/mcp-data/<server>`, created before launch |
+| `PLUGIN_DATA` | `~/.local/share/harnez/mcp-data/<server>`, created before launch |
 
 Failures are isolated at the narrowest scope the spec defines: a malformed file
 disables MCP for that file alone, a malformed entry skips one server, and a

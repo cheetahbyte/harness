@@ -12,6 +12,8 @@ import { dirname, join, relative, resolve } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 
+import { userDataPath } from "../../../shared/src/paths";
+
 export type MemoryScope = "project" | "local" | "user";
 
 function memoryDirectory(
@@ -26,7 +28,7 @@ function memoryDirectory(
 		? join(workspace, ".harnez", "agent-memory", profile)
 		: scope === "local"
 			? join(workspace, ".harnez", "agent-memory-local", profile)
-			: join(home, ".config", "harnez", "agent-memory", profile);
+			: userDataPath(join("agent-memory", profile), home);
 }
 
 export async function memoryIndex(

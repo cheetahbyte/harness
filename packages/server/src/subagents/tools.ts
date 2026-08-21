@@ -42,15 +42,19 @@ export function parentSubagentCapabilities(
 export function parentSubagentTools(
 	manager: SubagentManager,
 	sessionId: string,
+	profiles: readonly { name: string; description: string }[],
 ): AgentTool[] {
+	const profileDescription = profiles
+		.map(({ name, description }) => `${name}: ${description}`)
+		.join("\n");
 	return [
 		{
 			name: "spawn_agent",
 			label: "Spawn agent",
-			description: "Start an isolated subagent for a bounded task.",
+			description: `Start an isolated subagent for a bounded task. Available profiles:\n${profileDescription}`,
 			parameters: Type.Object(
 				{
-					profile: Type.String({ minLength: 1 }),
+					profile: Type.Union(profiles.map(({ name }) => Type.Literal(name))),
 					task: Type.String({ minLength: 1 }),
 					description: Type.String({ minLength: 1 }),
 				},
@@ -71,19 +75,17 @@ export function parentSubagentTools(
 		{
 			name: "get_agent_result",
 			label: "Get agent result",
-			description: "Read a subagent state or wait for its handoff.",
+			description:
+				"Wait for a subagent to finish and return its handoff. This blocks efficiently; do not poll.",
 			parameters: Type.Object(
-				{
-					id: Type.String({ minLength: 1 }),
-					wait: Type.Optional(Type.Boolean()),
-				},
+				{ id: Type.String({ minLength: 1 }) },
 				{ additionalProperties: false },
 			),
 			execute: async (_id, input, signal) => {
-				const request = input as { id: string; wait?: boolean };
+				const request = input as { id: string };
 				return text(
 					await manager.get(sessionId, request.id, {
-						...(request.wait === undefined ? {} : { wait: request.wait }),
+						wait: true,
 						...(signal ? { signal } : {}),
 					}),
 				);

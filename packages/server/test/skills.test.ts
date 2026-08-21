@@ -68,7 +68,7 @@ test("reports unreadable roots and keeps scanning the rest", async () => {
 	paths.push(project, home);
 	mkdirSync(join(project, ".harnez"), { recursive: true });
 	writeFileSync(join(project, ".harnez/skills"), "not a directory");
-	skill(join(home, ".harnez/skills"), "review", "Review carefully.");
+	skill(join(home, ".config/harnez/skills"), "review", "Review carefully.");
 
 	const scanned = await scanSkills(project, home, "catalog-1");
 

@@ -16,9 +16,8 @@ Harnez scans Markdown profiles from these roots, in this order:
 1. `<workspace>/.harnez/agents/*.md`
 2. `<workspace>/.harness/agents/*.md`
 3. `<workspace>/.agents/agents/*.md`
-4. `~/.harnez/agents/*.md`
-5. `~/.harness/agents/*.md`
-6. `~/.agents/agents/*.md`
+4. `~/.config/harnez/agents/*.md`
+5. `~/.agents/agents/*.md`
 
 The first valid profile for a name wins. An invalid file does not reserve its
 name, so a later valid file can define it. Harnez reports later valid duplicates
@@ -76,13 +75,14 @@ Use the parent tools as follows:
 
 ```text
 spawn_agent({ profile, task, description }) -> { id, state: "running" }
-get_agent_result({ id, wait: true }) -> terminal PublicSubagentRecord
+get_agent_result({ id }) -> terminal PublicSubagentRecord
 ```
 
 The complete tool set is:
 
 - `spawn_agent` starts an isolated background child.
-- `get_agent_result` reads a state immediately or waits for a terminal result.
+- `get_agent_result` blocks efficiently until the child submits a terminal result;
+  it does not poll.
 - `steer_agent` replaces the pending direction for a running child.
 - `cancel_agent` requests cancellation of a running child.
 - `submit_subagent_result` is available only inside a child and submits its

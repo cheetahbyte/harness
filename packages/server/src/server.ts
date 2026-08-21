@@ -195,8 +195,12 @@ export class HarnezServer {
 				),
 			limits: (sessionId) => this.settingsFor(sessionId).subagents(),
 		});
-		this.taskRunner.setSubagentTools((sessionId) =>
-			parentSubagentTools(this.subagents, sessionId),
+		this.taskRunner.setSubagentTools(async (sessionId) =>
+			parentSubagentTools(
+				this.subagents,
+				sessionId,
+				(await scanAgentProfiles(this.workspace(sessionId))).profiles,
+			),
 		);
 		this.subagents.recover();
 	}

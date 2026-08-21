@@ -5,9 +5,9 @@ import {
 	renameSync,
 	writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { userConfigPath } from "../../shared/src/paths";
 import type { FastCycleEntry, ModelConfig } from "../../shared/src/protocol";
 
 export type OpenAICompatibleProviderSettings = {
@@ -35,19 +35,8 @@ type Settings = {
 	subagents?: { maxConcurrent?: number; maxDepth?: number };
 };
 
-/**
- * Config lives under `harnez`, but installs predating the rename wrote to
- * `harness`. An existing legacy file keeps being used — including for writes —
- * so upgrading never silently strands someone's credentials or settings.
- */
 export function globalHarnezPath(file: string, home?: string): string {
-	const config = home
-		? join(home, ".config")
-		: (process.env["XDG_CONFIG_HOME"] ?? join(homedir(), ".config"));
-	const path = join(config, "harnez", file);
-	if (existsSync(path)) return path;
-	const legacy = join(config, "harness", file);
-	return existsSync(legacy) ? legacy : path;
+	return userConfigPath(file, home);
 }
 
 /** The workspace-local counterpart, with the same pre-rename fallback. */

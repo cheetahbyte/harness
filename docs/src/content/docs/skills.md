@@ -20,7 +20,7 @@ Harnez scans four roots in this order:
 | --- | --- |
 | Project | `.harnez/skills/<name>/SKILL.md` |
 | Project, shared | `.agents/skills/<name>/SKILL.md` |
-| User | `~/.harnez/skills/<name>/SKILL.md` |
+| User | `~/.config/harnez/skills/<name>/SKILL.md` |
 | User, shared | `~/.agents/skills/<name>/SKILL.md` |
 
 Each skill must be one directory below a root. Harnez does not scan parent

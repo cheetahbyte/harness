@@ -102,7 +102,7 @@ configuration and as environment variables in the launched process:
 | Variable | Value |
 | --- | --- |
 | `PLUGIN_ROOT` | The directory holding the `mcp.json` that declared the server. |
-| `PLUGIN_DATA` | `~/.config/harnez/mcp-data/<server>`, created before launch. |
+| `PLUGIN_DATA` | `~/.local/share/harnez/mcp-data/<server>`, created before launch. |
 
 Use `PLUGIN_ROOT` for files shipped alongside the config, and `PLUGIN_DATA` for
 state a server needs to keep, such as caches or installed dependencies.

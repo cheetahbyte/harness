@@ -15,11 +15,8 @@ directory.
 
 `$XDG_CONFIG_HOME/harnez` is used instead when that variable is set.
 
-These directories were named `harness` before the project was renamed. An
-installation that still uses the old name continues to work. Harnez reads
-from the old path when the new path is absent and writes to whichever file it
-finds. You do not need to move anything. Renaming `harness` to `harnez` is
-also safe.
+User configuration has one canonical root. Legacy `harness`, `~/.harnez`, and
+`~/.harness` user directories are not scanned.
 
 ## `auth.json`
 
@@ -133,7 +130,6 @@ independently, so a project can override only `generated` or only `source`:
 <repo>/
   .harnez/
     settings.json      # overrides ~/.config/harnez/settings.json
-    harnez.sqlite     # session, event, and context storage
     skills/              # project-local skills, alongside .agents/skills
     prompts/             # project-local prompt templates, alongside .agents/prompts
 ```
@@ -148,10 +144,9 @@ The legacy one-off endpoint command is still available:
 /model openai-compatible <model> <base-url>
 ```
 
-User-level skills live in `~/.harnez/skills` and `~/.agents/skills`. User-level
-prompt templates live in `~/.harnez/prompts` and `~/.agents/prompts`. Harnez
-also scans the pre-rename `.harness` directories, after their `.harnez`
-counterparts.
+User-level skills live in `~/.config/harnez/skills` and `~/.agents/skills`.
+User-level prompt templates live in `~/.config/harnez/prompts` and
+`~/.agents/prompts`.
 
 ## System prompt files
 
@@ -163,12 +158,10 @@ $XDG_CONFIG_HOME/harnez/APPEND_SYSTEM.md      # append global rules
 <repo>/.harnez/APPEND_SYSTEM.md                # append project rules
 ```
 
-When `$XDG_CONFIG_HOME` is unset, Harnez uses `~/.config`. Existing files under
-`harness` are accepted as a legacy fallback for each corresponding `harnez`
-path. If both names exist, the `harnez` file takes precedence. Harnez resolves
-the files in the order shown: `SYSTEM.md` or the built-in prompt, global
-append, then project append. A project cannot replace the operator prompt
-because project-local `SYSTEM.md` is not supported.
+When `$XDG_CONFIG_HOME` is unset, Harnez uses `~/.config`. Harnez resolves the
+files in the order shown: `SYSTEM.md` or the built-in prompt, global append,
+then project append. A project cannot replace the operator prompt because
+project-local `SYSTEM.md` is not supported.
 
 Harnez fixes the resolved prompt when a new session first runs an agent task.
 Editing these files affects new sessions only. Existing sessions retain their
@@ -192,6 +185,8 @@ error.
 | `HARNEZ_OTEL_CAPTURE_MAX_CHARS` | Maximum characters per captured telemetry payload. Default `16384`; maximum `1000000`. |
 | `HARNEZ_SHOW_STATUS` | Set to `1` to show status and token-usage rows in the TUI transcript. |
 | `XDG_CONFIG_HOME` | Overrides the base config directory in place of `~/.config`. |
+| `XDG_DATA_HOME` | Overrides the user data base directory in place of `~/.local/share`. |
+| `HARNEZ_DATA_DIR` | Overrides the complete Harnez user data directory. |
 | `HARNEZ_OPENAI_API_KEY` / `OPENAI_API_KEY` | API key for the `openai-compatible` provider, checked in that order. |
 
 Set `HARNEZ_OTEL=1` to enable OpenTelemetry export. Harnez then uses the

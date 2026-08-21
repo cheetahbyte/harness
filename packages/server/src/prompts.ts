@@ -3,6 +3,8 @@ import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { userConfigPath } from "../../shared/src/paths";
+
 export type PromptTemplate = {
 	name: string;
 	description: string;
@@ -37,8 +39,7 @@ function promptRoots(workspace: string, home = homedir()): string[] {
 		join(workspace, ".harnez/prompts"),
 		join(workspace, ".harness/prompts"),
 		join(workspace, ".agents/prompts"),
-		join(home, ".harnez/prompts"),
-		join(home, ".harness/prompts"),
+		userConfigPath("prompts", home),
 		join(home, ".agents/prompts"),
 	];
 }
@@ -59,7 +60,7 @@ export async function scanPrompts(
 		try {
 			entries = await readdir(root, { withFileTypes: true });
 		} catch (error) {
-			// An absent root is the normal case — few checkouts define all six.
+			// An absent root is normal — most projects define only some scopes.
 			// Anything else (permissions, I/O) is reported and the scan goes on.
 			if (!isErrnoException(error) || error.code !== "ENOENT")
 				result.diagnostics.push({

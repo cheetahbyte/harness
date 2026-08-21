@@ -88,13 +88,15 @@ type RunInput = {
 
 export class SessionTaskRunner {
 	private subagentTools:
-		| ((sessionId: string) => readonly AgentTool[])
+		| ((sessionId: string) => Promise<readonly AgentTool[]>)
 		| undefined;
 	private readonly turnIds = new Map<string, number>();
 	private readonly startedTasks = new Set<string>();
 	private readonly subagentEventSequence = new Map<string, number>();
 	constructor(private readonly options: RunnerOptions) {}
-	setSubagentTools(factory: (sessionId: string) => readonly AgentTool[]): void {
+	setSubagentTools(
+		factory: (sessionId: string) => Promise<readonly AgentTool[]>,
+	): void {
 		this.subagentTools = factory;
 	}
 
@@ -608,7 +610,7 @@ export class SessionTaskRunner {
 				{ sessionId: id, prompt: template.name, path: template.path },
 				"prompt template expanded",
 			);
-		const parentTools = profile ? undefined : this.subagentTools?.(id);
+		const parentTools = profile ? undefined : await this.subagentTools?.(id);
 		const catalog = new CapabilityCatalog(
 			[
 				...tools.capabilities(bindingGeneration),

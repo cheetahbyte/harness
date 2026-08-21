@@ -1,5 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentTools, contextCapabilities } from "../src/agent/tools";
@@ -10,6 +16,7 @@ import {
 	parentSubagentCapabilities,
 	parentSubagentTools,
 } from "../src/subagents/tools";
+import { scanAgentProfiles } from "../src/subagents/profiles";
 import { CoreTools } from "../src/tools";
 
 async function execute(
@@ -169,7 +176,9 @@ test("registers every context tool as a discoverable capability", () => {
 
 test("registers loaded subagent tools as discoverable capabilities", () => {
 	const binding = "binding-1";
-	const tools = parentSubagentTools({} as never, "session-1");
+	const tools = parentSubagentTools({} as never, "session-1", [
+		{ name: "only-agent", description: "The only configured subagent." },
+	]);
 	const snapshot = new CapabilityCatalog(
 		parentSubagentCapabilities(tools, binding),
 		binding,
@@ -180,6 +189,50 @@ test("registers loaded subagent tools as discoverable capabilities", () => {
 
 	expect(snapshot.search("get agent result wait").items[0]?.ref.id).toBe(
 		"tool:get_agent_result",
+	);
+	const spawn = snapshot.inspect(snapshot.reference("tool:spawn_agent"));
+	expect(spawn.description).toContain(
+		"only-agent: The only configured subagent.",
+	);
+	expect(JSON.stringify(spawn.contract)).toContain('"only-agent"');
+});
+
+test("waits for a child handoff instead of exposing polling", async () => {
+	let options: unknown;
+	const tools = parentSubagentTools(
+		{
+			get: async (_sessionId: string, _id: string, input: unknown) => {
+				options = input;
+				return { id: "child-1", state: "completed" };
+			},
+		} as never,
+		"session-1",
+		[{ name: "only-agent", description: "Only agent." }],
+	);
+	const get = tools.find((tool) => tool.name === "get_agent_result")!;
+	expect(JSON.stringify(get.parameters)).not.toContain('"wait"');
+	await get.execute(
+		"call-1",
+		{ id: "child-1" },
+		new AbortController().signal,
+	);
+	expect(options).toMatchObject({ wait: true });
+});
+
+test("loads user agent profiles from the canonical config directory", async () => {
+	const workspace = mkdtempSync(join(tmpdir(), "harnez-profile-workspace-"));
+	const home = mkdtempSync(join(tmpdir(), "harnez-profile-home-"));
+	paths.push(workspace, home);
+	const directory = join(home, ".config/harnez/agents");
+	mkdirSync(directory, { recursive: true });
+	writeFileSync(
+		join(directory, "custom.md"),
+		"---\nname: custom\ndescription: Custom profile.\ncapabilities: all\n---\nInspect.",
+	);
+
+	const scan = await scanAgentProfiles(workspace, home);
+	expect(scan.profiles.find(({ name }) => name === "custom")?.path).toBe(
+		join(directory, "custom.md"),
 	);
 });
 

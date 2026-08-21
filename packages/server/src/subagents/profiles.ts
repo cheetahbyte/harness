@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 
+import { userConfigPath } from "../../../shared/src/paths";
 import type { ModelConfig } from "../../../shared/src/protocol";
 import type { CapabilityInput } from "../capabilities/types";
 
@@ -91,8 +92,7 @@ function profileRoots(workspace: string, home = homedir()): string[] {
 		join(workspace, ".harnez/agents"),
 		join(workspace, ".harness/agents"),
 		join(workspace, ".agents/agents"),
-		join(home, ".harnez/agents"),
-		join(home, ".harness/agents"),
+		userConfigPath("agents", home),
 		join(home, ".agents/agents"),
 	];
 }

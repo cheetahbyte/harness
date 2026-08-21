@@ -97,7 +97,7 @@ test("prefers the first root that defines a name", async () => {
 	const { project, home } = workspaces();
 	prompt(join(project, ".harnez/prompts"), "review.md", "Project review.");
 	prompt(join(project, ".agents/prompts"), "review.md", "Shared review.");
-	prompt(join(home, ".harnez/prompts"), "review.md", "User review.");
+	prompt(join(home, ".config/harnez/prompts"), "review.md", "User review.");
 	prompt(join(home, ".agents/prompts"), "plan.md", "User plan.");
 
 	const { templates } = await scanPrompts(project, home);
@@ -137,7 +137,7 @@ test("reports unreadable roots and keeps scanning the rest", async () => {
 	const { project, home } = workspaces();
 	mkdirSync(join(project, ".harnez"), { recursive: true });
 	writeFileSync(join(project, ".harnez/prompts"), "not a directory");
-	prompt(join(home, ".harnez/prompts"), "plan.md", "User plan.");
+	prompt(join(home, ".config/harnez/prompts"), "plan.md", "User plan.");
 
 	const { templates, diagnostics } = await scanPrompts(project, home);
 
@@ -169,10 +169,14 @@ test("expands only a leading invocation and appends trailing text", async () => 
 		expect(expandPrompt(text, templates)).toEqual({ text });
 });
 
-test("still reads templates from the pre-rename .harness directory", async () => {
+test("still reads project templates from the pre-rename .harness directory", async () => {
 	const { project, home } = workspaces();
 	prompt(join(project, ".harness/prompts"), "legacy.md", "Legacy template.");
-	prompt(join(home, ".harness/prompts"), "user.md", "User template.");
+	prompt(
+		join(home, ".config/harnez/prompts"),
+		"user.md",
+		"User template.",
+	);
 
 	const { templates } = await scanPrompts(project, home);
 

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
+import { userDataPath } from "../../../shared/src/paths";
 import { globalHarnezPath, projectHarnezPath } from "../settings-store";
 
 /**
@@ -77,7 +78,7 @@ function mcpConfigSources(workspace: string): ConfigSource[] {
 
 /** `PLUGIN_DATA` (§9.1): client-managed, per-server, outlives package contents. */
 function defaultDataRoot(server: string): string {
-	return globalHarnezPath(join("mcp-data", server));
+	return userDataPath(join("mcp-data", server));
 }
 
 export function loadMcpConfig(

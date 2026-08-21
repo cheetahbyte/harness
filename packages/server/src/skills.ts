@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { loadSkills, type Skill } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 
+import { userConfigPath } from "../../shared/src/paths";
 import type {
 	CapabilityContext,
 	TokenAccountant,
@@ -45,8 +46,7 @@ function skillRoots(workspace: string, home = homedir()): string[] {
 		join(workspace, ".harnez/skills"),
 		join(workspace, ".harness/skills"),
 		join(workspace, ".agents/skills"),
-		join(home, ".harnez/skills"),
-		join(home, ".harness/skills"),
+		userConfigPath("skills", home),
 		join(home, ".agents/skills"),
 	];
 }
@@ -68,7 +68,7 @@ export async function scanSkills(
 		try {
 			directories = await readdir(root, { withFileTypes: true });
 		} catch (error) {
-			// An absent root is the normal case — few checkouts define all six.
+			// An absent root is normal — most projects define only some scopes.
 			// Anything else (permissions, I/O) is reported and the scan goes on.
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT")
 				result.diagnostics.push({

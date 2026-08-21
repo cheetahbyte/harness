@@ -1,8 +1,8 @@
 import { closeSync, mkdirSync, openSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { runServer } from "../../server/src/index";
+import { userDataDirectory } from "../../shared/src/paths";
 
 /**
  * `version` is optional because a server started by an older build predates the
@@ -183,16 +183,5 @@ function selfCommand(): string[] {
 }
 
 export function dataDirectory(): string {
-	if (process.env["HARNEZ_DATA_DIR"]) return process.env["HARNEZ_DATA_DIR"];
-	if (process.platform === "darwin")
-		return join(homedir(), "Library", "Application Support", "harnez");
-	if (process.platform === "win32")
-		return join(
-			process.env["LOCALAPPDATA"] ?? join(homedir(), "AppData", "Local"),
-			"harnez",
-		);
-	return join(
-		process.env["XDG_DATA_HOME"] ?? join(homedir(), ".local", "share"),
-		"harnez",
-	);
+	return userDataDirectory();
 }

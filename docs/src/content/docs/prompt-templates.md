@@ -20,7 +20,7 @@ Harnez scans four roots in this order:
 | --- | --- |
 | Project | `.harnez/prompts/<name>.md` |
 | Project, shared | `.agents/prompts/<name>.md` |
-| User | `~/.harnez/prompts/<name>.md` |
+| User | `~/.config/harnez/prompts/<name>.md` |
 | User, shared | `~/.agents/prompts/<name>.md` |
 
 Each template is one `.md` file directly inside a root. Harnez does not scan

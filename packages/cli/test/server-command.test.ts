@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { serveHarnez } from "../../server/src/http-server";
 import { VERSION } from "../../shared/src/version";
 import { parseResume } from "../src/index";
-import { health, runServerCommand } from "../src/server-command";
+import { dataDirectory, health, runServerCommand } from "../src/server-command";
 
 const paths: string[] = [];
 
@@ -15,6 +15,18 @@ afterEach(() => {
 });
 
 describe("CLI arguments", () => {
+	test("stores user data in the XDG data directory", () => {
+		const previous = process.env["XDG_DATA_HOME"];
+		const data = join(tmpdir(), "harnez-xdg-data");
+		process.env["XDG_DATA_HOME"] = data;
+		try {
+			expect(dataDirectory()).toBe(join(data, "harnez"));
+		} finally {
+			if (previous === undefined) delete process.env["XDG_DATA_HOME"];
+			else process.env["XDG_DATA_HOME"] = previous;
+		}
+	});
+
 	test("accepts only an optional resume id", () => {
 		expect(parseResume([])).toBeUndefined();
 		expect(parseResume(["--resume"])).toBe(true);

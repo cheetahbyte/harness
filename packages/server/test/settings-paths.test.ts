@@ -34,7 +34,7 @@ function settingsFile(dir: string, name: string, value: unknown) {
 	return path;
 }
 
-test("global config resolves to harnez, falling back to the pre-rename harness", () => {
+test("global config always resolves to the canonical harnez directory", () => {
 	const config = workspace();
 	process.env["XDG_CONFIG_HOME"] = config;
 	/** Neither exists yet, so a fresh install writes the new location. */
@@ -43,11 +43,6 @@ test("global config resolves to harnez, falling back to the pre-rename harness",
 	);
 
 	settings(config, "harness");
-	expect(globalHarnezPath("settings.json")).toBe(
-		join(config, "harness", "settings.json"),
-	);
-
-	/** Once the new file exists it wins, even with the legacy one still present. */
 	settings(config, "harnez");
 	expect(globalHarnezPath("settings.json")).toBe(
 		join(config, "harnez", "settings.json"),

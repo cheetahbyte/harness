@@ -108,7 +108,7 @@ payloads.
 
 Debug logs contain metadata only and do not duplicate captured content. A
 managed macOS server writes them to
-`~/Library/Application Support/harnez/server.log`; run
+`~/.local/share/harnez/server.log`; run
 `tail -f ~/Library/Application\ Support/harnez/server.log` to follow them.
 
 The useful context fields are `under_pressure`, `pressure_streak`, and
